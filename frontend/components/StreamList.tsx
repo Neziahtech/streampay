@@ -21,8 +21,7 @@ export default function StreamList({
   if (streams.length === 0) {
     return (
       <p className="muted">
-        No streams loaded yet. Create one above, or enter a stream id to fetch
-        it. (A “fetch by id” box is a good-first-issue upgrade.)
+        No streams loaded yet. Create one above, or enter a stream id to fetch it.
       </p>
     );
   }
@@ -48,7 +47,11 @@ export default function StreamList({
             <td className="mono">{s.recipient.slice(0, 8)}…</td>
             <td className="mono">{s.deposit}</td>
             <td className="mono">{s.withdrawn}</td>
-            <td>{s.status}</td>
+            <td>
+              <span className={`status-badge status-${s.status.toLowerCase()}`}>
+                {s.status}
+              </span>
+            </td>
             <td>
               <div className="row">
                 <input

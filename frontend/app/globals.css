@@ -128,3 +128,28 @@ code,
   font-family: ui-monospace, Consolas, monospace;
   font-size: 13px;
 }
+
+.status-badge {
+  display: inline-block;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  background: #eef2ff;
+  color: #3730a3;
+}
+
+.status-active {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.status-cancelled {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.status-completed {
+  background: #e0e7ff;
+  color: #3730a3;
+}

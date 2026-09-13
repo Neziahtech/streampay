@@ -1,11 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import {
-  isConnected,
-  getAddress,
-  signTransaction,
-} from "@stellar/freighter-api";
+import { isConnected, getAddress } from "@stellar/freighter-api";
 import {
   createStream,
   withdrawFromStream,
@@ -22,6 +18,8 @@ export default function Home() {
   const [streams, setStreams] = useState<StreamView[]>([]);
   const [status, setStatus] = useState<string>("");
   const [error, setError] = useState<string>("");
+  const [lookupId, setLookupId] = useState("");
+  const [lookupLoading, setLookupLoading] = useState(false);
 
   async function connect() {
     setError("");
@@ -44,6 +42,29 @@ export default function Home() {
       setStreams((prev) => [s, ...prev.filter((x) => x.id !== id)]);
     } catch (e) {
       setError(`Read failed: ${String(e)}`);
+    }
+  }
+
+  async function fetchStreamById() {
+    const id = lookupId.trim();
+
+    if (!id) {
+      setError("Enter a stream ID.");
+      return;
+    }
+
+    setError("");
+    setLookupLoading(true);
+
+    try {
+      const stream = await readStream(id);
+      setStreams((prev) => [stream, ...prev.filter((x) => x.id !== stream.id)]);
+      setStatus(`Stream #${stream.id} loaded.`);
+      setLookupId("");
+    } catch {
+      setError("Stream not found. Check the ID and try again.");
+    } finally {
+      setLookupLoading(false);
     }
   }
 
@@ -83,6 +104,33 @@ export default function Home() {
           }
         }}
       />
+
+      <section className="card">
+        <h2>Fetch stream by ID</h2>
+
+        <div className="row">
+          <input
+            type="text"
+            inputMode="numeric"
+            placeholder="Stream ID"
+            value={lookupId}
+            onChange={(e) => setLookupId(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                void fetchStreamById();
+              }
+            }}
+          />
+
+          <button
+            type="button"
+            onClick={fetchStreamById}
+            disabled={lookupLoading}
+          >
+            {lookupLoading ? "Fetching..." : "Fetch stream"}
+          </button>
+        </div>
+      </section>
 
       <section className="card">
         <h2>Your streams</h2>
