@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { isConnected, getAddress } from "@stellar/freighter-api";
+import { isConnected, requestAccess } from "@stellar/freighter-api";
 import {
   createStream,
   withdrawFromStream,
@@ -24,11 +24,21 @@ export default function Home() {
   async function connect() {
     setError("");
     try {
-      if (!(await isConnected())) {
+      const { isConnected: connected, error: connectedError } =
+        await isConnected();
+      if (connectedError || !connected) {
         setError("Freighter not detected — install the extension and reload.");
         return;
       }
-      const { address } = await getAddress();
+      const { address, error: accessError } = await requestAccess();
+      if (accessError || !address) {
+        setError(
+          `Wallet connection failed: ${
+            accessError?.message ?? "no address returned from Freighter."
+          }`
+        );
+        return;
+      }
       setAddress(address);
       setStatus(`Connected as ${address.slice(0, 8)}…`);
     } catch (e) {
