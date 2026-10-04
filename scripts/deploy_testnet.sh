@@ -33,7 +33,8 @@ rustup target list --installed 2>/dev/null | grep -q wasm32v1-none \
 
 # ------------------------------------------------------------------- 2. build
 say "Building contract Wasm"
-(cd "$REPO_ROOT" && cargo build --release --target wasm32v1-none -p streampay-contract)
+# soroban-sdk 28 requires the stellar-cli build path; plain cargo is rejected.
+(cd "$REPO_ROOT/contracts/streaming-payments" && stellar contract build)
 [ -f "$REPO_ROOT/$WASM" ] || die "expected Wasm at $WASM after build"
 
 # ------------------------------------------------------------------ 3. deploy

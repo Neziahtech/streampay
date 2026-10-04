@@ -52,8 +52,18 @@ jobs:
       - name: llvm-cov (summary)
         run: cargo llvm-cov -p streampay-contract --summary-only
 
-      - name: Wasm build (wasm32v1-none)
-        run: cargo build --release --target wasm32v1-none -p streampay-contract
+      # soroban-sdk 28 rejects a plain `cargo build --target wasm32v1-none`
+      # (its build script requires the stellar-cli >= 25.2 spec-shaking v2
+      # handshake), so the supported build path is `stellar contract build`.
+      - name: Install stellar-cli
+        run: |
+          curl -fsSL https://github.com/stellar/stellar-cli/releases/download/v28.1.0/stellar-cli-28.1.0-x86_64-unknown-linux-gnu.tar.gz | tar xz
+          sudo install stellar /usr/local/bin/stellar
+          stellar --version
+
+      - name: Wasm build (stellar contract build)
+        working-directory: contracts/streaming-payments
+        run: stellar contract build
 
   frontend:
     name: Frontend — lint / typecheck / build / audit

@@ -28,8 +28,15 @@ jobs:
       - name: Test before releasing
         run: cargo test -p streampay-contract --locked
 
+      - name: Install stellar-cli
+        run: |
+          curl -fsSL https://github.com/stellar/stellar-cli/releases/download/v28.1.0/stellar-cli-28.1.0-x86_64-unknown-linux-gnu.tar.gz | tar xz
+          sudo install stellar /usr/local/bin/stellar
+          stellar --version
+
       - name: Build release Wasm
-        run: cargo build --release --locked --target wasm32v1-none -p streampay-contract
+        working-directory: contracts/streaming-payments
+        run: stellar contract build
 
       - name: Digest
         id: digest
@@ -52,7 +59,7 @@ jobs:
 
             Reproduce with:
             ```sh
-            cargo build --release --locked --target wasm32v1-none -p streampay-contract
+            stellar contract build   # in contracts/streaming-payments
             sha256sum target/wasm32v1-none/release/streampay_contract.wasm
             ```
             Verify the digest above matches before deploying.

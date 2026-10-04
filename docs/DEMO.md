@@ -38,7 +38,7 @@ funded account JSON.
 ### 2. Deploy the contract
 
 ```bash
-cargo build --release --target wasm32v1-none -p streampay-contract
+stellar contract build   # in contracts/streaming-payments (sdk 28 requires stellar-cli)
 stellar contract deploy \
   --wasm target/wasm32v1-none/release/streampay_contract.wasm \
   --source deployer --network testnet
