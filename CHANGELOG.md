@@ -9,6 +9,8 @@ interface: they are only ever appended to, never renumbered or reused.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-04
+
 ### Added
 - On-chain address discovery indexes: `recipient_streams` and
   `sender_streams` paginated views (append-only id lists per address,
@@ -35,6 +37,9 @@ interface: they are only ever appended to, never renumbered or reused.
 
 ## [0.1.0] - 2026-09-13
 
+The initial contract + frontend release, published before git tagging was
+adopted (no `v0.1.0` tag exists; tagging begins with `v0.2.0`).
+
 ### Added
 - Core contract: `create_stream`, `withdraw`, `cancel_stream`, `top_up`,
   `get_stream`, `available` — linear per-second streams with checked
@@ -47,5 +52,6 @@ interface: they are only ever appended to, never renumbered or reused.
 - Docs: README, ARCHITECTURE.md, GOOD_FIRST_ISSUES.md, CONTRIBUTING.md,
   SECURITY.md. Apache-2.0.
 
-[Unreleased]: https://github.com/Neziahtech/streampay/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/Neziahtech/streampay/releases/tag/v0.1.0
+[Unreleased]: https://github.com/Neziahtech/streampay/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Neziahtech/streampay/releases/tag/v0.2.0
+[0.1.0]: https://github.com/Neziahtech/streampay/releases
