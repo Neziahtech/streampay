@@ -1,7 +1,16 @@
 # StreamPay frontend
 
 Minimal Next.js (App Router, TypeScript) UI for the StreamPay contract:
-connect Freighter, create streams, withdraw accrued funds, top up, cancel.
+connect Freighter, create streams, withdraw accrued funds (single amount or
+atomic **withdraw max**), top up, cancel — with on-chain discovery so the
+list survives reloads and shows streams you didn't create in this session.
+
+## Routes
+
+| Route | What it does |
+|---|---|
+| `/` | Connect, create form, stream list with per-row actions and a **Discover on-chain** button (scans the contract's `recipient_streams` / `sender_streams` indexes for your address) |
+| `/stream/[id]` | Stream detail: progress bar, live `available` poll (15 s), withdraw form with over-withdrawal guard, **Withdraw max** (`withdraw_max`), cancel. Read-only-safe without a wallet; contract errors decode to `StreamError` names |
 
 ## Setup
 
@@ -16,10 +25,17 @@ Requires the [Freighter](https://www.freighter.app/) browser extension and a
 funded account on the configured network (default: testnet — use the
 [friendbot](https://developers.stellar.org/docs/dev-tools/tutorials/friendbot))
 plus a deployed token contract id (any SAC, e.g. a custom USDC testnet asset).
+For a one-command deployed contract + demo stream, see
+[`../docs/DEMO.md`](../docs/DEMO.md).
 
 ## Notes
 
-- `npm run build` + `npm run typecheck` run in CI.
+- `npm run lint` + `npm run typecheck` + `npm run build` + `npm audit` run in
+  CI.
 - Every mutating call follows: build → simulate → Freighter sign → send → poll.
-- Read-only calls (`get_stream`) simulate against the RPC without signing.
-- The deposit is in **smallest token units** (stroops for classic assets).
+- Read-only calls (`get_stream`, `available`, the index views) simulate
+  against the RPC without signing.
+- Amounts are **smallest token units** (stroops for classic assets).
+- The stream list persists per-address cache in `localStorage` (scoped by
+  network); on-chain indexes are the source for discovery, cache is only a
+  convenience.

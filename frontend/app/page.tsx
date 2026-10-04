@@ -5,11 +5,15 @@ import { isConnected, requestAccess } from "@stellar/freighter-api";
 import {
   createStream,
   withdrawFromStream,
+  withdrawMaxFromStream,
   topUpStream,
   cancelStream,
   readStream,
+  fetchStreamsFor,
+  describeError,
   type StreamView,
 } from "@/lib/stellar";
+import { loadStreamIds, saveStreamId } from "@/lib/storage";
 import StreamForm from "@/components/StreamForm";
 import StreamList from "@/components/StreamList";
 
@@ -41,6 +45,16 @@ export default function Home() {
       }
       setAddress(address);
       setStatus(`Connected as ${address.slice(0, 8)}…`);
+      // Rehydrate the cached list (ids only; state is always read fresh).
+      const cached = loadStreamIds(address);
+      if (cached.length > 0) {
+        const views = await Promise.all(
+          cached.map((id) => readStream(id).catch(() => null))
+        );
+        setStreams(
+          views.filter((s): s is StreamView => s !== null).reverse()
+        );
+      }
     } catch (e) {
       setError(`Wallet connection failed: ${String(e)}`);
     }
@@ -50,8 +64,28 @@ export default function Home() {
     try {
       const s = await readStream(id);
       setStreams((prev) => [s, ...prev.filter((x) => x.id !== id)]);
+      if (address) saveStreamId(address, id);
     } catch (e) {
-      setError(`Read failed: ${String(e)}`);
+      setError(describeError(e));
+    }
+  }
+
+  async function discover() {
+    if (!address) return;
+    setError("");
+    try {
+      const [asRecipient, asSender] = await Promise.all([
+        fetchStreamsFor(address, "recipient"),
+        fetchStreamsFor(address, "sender"),
+      ]);
+      const byId = new Map<string, StreamView>();
+      for (const s of [...asRecipient, ...asSender]) byId.set(s.id, s);
+      const found = [...byId.values()].sort((a, b) => Number(b.id) - Number(a.id));
+      setStreams(found);
+      setStatus(`Discovered ${found.length} stream(s) on-chain.`);
+      for (const s of found) saveStreamId(address, s.id);
+    } catch (e) {
+      setError(describeError(e));
     }
   }
 
@@ -144,6 +178,11 @@ export default function Home() {
 
       <section className="card">
         <h2>Your streams</h2>
+        <div className="row">
+          <button onClick={discover} title="Scan the on-chain address indexes">
+            Discover on-chain
+          </button>
+        </div>
         <StreamList
           streams={streams}
           onWithdraw={async (id, amount) => {
@@ -151,7 +190,16 @@ export default function Home() {
               await withdrawFromStream(address, id, amount);
               await refresh(id);
             } catch (e) {
-              setError(String(e));
+              setError(describeError(e));
+            }
+          }}
+          onWithdrawMax={async (id) => {
+            try {
+              const paid = await withdrawMaxFromStream(address, id);
+              setStatus(`Claimed ${paid} units from stream #${id}.`);
+              await refresh(id);
+            } catch (e) {
+              setError(describeError(e));
             }
           }}
           onTopUp={async (id, amount) => {
@@ -159,7 +207,7 @@ export default function Home() {
               await topUpStream(address, id, amount);
               await refresh(id);
             } catch (e) {
-              setError(String(e));
+              setError(describeError(e));
             }
           }}
           onCancel={async (id) => {
@@ -167,7 +215,7 @@ export default function Home() {
               await cancelStream(address, id);
               await refresh(id);
             } catch (e) {
-              setError(String(e));
+              setError(describeError(e));
             }
           }}
           onRefresh={(id) => refresh(id)}

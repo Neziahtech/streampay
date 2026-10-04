@@ -72,6 +72,46 @@ function i128(v: string) {
   return nativeToScVal(BigInt(v), { type: "i128" });
 }
 
+function u32(v: number) {
+  return nativeToScVal(BigInt(v), { type: "u32" });
+}
+
+/**
+ * Network label for localStorage keys — stream ids are per-network facts and
+ * must never leak between testnet and publicnet caches.
+ */
+export const NETWORK_LABEL = NETWORK === Networks.PUBLIC ? "public" : "testnet";
+
+/** Map a StreamError code (contract errors surface as `Error(Contract, #N)`). */
+const STREAM_ERRORS: Record<number, string> = {
+  1: "StreamNotFound",
+  2: "NotStreamSender",
+  3: "NotStreamRecipient",
+  4: "StreamNotCancellable",
+  5: "StreamNotActive",
+  6: "StartTimeInPast",
+  7: "InvalidTimeRange",
+  8: "DurationTooLong",
+  9: "ZeroAmount",
+  10: "AmountExceedsAvailable",
+  11: "MathOverflow",
+  12: "NotAuthorized",
+  13: "NothingToWithdraw",
+};
+
+/** Rewrites raw simulation/tx error text into a readable StreamError name. */
+export function describeError(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  const m = message.match(/Error\(Contract, #(\d+)\)/);
+  if (m) {
+    const name = STREAM_ERRORS[Number(m[1])];
+    return name
+      ? `Contract rejected the call: ${name} (#${m[1]})`
+      : `Contract error #${m[1]}`;
+  }
+  return message;
+}
+
 /** The ed25519 all-zero key: a syntactically valid source for simulations. */
 const DUMMY_SOURCE = new Account(
   "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
@@ -163,6 +203,21 @@ export async function withdrawFromStream(
   );
 }
 
+/**
+ * Claims the full accrued balance in one atomic call (`withdraw_max`),
+ * returning the amount paid (smallest token units).
+ */
+export async function withdrawMaxFromStream(
+  recipient: string,
+  streamId: string
+): Promise<bigint> {
+  return send(
+    recipient,
+    contract().call("withdraw_max", u64(streamId)),
+    (v) => BigInt(scValToNative(v) as bigint)
+  );
+}
+
 export async function topUpStream(
   sender: string,
   streamId: string,
@@ -223,4 +278,54 @@ export async function readStream(streamId: string): Promise<StreamView> {
     cancelable: Boolean(raw.cancelable),
     status: String(raw.status),
   };
+}
+
+/** Accrued-but-unwithdrawn balance of a stream at the current ledger time. */
+export async function readAvailable(streamId: string): Promise<bigint> {
+  const retval = await simulateRead("available", [u64(streamId)]);
+  if (!retval) {
+    throw new Error(`Stream #${streamId} not found or RPC unavailable`);
+  }
+  return BigInt(scValToNative(retval) as bigint);
+}
+
+const MAX_PAGE_SIZE = 50; // mirrors the contract's MAX_PAGE_SIZE
+
+/** One page of stream ids from an address index view (read-only). */
+async function readStreamIdsPage(
+  view: "recipient_streams" | "sender_streams",
+  address: string,
+  offset: number
+): Promise<string[]> {
+  const retval = await simulateRead(view, [
+    scAddr(address),
+    u32(offset),
+    u32(MAX_PAGE_SIZE),
+  ]);
+  if (!retval) return [];
+  const raw = scValToNative(retval) as bigint[];
+  return (raw ?? []).map((id) => String(id));
+}
+
+/**
+ * Discovers all streams for an address through the on-chain indexes,
+ * following pagination until exhausted. `role` selects the index:
+ * streams where the address receives funds ("recipient") or funds them
+ * ("sender"). Streams that fail to read (archived, RPC hiccups) are skipped.
+ */
+export async function fetchStreamsFor(
+  address: string,
+  role: "recipient" | "sender"
+): Promise<StreamView[]> {
+  const view = role === "recipient" ? "recipient_streams" : "sender_streams";
+  const ids: string[] = [];
+  for (let offset = 0; ; offset += MAX_PAGE_SIZE) {
+    const page = await readStreamIdsPage(view, address, offset);
+    ids.push(...page);
+    if (page.length < MAX_PAGE_SIZE) break;
+  }
+  const streams = await Promise.all(
+    ids.map((id) => readStream(id).catch(() => null))
+  );
+  return streams.filter((s): s is StreamView => s !== null);
 }
