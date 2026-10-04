@@ -8,13 +8,14 @@ conventions, the branch/PR process, and how to run everything locally.
 ```text
 contracts/streaming-payments/   the Soroban contract (Rust, no_std)
 frontend/                       minimal Next.js + Freighter UI
-docs/                           ARCHITECTURE.md, GOOD_FIRST_ISSUES.md
-.github/workflows/ci.yml        CI: test + fmt + clippy + frontend build
+fuzz/                           cargo-fuzz harness for the accrual math (own workspace)
+docs/                           ARCHITECTURE.md, GOOD_FIRST_ISSUES.md, DEMO.md
+.github/workflows/              ci.yml, fuzz.yml, release.yml
 ```
 
 ## Setup (clean machine)
 
-1. Install Rust ≥ 1.84 (<https://rustup.rs>) and add the wasm target:
+1. Install Rust ≥ 1.85 (<https://rustup.rs>) and add the wasm target:
    ```bash
    rustup target add wasm32v1-none
    ```
@@ -31,14 +32,20 @@ docs/                           ARCHITECTURE.md, GOOD_FIRST_ISSUES.md
 cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 cargo test -p streampay-contract
+cargo deny check                                # supply chain (advisories/licenses)
+
+# Optional fuzz session (needs nightly + cargo-fuzz)
+cd fuzz && cargo +nightly fuzz run streamed_at -- -max_total_time=60 && cd ..
 
 # Frontend
 cd frontend && npm install
+npm run lint
 npm run typecheck
 npm run build
 ```
 
-A PR is green when all six commands pass.
+A PR is green when all CI jobs pass; locally, fmt/clippy/test (and
+lint/typecheck/build when frontend files are touched) are the minimum gate.
 
 ## Coding conventions
 
@@ -60,8 +67,11 @@ A PR is green when all six commands pass.
   `stream_id` as a topic. If you add an event, filter tests by contract and
   compare typed XDR, not strings.
 - Storage: per-stream state under `DataKey::Stream(id)` with TTL extension on
-  mutation (see `stream.rs`). No global registry vectors — indexers exist for
-  that.
+  mutation and read (see `stream.rs`). Discovery uses the append-only address
+  indexes (`DataKey::RecipientStreams` / `SenderStreams`): they are written
+  **only** by `create_stream`, are advisory (never trust them for auth — the
+  `Stream` entry is the source of truth), and reads paginate with `offset` /
+  `limit` clamped to `MAX_PAGE_SIZE`. Do not add unbounded full-set scans.
 - `#![no_std]` — no allocations where an array or `soroban_sdk::Vec` works.
 - Run `cargo fmt` before committing; CI enforces `--check`.
 
@@ -94,8 +104,9 @@ A PR is green when all six commands pass.
    - [ ] `cargo fmt --all -- --check`
    - [ ] `cargo clippy --all-targets -- -D warnings`
    - [ ] `cargo test -p streampay-contract`
-   - [ ] `cd frontend && npm run typecheck && npm run build` (if frontend touched)
+   - [ ] `cd frontend && npm run lint && npm run typecheck && npm run build` (if frontend touched)
    - [ ] Tests for new behavior; ARCHITECTURE.md updated for design changes
+   - [ ] CHANGELOG.md gets an entry under **Unreleased**
 5. **Reviews**: one maintainer approval for docs/frontend, two for changes to
    `lib.rs`/`stream.rs` (money-touching code).
 6. Squash-merge with a conventional subject; the squashed subject becomes the

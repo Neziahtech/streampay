@@ -7,6 +7,7 @@ target/
 node_modules/
 .next/
 out/
+*.tsbuildinfo
 
 # Environment
 .env
@@ -18,3 +19,12 @@ out/
 .idea/
 .vscode/
 *.log
+
+# Local tooling leftovers
+.freebuff/
+
+# Fuzzing (own workspace; corpus/artifacts stay local)
+fuzz/target/
+fuzz/corpus/
+fuzz/artifacts/
+fuzz/Cargo.lock

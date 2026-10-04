@@ -1,0 +1,134 @@
+# Demo walkthrough (testnet)
+
+From a clean machine to a live, ticking payment stream in ~10 minutes. Run
+the whole thing with one script, or follow the manual steps to understand
+what each phase does.
+
+> Tested against `stellar-cli` as pinned in README prerequisites; some CLI
+> flag names change between stellar-cli releases — if a command below errors
+> with `unexpected argument`, check `stellar contract asset create --help`
+> for the current spelling of the same operation.
+
+## One command
+
+```bash
+./scripts/deploy_testnet.sh
+```
+
+The script builds the Wasm, deploys the contract, registers a demo SAC
+token, and opens a 1-hour cancelable stream of `1000000000` units (100.0
+tokens at 7 decimals). It prints `contract id`, `token id`, `sender`, and
+`recipient` at the end — copy the contract id.
+
+## Manual walkthrough
+
+### 1. Identities + funding
+
+```bash
+stellar keys generate deployer --network testnet
+stellar keys generate sender   --network testnet
+stellar keys generate recipient --network testnet
+# Friendbot-test each account (or `--fund` at generation time):
+curl "https://friendbot.stellar.org?addr=$(stellar keys address deployer)"
+```
+
+Expected: each `keys generate` prints a confirmation; friendbot returns the
+funded account JSON.
+
+### 2. Deploy the contract
+
+```bash
+cargo build --release --target wasm32v1-none -p streampay-contract
+stellar contract deploy \
+  --wasm target/wasm32v1-none/release/streampay_contract.wasm \
+  --source deployer --network testnet
+```
+
+Expected output: a contract id `C…` (46 chars). Set it in
+`frontend/.env.local` as `NEXT_PUBLIC_STREAMING_CONTRACT_ID`.
+
+### 3. Demo token + approval
+
+Register an asset (`stellar contract asset create --source deployer --network
+testnet --issuer <deployer> --max-alpha4 DEMO --amount 1000000000 --salt
+<32-hex>`), then mint to the sender and approve the streaming contract:
+
+```bash
+stellar contract invoke --id $TOKEN --source sender --network testnet -- \
+  approve --spender $CONTRACT --amount 1000000000 --expiration_ledger +5000
+```
+
+`create_stream` pulls the deposit through this allowance — without the
+approval it fails with a token-side error, not a StreamError.
+
+### 4. Create a stream
+
+```bash
+NOW=$(date +%s); END=$((NOW + 3600))
+stellar contract invoke --id $CONTRACT --source sender --network testnet -- \
+  create_stream --sender $SENDER --recipient $RECIPIENT --token $TOKEN \
+  --deposit_amount 1000000000 --start_time $NOW --end_time $END --cancelable true
+```
+
+Expected output: `1` (the stream id).
+
+### 5. Watch it stream
+
+```bash
+stellar contract invoke --id $CONTRACT --source sender --network testnet -- \
+  available --stream_id 1
+```
+
+Expected: a number that grows by `deposit / duration` per second — for the
+demo stream, ~`277777` units every second (1,000,000,000 / 3600, floored
+per-second accrual).
+
+### 6. Claim with `withdraw_max`
+
+```bash
+stellar contract invoke --id $CONTRACT --source recipient --network testnet -- \
+  withdraw_max --stream_id 1
+```
+
+Expected output: the accrued amount paid out (an i128). Calling it again
+within the same second reverts with `Error(Contract, #13)`
+(`NothingToWithdraw`). A second call a minute later pays that minute's
+accrual.
+
+### 7. Cancel (pro-rata split)
+
+```bash
+stellar contract invoke --id $CONTRACT --source sender --network testnet -- \
+  cancel_stream --caller $SENDER --stream_id 1
+```
+
+Expected: recipient receives everything accrued so far, sender is refunded
+the unaccrued remainder, both in one transaction; `get_stream` afterwards
+shows `status: Cancelled`. The recipient can also cancel because this demo
+stream was created `cancelable`.
+
+### 8. Discovery via the address indexes
+
+```bash
+stellar contract invoke --id $CONTRACT --source anyone --network testnet -- \
+  recipient_streams --recipient $RECIPIENT --offset 0 --limit 50
+```
+
+Expected output: `[1, …]` — every stream id where that address is the
+recipient, oldest first, clamped to 50 per page. `sender_streams` works the
+same way for the funding side. This is what the frontend's **Discover
+on-chain** button and the `/stream/[id]` detail page build on.
+
+## Frontend
+
+```bash
+cd frontend
+cp .env.example .env.local   # paste the contract id
+npm ci && npm run dev
+```
+
+Connect Freighter (testnet network), import the `sender` seed
+(`stellar keys show sender`) or use any funded testnet account, and create
+streams from the form. The stream list persists across reloads; each row
+links to `/stream/<id>` with a live `available` read and one-click
+**Withdraw max**.

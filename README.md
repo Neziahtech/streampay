@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/Neziahtech/streampay/actions/workflows/ci.yml/badge.svg)](./.github/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
-[![tests](https://img.shields.io/badge/tests-40%2F40%20passing-brightgreen)]()
+[![rustfmt + clippy](https://img.shields.io/badge/style-rustfmt%20%2B%20clippy-informational)](./.github/workflows/ci.yml)
 
 > A payroll line that pays by the second. A vesting schedule your team can watch tick. A subscription that cancels itself the moment funding stops — with every unearned token refunded.
 
@@ -63,10 +63,18 @@ Deep dive (storage model, checked math, reentrancy, TTL strategy, design decisio
 |---|---|---|---|
 | `create_stream(sender, recipient, token, deposit, start, end, cancelable) → u64` | anyone (sender auth required) | pulls deposit in | `StreamCreated` |
 | `withdraw(stream_id, amount)` | recipient | pays out ≤ accrued | `Withdrawn` |
+| `withdraw_max(stream_id) → i128` | recipient | pays out all accrued, atomically | `Withdrawn` |
 | `cancel_stream(caller, stream_id)` | sender; recipient iff `cancelable` | pro-rata split, atomic | `StreamCancelled` |
 | `top_up(stream_id, amount)` | sender | pulls added funds | `StreamToppedUp` |
 | `get_stream(stream_id) → Stream` | — (read-only) | — | — |
 | `available(stream_id) → i128` | — (read-only) | — | — |
+| `recipient_streams(address, offset, limit) → Vec<u64>` | — (read-only) | — | — |
+| `sender_streams(address, offset, limit) → Vec<u64>` | — (read-only) | — | — |
+
+`recipient_streams` / `sender_streams` are on-chain discovery indexes:
+append-only, creation-ordered stream-id lists per address, paginated
+(`limit` clamped to `MAX_PAGE_SIZE = 50`). Terminal streams keep their ids —
+read each stream's `status` for lifecycle state.
 
 Creating a stream requires a prior token approval: `token.approve(sender, <contract id>, deposit, exp)`. All failures return typed `StreamError` codes (no panics) — see `contracts/streaming-payments/src/errors.rs`.
 
@@ -74,18 +82,30 @@ Creating a stream requires a prior token approval: `token.approve(sender, <contr
 
 Prerequisites:
 
-1. **Rust** ≥ 1.84: <https://rustup.rs>
+1. **Rust** ≥ 1.85 (contract workspace uses edition 2021 with a conservative
+   MSRV; soroban-sdk 27 sets the floor): <https://rustup.rs>
 2. **Stellar CLI** (for deploy + Wasm build): `cargo install stellar-cli --locked`
 3. **Node.js** ≥ 20 (frontend only): <https://nodejs.org>
 
 Build and test the contract:
 
 ```bash
-cargo test -p streampay-contract        # 40 unit + property tests
+cargo test -p streampay-contract        # unit + property tests (see CI badge)
 cargo fmt --all -- --check              # formatting gate
 cargo clippy --all-targets -- -D warnings
 stellar contract build                  # Wasm → target/wasm32v1-none/release/*.wasm
+cargo deny check                        # supply chain (advisories, licenses, bans)
 ```
+
+Fuzz the accrual math (nightly, optional):
+
+```bash
+cd fuzz && cargo +nightly fuzz run streamed_at -- -max_total_time=60
+```
+
+**Live testnet demo in one command:** [`./scripts/deploy_testnet.sh`](./scripts/deploy_testnet.sh)
+deploys the contract, mints a demo token, and opens a 1-hour stream — full
+walkthrough in [`docs/DEMO.md`](./docs/DEMO.md).
 
 Run the frontend:
 
@@ -110,16 +130,26 @@ stellar contract deploy \
 ```text
 contracts/streaming-payments/   the contract (lib.rs, stream.rs, errors.rs, events.rs, test.rs)
 frontend/                       minimal Next.js UI (Freighter wallet)
+fuzz/                           cargo-fuzz harness for the accrual math (own workspace)
+scripts/deploy_testnet.sh       one-command testnet demo
 docs/ARCHITECTURE.md            design deep-dive
-.github/workflows/ci.yml        test + fmt + clippy + frontend typecheck/build on every PR
+docs/DEMO.md                    verified testnet walkthrough
+docs/GOOD_FIRST_ISSUES.md       ready-to-file contributor tickets
+.github/workflows/ci.yml        test + fmt + clippy + coverage + wasm + lint/build/audit + supply chain
+.github/workflows/release.yml   tag-driven Wasm release with SHA-256 digests
+.github/workflows/fuzz.yml      scheduled fuzz sessions (non-blocking)
+CHANGELOG.md                    release history (Keep a Changelog)
 ```
 
 ## Roadmap
 
-- **v0.1** — core contract: create / withdraw / cancel / top-up, 40 tests, CI ✅
-- **v0.2** — `pause_stream` (good first issue), event indexer service
-- **v0.3** — fuzzing in CI (`cargo-fuzz` on the rate math), multi-token batch stream creation
-- **v0.4** — full web UI polish (stream discovery by recipient, accrual charts), testnet example scripts
+- **v0.1** — core contract: create / withdraw / cancel / top-up, tests, CI ✅
+- **v0.2** — ✅ on-chain address indexes (`recipient_streams` /
+  `sender_streams`), ✅ `withdraw_max`, ✅ frontend discovery + persistence,
+  event indexer service, `pause_stream` (good first issue)
+- **v0.3** — ✅ fuzzing in CI (`cargo-fuzz` on the rate math, scheduled),
+  multi-token batch stream creation
+- **v0.4** — full web UI polish (accrual charts), ✅ testnet demo script
 - **v1.0** — external audit, mainnet deployment guide
 
 Feature requests live in [`.github/ISSUE_TEMPLATE/`](./.github/ISSUE_TEMPLATE/) — good first issues are tagged [`good first issue`](https://github.com/Neziahtech/streampay/labels/good%20first%20issue) and documented in [`docs/GOOD_FIRST_ISSUES.md`](./docs/GOOD_FIRST_ISSUES.md).
