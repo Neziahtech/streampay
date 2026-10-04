@@ -8,7 +8,7 @@
 //! implementation without building Wasm.
 #![cfg(test)]
 
-use soroban_sdk::{contractclient, Address, Env};
+use soroban_sdk::{contractclient, Address, Env, Vec};
 
 use crate::{Stream, StreamError};
 
@@ -28,8 +28,11 @@ pub trait StreamingPaymentsApi {
         cancelable: bool,
     ) -> Result<u64, StreamError>;
     fn withdraw(env: Env, stream_id: u64, amount: i128) -> Result<(), StreamError>;
+    fn withdraw_max(env: Env, stream_id: u64) -> Result<i128, StreamError>;
     fn cancel_stream(env: Env, caller: Address, stream_id: u64) -> Result<(), StreamError>;
     fn top_up(env: Env, stream_id: u64, amount: i128) -> Result<(), StreamError>;
     fn get_stream(env: Env, stream_id: u64) -> Result<Stream, StreamError>;
     fn available(env: Env, stream_id: u64) -> Result<i128, StreamError>;
+    fn recipient_streams(env: Env, recipient: Address, offset: u32, limit: u32) -> Vec<u64>;
+    fn sender_streams(env: Env, sender: Address, offset: u32, limit: u32) -> Vec<u64>;
 }

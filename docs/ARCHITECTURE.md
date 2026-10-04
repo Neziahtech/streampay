@@ -10,8 +10,9 @@ reentrancy, TTL strategy, and the design decisions behind the v1 API. Read the
 ┌────────────────────────────────────────────────────────────────────┐
 │                        StreamingPayments                           │
 │                                                                    │
-│  lib.rs      entrypoints: create_stream / withdraw /               │
-│              cancel_stream / top_up / get_stream / available       │
+│  lib.rs      entrypoints: create_stream / withdraw / withdraw_max / │
+│              cancel_stream / top_up / get_stream / available /      │
+│              recipient_streams / sender_streams                    │
 │  stream.rs   Stream type, storage, checked accrual math            │
 │  errors.rs   StreamError — stable numeric codes, append-only       │
 │  events.rs   StreamCreated / Withdrawn / StreamCancelled /         │
@@ -28,17 +29,27 @@ reentrancy, TTL strategy, and the design decisions behind the v1 API. Read the
 |---|---|---|
 | `DataKey::NextStreamId` | `u64` | monotonic id counter (ids start at 1) |
 | `DataKey::Stream(id)` | `Stream` | full per-stream state |
+| `DataKey::RecipientStreams(addr)` | `Vec<u64>` | append-only ids where `addr` receives |
+| `DataKey::SenderStreams(addr)` | `Vec<u64>` | append-only ids created by `addr` |
 
 Streams live in **persistent** storage. Every mutating entrypoint that touches
 a stream extends its TTL (`TTL_THRESHOLD_LEDGERS = 200_000`, extend to
 `500_000` ≈ 29 days), so a stream that is being used never goes cold, while
 abandoned streams naturally archive to off-chain recovery — the Soroban-native
-way to bound state bloat without penalizing active users.
+way to bound state bloat without penalizing active users. Index entries get
+the same TTL treatment on write *and* on read, so an actively-queried address
+stays hot.
 
-There is deliberately **no iterable registry** of all streams (no
-`Vec<u64>` of ids): it would make `create_stream` gas cost grow with total
-stream count. Indexers recover the id list from `StreamCreated` events; a
-paginated `list_streams` is a roadmap item, not a v1 feature.
+There is still **no global registry** of all streams (no contract-wide
+`Vec<u64>`): that would make `create_stream` cost grow with total stream count.
+Instead, discovery is **per-address**: `create_stream` appends the new id to
+the sender's and the recipient's own index lists — each bounded by that one
+user's activity, written only at creation, and paginated on read
+(`recipient_streams` / `sender_streams`, `limit` clamped to
+`MAX_PAGE_SIZE = 50`). The indexes are *advisory*: never authorize against
+them; the `Stream` entry is the source of truth, and `StreamCreated` events
+remain the complete audit trail (an external indexer can still rebuild or
+cross-check the lists).
 
 ## 3. Accrual math
 
@@ -157,6 +168,7 @@ the public interface:
 | 10 | `AmountExceedsAvailable` | withdrawal above accrued balance |
 | 11 | `MathOverflow` | a checked computation would overflow |
 | 12 | `NotAuthorized` | caller is neither sender nor (cancelable) recipient |
+| 13 | `NothingToWithdraw` | `withdraw_max` with an empty accrued balance |
 
 Codes are **append-only**: never renumber or reuse a variant.
 
@@ -179,7 +191,12 @@ spread over a longer window). v1 keeps top-up strictly additive — accrued
 amounts only grow. If demand exists, a `create_stream` from the remainder of a
 fully-streamed stream is the clean composition (roadmap).
 
-**No stream registry vector.** See §2 — event-sourced discovery instead.
+**No global stream registry; per-address append-only indexes instead.** See
+§2. A contract-wide id vector couples `create_stream` cost to total adoption
+and re-reads everything on every query; per-address lists keep writes O(1)
+for the one user involved and reads paginated. Discovery remains safe because
+the indexes are advisory only — auth and payouts always read the `Stream`
+entry itself.
 
 **Terminal states are terminal.** No reactivation, no partial cancellation.
 Simplicity is a security feature; richer flows belong in composing contracts
@@ -196,8 +213,15 @@ or off-chain UX.
   `t ≤ duration`, the sum of payouts up to `t` never exceeds
   `streamed_at(deposit, duration, t)`, and `streamed_at(..., duration) ==
   deposit` exactly.
-- **Rate math is pure** (`streamed_at` takes no `Env`), so a `cargo-fuzz`
-  target can hammer it without a Soroban host (roadmap issue).
+- **Rate math is pure** (`streamed_at` takes no `Env`), so the `cargo-fuzz`
+  target in [`fuzz/`](../fuzz/fuzz_targets/streamed_at.rs) hammers it without
+  a Soroban host: bounds, exact floor-ratio reference comparison,
+  monotonicity, and "errors are only ever genuine `MathOverflow`". CI runs a
+  scheduled session (`fuzz.yml`, non-blocking); any crash becomes a regression
+  unit test.
+- **`withdraw_max`** shares the `withdraw` payout tail (`pay_out`) so both
+  paths inherit the same CEI ordering and reentrancy proof; index pagination
+  and TTL behavior have dedicated tests in `test.rs`.
 
 ## 10. Open problems / roadmap hooks
 

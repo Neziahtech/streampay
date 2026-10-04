@@ -6,7 +6,7 @@
 //! intermediate products) and returns [`StreamError::MathOverflow`] instead of
 //! overflowing or panicking.
 
-use soroban_sdk::{contracttype, Address, Env, MuxedAddress};
+use soroban_sdk::{contracttype, Address, Env, MuxedAddress, Vec};
 
 use crate::errors::StreamError;
 
@@ -14,6 +14,11 @@ use crate::errors::StreamError;
 /// (36,525 days). Bounds worst-case rate multiplications and rejects
 /// nonsensical windows early.
 pub const MAX_DURATION_SECONDS: u64 = 3_155_760_000;
+
+/// Maximum number of stream ids a single paginated index query may return.
+/// Callers asking for more are clamped down; this bounds per-call footprint
+/// of the address-index views.
+pub const MAX_PAGE_SIZE: u32 = 50;
 
 /// TTL maintenance, in ledgers (~5 seconds per ledger on Stellar mainnet).
 ///
@@ -71,6 +76,13 @@ pub enum DataKey {
     NextStreamId,
     /// The stream with the given id.
     Stream(u64),
+    /// Append-only index of stream ids where the given address is the
+    /// recipient. Advisory (discovery) data: the `Stream` entries remain the
+    /// source of truth, and terminal streams keep their place in the index.
+    RecipientStreams(Address),
+    /// Append-only index of stream ids created (as sender) by the given
+    /// address. Same advisory semantics as [`DataKey::RecipientStreams`].
+    SenderStreams(Address),
 }
 
 /// Seconds elapsed of the stream window at the current ledger time.
@@ -184,4 +196,64 @@ pub fn put_stream(env: &Env, stream: &Stream) {
     env.storage()
         .persistent()
         .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+}
+
+/// Appends a stream's id to both parties' address indexes.
+///
+/// Called once, from `create_stream`, right after the stream is persisted.
+/// Cancel/deplete/top-up flows intentionally do not touch the indexes: they
+/// are append-only discovery aids keyed by *creation*, not by lifecycle.
+pub fn index_stream(env: &Env, stream: &Stream) {
+    push_to_index(
+        env,
+        &DataKey::SenderStreams(stream.sender.clone()),
+        stream.id,
+    );
+    push_to_index(
+        env,
+        &DataKey::RecipientStreams(stream.recipient.clone()),
+        stream.id,
+    );
+}
+
+fn push_to_index(env: &Env, key: &DataKey, id: u64) {
+    let mut ids: Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(key)
+        .unwrap_or_else(|| Vec::new(env));
+    ids.push_back(id);
+    env.storage().persistent().set(key, &ids);
+    env.storage()
+        .persistent()
+        .extend_ttl(key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+}
+
+/// Returns one page of stream ids from an address index, in creation order.
+///
+/// `limit` is clamped to [`MAX_PAGE_SIZE`]; an `offset` past the end (or an
+/// unknown address) yields an empty page rather than an error. Reading the
+/// index extends its TTL, so actively-queried addresses never go cold.
+/// Addresses with no index entry never had any streams: return early without
+/// touching storage (`extend_ttl` on a never-written key would fail).
+pub fn page_stream_ids(env: &Env, key: &DataKey, offset: u32, limit: u32) -> Vec<u64> {
+    let storage = env.storage().persistent();
+    let Some(ids): Option<Vec<u64>> = storage.get(key) else {
+        return Vec::new(env);
+    };
+    storage.extend_ttl(key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+
+    let start = offset.min(ids.len());
+    let end = start
+        .saturating_add(limit.min(MAX_PAGE_SIZE))
+        .min(ids.len());
+    let mut page = Vec::new(env);
+    let mut i = start;
+    while i < end {
+        if let Some(id) = ids.get(i) {
+            page.push_back(id);
+        }
+        i += 1;
+    }
+    page
 }

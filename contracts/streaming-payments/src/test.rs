@@ -4,8 +4,10 @@
 //! end, cancelling fully-withdrawn and not-yet-started streams, topping up an
 //! ended stream, sequential partial withdrawals, checked math under extreme
 //! values, zero-duration/zero-amount rejection, reentrancy safety via a
-//! malicious token contract, event payloads, and an exhaustive accrual
-//! property test over the pure rate function.
+//! malicious token contract, event payloads, an exhaustive accrual property
+//! test over the pure rate function, the per-address discovery indexes
+//! (append order, pagination, clamping, terminal streams), and `withdraw_max`
+//! semantics.
 #![cfg(test)]
 
 use soroban_sdk::{
@@ -1066,5 +1068,194 @@ fn top_up_event_emitted() {
     assert_eq!(
         f.env.events().all().filter_by_contract(&f.client.address),
         [topped_up.to_xdr(&f.env, &f.client.address)],
+    );
+}
+
+// --------------------------------------------------- address indexes -------
+
+#[test]
+fn create_stream_indexes_ids_for_sender_and_recipient() {
+    let f = Fixture::setup();
+    let id1 = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let id2 = f.create_stream(DEPOSIT / 2, 0, 5 * DAY, true);
+
+    let expected = soroban_sdk::Vec::from_slice(&f.env, &[id1, id2]);
+    assert_eq!(f.client.recipient_streams(&f.recipient, &0, &10), expected);
+    assert_eq!(f.client.sender_streams(&f.sender, &0, &10), expected);
+}
+
+#[test]
+fn streams_index_pagination_pages_in_creation_order() {
+    let f = Fixture::setup();
+    let mut ids = [0u64; 5];
+    for (i, slot) in ids.iter_mut().enumerate() {
+        *slot = f.create_stream(DEPOSIT / 10, i as u64, 10 * DAY, false);
+    }
+    let page = |offset: u32, limit: u32, expect: &[u64]| {
+        assert_eq!(
+            f.client.sender_streams(&f.sender, &offset, &limit),
+            soroban_sdk::Vec::from_slice(&f.env, expect),
+        );
+    };
+
+    page(0, 2, &ids[0..2]);
+    page(2, 2, &ids[2..4]);
+    page(4, 2, &ids[4..5]); // short final page
+    page(0, 0, &[]); // zero limit: empty page, no error
+    page(99, 2, &[]); // offset past the end
+                      // Oversized limits clamp to MAX_PAGE_SIZE (only 5 exist, so len is 5).
+    assert_eq!(f.client.sender_streams(&f.sender, &0, &u32::MAX).len(), 5);
+}
+
+#[test]
+fn unrelated_address_has_empty_indexes() {
+    let f = Fixture::setup();
+    let _ = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let other = Address::generate(&f.env);
+    assert!(f.client.recipient_streams(&other, &0, &50).is_empty());
+    assert!(f.client.sender_streams(&other, &0, &50).is_empty());
+}
+
+#[test]
+fn cancelled_streams_keep_their_indexed_ids() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, 0, 10 * DAY, true);
+    f.advance_time(DAY);
+    f.client.mock_all_auths().cancel_stream(&f.sender, &id);
+
+    // The index is keyed by creation, not lifecycle: the id stays listed and
+    // the stream's own status field is the source of truth.
+    assert_eq!(
+        f.client.recipient_streams(&f.recipient, &0, &10),
+        soroban_sdk::Vec::from_slice(&f.env, &[id]),
+    );
+    assert_eq!(f.client.get_stream(&id).status, StreamStatus::Cancelled);
+}
+
+// ------------------------------------------------------ withdraw_max ------
+
+#[test]
+fn withdraw_max_pays_everything_accrued() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, 0, 10 * DAY, false); // starts now
+    f.advance_time(3 * DAY);
+
+    let amount = f.client.mock_all_auths().withdraw_max(&id);
+    assert_eq!(amount, DEPOSIT * 3 / 10);
+
+    let stream = f.client.get_stream(&id);
+    assert_eq!(stream.withdrawn, amount);
+    assert_eq!(stream.status, StreamStatus::Active);
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.recipient),
+        amount
+    );
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.client.address),
+        DEPOSIT - amount,
+    );
+
+    // Nothing accrued since the claim: an immediate second call reverts.
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_withdraw_max(&id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::NothingToWithdraw);
+}
+
+#[test]
+fn withdraw_max_before_start_reverts_nothing_to_withdraw() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_withdraw_max(&id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::NothingToWithdraw);
+}
+
+#[test]
+fn withdraw_max_after_end_drains_the_stream() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, 0, 2 * DAY, false);
+    f.advance_time(5 * DAY); // past end_time
+
+    let amount = f.client.mock_all_auths().withdraw_max(&id);
+    assert_eq!(amount, DEPOSIT);
+    assert_eq!(f.client.get_stream(&id).status, StreamStatus::Depleted,);
+}
+
+#[test]
+fn withdraw_max_on_cancelled_stream_reverts() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, 0, 10 * DAY, true);
+    f.advance_time(DAY);
+    f.client.mock_all_auths().cancel_stream(&f.sender, &id);
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_withdraw_max(&id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::StreamNotActive);
+}
+
+#[test]
+fn withdraw_max_unknown_stream_reverts() {
+    let f = Fixture::setup();
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_withdraw_max(&999)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::StreamNotFound);
+}
+
+#[test]
+fn withdraw_max_requires_recipient_authorization() {
+    // Same auth model as `withdraw`: an attacker signing the call does not
+    // satisfy the recipient's required authorization.
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    f.advance_time(2 * DAY);
+
+    let attacker = Address::generate(&f.env);
+    f.env.mock_auths(&[MockAuth {
+        address: &attacker,
+        invoke: &MockAuthInvoke {
+            contract: &f.client.address,
+            fn_name: "withdraw_max",
+            args: (id,).into_val(&f.env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(f.client.try_withdraw_max(&id).is_err());
+}
+
+#[test]
+fn withdraw_max_emits_withdrawn_event() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, 0, 10 * DAY, false);
+    f.advance_time(DAY);
+
+    // Drain the StreamCreated event so the assertion below covers only the
+    // withdrawal (reading the event log drains it).
+    let _ = f.env.events().all();
+
+    let amount = f.client.mock_all_auths().withdraw_max(&id);
+    let withdrawn = crate::Withdrawn {
+        stream_id: id,
+        recipient: f.recipient.clone(),
+        amount,
+        withdrawn_total: amount,
+    };
+    assert_eq!(
+        f.env.events().all().filter_by_contract(&f.client.address),
+        [withdrawn.to_xdr(&f.env, &f.client.address)],
     );
 }

@@ -98,13 +98,13 @@
                   "i128": "10000000000"
                 },
                 {
-                  "u64": "86400"
+                  "u64": "0"
                 },
                 {
-                  "u64": "950400"
+                  "u64": "864000"
                 },
                 {
-                  "bool": false
+                  "bool": true
                 }
               ]
             }
@@ -120,13 +120,13 @@
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
-              "function_name": "top_up",
+              "function_name": "cancel_stream",
               "args": [
                 {
-                  "u64": "1"
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
                 },
                 {
-                  "i128": "1234"
+                  "u64": "1"
                 }
               ]
             }
@@ -134,12 +134,13 @@
           "sub_invocations": []
         }
       ]
-    ]
+    ],
+    []
   ],
   "ledger": {
     "protocol_version": 27,
     "sequence_number": 0,
-    "timestamp": 0,
+    "timestamp": 86400,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
     "base_reserve": 0,
     "min_persistent_entry_ttl": 4096,
@@ -378,7 +379,7 @@
                       "symbol": "cancelable"
                     },
                     "val": {
-                      "bool": false
+                      "bool": true
                     }
                   },
                   {
@@ -386,7 +387,7 @@
                       "symbol": "deposit"
                     },
                     "val": {
-                      "i128": "10000001234"
+                      "i128": "10000000000"
                     }
                   },
                   {
@@ -394,7 +395,7 @@
                       "symbol": "end_time"
                     },
                     "val": {
-                      "u64": "950400"
+                      "u64": "864000"
                     }
                   },
                   {
@@ -426,7 +427,7 @@
                       "symbol": "start_time"
                     },
                     "val": {
-                      "u64": "86400"
+                      "u64": "0"
                     }
                   },
                   {
@@ -436,7 +437,7 @@
                     "val": {
                       "vec": [
                         {
-                          "symbol": "Active"
+                          "symbol": "Cancelled"
                         }
                       ]
                     }
@@ -454,7 +455,7 @@
                       "symbol": "withdrawn"
                     },
                     "val": {
-                      "i128": "0"
+                      "i128": "1000000000"
                     }
                   }
                 ]
@@ -530,7 +531,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "89999998766"
+                      "i128": "90000000000"
                     }
                   },
                   {
@@ -574,7 +575,59 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "9999998766"
+                      "i128": "19000000000"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "authorized"
+                    },
+                    "val": {
+                      "bool": true
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "clawback"
+                    },
+                    "val": {
+                      "bool": false
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 518400
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CBEPDNVYXQGWB5YUBXKJWYJA7OXTZW5LFLNO5JRRGE6Z6C5OSUZPCCEL",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "Balance"
+                  },
+                  {
+                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "map": [
+                  {
+                    "key": {
+                      "symbol": "amount"
+                    },
+                    "val": {
+                      "i128": "1000000000"
                     }
                   },
                   {
@@ -626,7 +679,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "10000001234"
+                      "i128": "0"
                     }
                   },
                   {
@@ -772,83 +825,5 @@
       }
     ]
   },
-  "events": [
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "CBEPDNVYXQGWB5YUBXKJWYJA7OXTZW5LFLNO5JRRGE6Z6C5OSUZPCCEL",
-        "type_": "contract",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "transfer"
-              },
-              {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
-              },
-              {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
-              },
-              {
-                "string": "aaa:GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEGWF"
-              }
-            ],
-            "data": {
-              "i128": "1234"
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
-        "type_": "contract",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "stream_topped_up"
-              },
-              {
-                "u64": "1"
-              }
-            ],
-            "data": {
-              "map": [
-                {
-                  "key": {
-                    "symbol": "amount"
-                  },
-                  "val": {
-                    "i128": "1234"
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "new_deposit"
-                  },
-                  "val": {
-                    "i128": "10000001234"
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "sender"
-                  },
-                  "val": {
-                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
-                  }
-                }
-              ]
-            }
-          }
-        }
-      },
-      "failed_call": false
-    }
-  ]
+  "events": []
 }

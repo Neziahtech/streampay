@@ -11,11 +11,16 @@
 //!
 //! - [`StreamingPayments::create_stream`] — open a stream and pull the deposit
 //! - [`StreamingPayments::withdraw`] — recipient claims accrued funds
+//! - [`StreamingPayments::withdraw_max`] — recipient claims *all* accrued
+//!   funds in one atomic call
 //! - [`StreamingPayments::cancel_stream`] — sender (or recipient, if the
 //!   stream is `cancelable`) closes the stream with a pro-rata split
 //! - [`StreamingPayments::top_up`] — add funds to a running stream
 //! - [`StreamingPayments::get_stream`] / [`StreamingPayments::available`] —
 //!   read-only views
+//! - [`StreamingPayments::recipient_streams`] /
+//!   [`StreamingPayments::sender_streams`] — paginated on-chain discovery
+//!   indexes per address
 //!
 //! # Invariants
 //!
@@ -33,11 +38,13 @@ mod test;
 #[cfg(test)]
 mod test_client;
 
-use soroban_sdk::{contract, contractimpl, token::TokenClient, Address, Env};
+use soroban_sdk::{contract, contractimpl, token::TokenClient, Address, Env, Vec};
 
 pub use errors::StreamError;
 pub use events::{StreamCancelled, StreamCreated, StreamToppedUp, Withdrawn};
-pub use stream::{Stream, StreamStatus, MAX_DURATION_SECONDS};
+// `streamed_at` is re-exported for the fuzz target and downstream rate
+// calculators: it is a pure function requiring no `Env`.
+pub use stream::{streamed_at, Stream, StreamStatus, MAX_DURATION_SECONDS, MAX_PAGE_SIZE};
 
 /// The StreamPay streaming-payments contract.
 #[contract]
@@ -111,6 +118,7 @@ impl StreamingPayments {
             status: StreamStatus::Active,
         };
         stream::put_stream(&env, &s);
+        stream::index_stream(&env, &s);
 
         StreamCreated {
             stream_id: id,
@@ -138,19 +146,52 @@ impl StreamingPayments {
         if amount <= 0 {
             return Err(StreamError::ZeroAmount);
         }
-        let mut s = stream::get_stream(&env, stream_id)?;
-        s.recipient.require_auth();
-
-        if s.status != StreamStatus::Active {
-            return Err(StreamError::StreamNotActive);
-        }
+        let mut s = Self::authorize_withdrawal(&env, stream_id)?;
 
         let available = stream::available_amount(&env, &s)?;
         if amount > available {
             return Err(StreamError::AmountExceedsAvailable);
         }
 
-        // Effects first (CEI): record the payout before moving tokens.
+        Self::pay_out(&env, &mut s, amount)
+    }
+
+    /// Withdraws the entire accrued-but-unwithdrawn balance in one call and
+    /// returns the amount paid. Only the recipient can call this (their
+    /// authorization is required).
+    ///
+    /// This is the atomic form of "read `available`, then `withdraw` it":
+    /// clients never risk a stale amount between the two calls. Reverts with
+    /// [`StreamError::NothingToWithdraw`] when nothing has accrued yet (or
+    /// everything accrued has already been withdrawn), and with
+    /// [`StreamError::StreamNotActive`] on cancelled or depleted streams.
+    pub fn withdraw_max(env: Env, stream_id: u64) -> Result<i128, StreamError> {
+        let mut s = Self::authorize_withdrawal(&env, stream_id)?;
+
+        let amount = stream::available_amount(&env, &s)?;
+        if amount <= 0 {
+            return Err(StreamError::NothingToWithdraw);
+        }
+
+        Self::pay_out(&env, &mut s, amount)?;
+        Ok(amount)
+    }
+
+    /// Shared preamble for both withdrawal paths: load the stream, require
+    /// the recipient's authorization, and reject terminal streams.
+    fn authorize_withdrawal(env: &Env, stream_id: u64) -> Result<Stream, StreamError> {
+        let s = stream::get_stream(env, stream_id)?;
+        s.recipient.require_auth();
+        if s.status != StreamStatus::Active {
+            return Err(StreamError::StreamNotActive);
+        }
+        Ok(s)
+    }
+
+    /// Shared payout tail for both withdrawal paths, checks-effects-
+    /// interactions ordered: record `withdrawn` and emit the event *before*
+    /// moving tokens, so a reentrant token callback can never double-spend.
+    fn pay_out(env: &Env, s: &mut Stream, amount: i128) -> Result<(), StreamError> {
         s.withdrawn = s
             .withdrawn
             .checked_add(amount)
@@ -158,17 +199,17 @@ impl StreamingPayments {
         if s.withdrawn == s.deposit {
             s.status = StreamStatus::Depleted;
         }
-        stream::put_stream(&env, &s);
+        stream::put_stream(env, s);
 
         Withdrawn {
-            stream_id,
+            stream_id: s.id,
             recipient: s.recipient.clone(),
             amount,
             withdrawn_total: s.withdrawn,
         }
-        .publish(&env);
+        .publish(env);
 
-        TokenClient::new(&env, &s.token).transfer(
+        TokenClient::new(env, &s.token).transfer(
             &env.current_contract_address(),
             stream::muxed(&s.recipient),
             &amount,
@@ -299,5 +340,27 @@ impl StreamingPayments {
     pub fn available(env: Env, stream_id: u64) -> Result<i128, StreamError> {
         let s = stream::get_stream(&env, stream_id)?;
         stream::available_amount(&env, &s)
+    }
+
+    /// A page of stream ids where `recipient` is the recipient, in creation
+    /// order (oldest first). `limit` is clamped to `MAX_PAGE_SIZE`; paginate
+    /// by advancing `offset`. Unknown addresses yield an empty page.
+    ///
+    /// Discovery view only: it does not authorize anything and terminal
+    /// (cancelled/depleted) streams keep their ids — read each stream's
+    /// `status` for lifecycle state.
+    pub fn recipient_streams(env: Env, recipient: Address, offset: u32, limit: u32) -> Vec<u64> {
+        stream::page_stream_ids(
+            &env,
+            &stream::DataKey::RecipientStreams(recipient),
+            offset,
+            limit,
+        )
+    }
+
+    /// A page of stream ids created by `sender`, in creation order. Same
+    /// pagination and advisory semantics as [`StreamingPayments::recipient_streams`].
+    pub fn sender_streams(env: Env, sender: Address, offset: u32, limit: u32) -> Vec<u64> {
+        stream::page_stream_ids(&env, &stream::DataKey::SenderStreams(sender), offset, limit)
     }
 }

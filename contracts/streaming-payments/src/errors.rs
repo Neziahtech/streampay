@@ -39,4 +39,6 @@ pub enum StreamError {
     MathOverflow = 11,
     /// The caller is not permitted to perform this action.
     NotAuthorized = 12,
+    /// `withdraw_max` found nothing accrued-but-unwithdrawn to pay out.
+    NothingToWithdraw = 13,
 }

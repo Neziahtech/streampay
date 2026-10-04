@@ -8,7 +8,9 @@ keywords = ["stellar", "soroban", "payments", "streaming", "smart-contract"]
 categories = ["cryptography::cryptocurrencies"]
 
 [lib]
-crate-type = ["cdylib"]
+# `cdylib` for the Wasm build; `rlib` so the fuzz crate (and downstream
+# Rust consumers) can link the pure rate math natively.
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 soroban-sdk.workspace = true
