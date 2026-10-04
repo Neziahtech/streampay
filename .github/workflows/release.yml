@@ -39,7 +39,7 @@ jobs:
           echo "hash=$(awk '{print $1}' SHA256SUMS)" >> "$GITHUB_OUTPUT"
 
       - name: Create/edit release draft
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           draft: true
           files: |
