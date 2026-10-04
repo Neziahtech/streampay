@@ -1,0 +1,38 @@
+name: Fuzz
+
+# Coverage-guided fuzzing of the pure accrual math. Scheduled and manual only;
+# `continue-on-error` keeps a found crash from blocking unrelated PRs — crashes
+# must become regression tests (see docs/GOOD_FIRST_ISSUES.md #4).
+
+on:
+  schedule:
+    - cron: "17 3 * * 1" # Mondays ~03:17 UTC
+  workflow_dispatch:
+    inputs:
+      max_total_time:
+        description: "Fuzzing budget per target, seconds"
+        required: false
+        default: "120"
+
+permissions:
+  contents: read
+
+jobs:
+  streamed_at:
+    name: fuzz streamed_at
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install nightly toolchain + cargo-fuzz
+        run: |
+          rustup toolchain install nightly --profile minimal
+          cargo +nightly install cargo-fuzz
+
+      - name: Run fuzz session
+        working-directory: fuzz
+        run: |
+          cargo +nightly fuzz run streamed_at -- \
+            -max_total_time=${{ github.event.inputs.max_total_time || '60' }} \
+            -rss_limit_mb=4096

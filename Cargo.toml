@@ -3,6 +3,11 @@ resolver = "2"
 members = [
     "contracts/streaming-payments",
 ]
+# The fuzz harness is its own workspace (cargo-fuzz needs nightly-only
+# settings that must not leak into the contract build).
+exclude = [
+    "fuzz",
+]
 
 [workspace.package]
 version = "0.1.0"

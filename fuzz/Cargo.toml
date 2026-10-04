@@ -1,0 +1,21 @@
+[package]
+name = "streampay-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+streampay-contract = { path = "../contracts/streaming-payments" }
+
+[[bin]]
+name = "streamed_at"
+path = "fuzz_targets/streamed_at.rs"
+test = false
+doc = false
+bench = false
