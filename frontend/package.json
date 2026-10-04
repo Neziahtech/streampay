@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@stellar/freighter-api": "^4.1.0",
+    "@stellar/freighter-api": "^6.0.1",
     "@stellar/stellar-sdk": "^17.2.1",
     "next": "^15.1.6",
     "react": "^19.0.0",
