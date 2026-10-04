@@ -1,0 +1,5 @@
+# How StreamPay is funded — see README "Funding & sustainability".
+github: [Neziahtech]
+custom:
+  - https://app.grantfox.io/ # bounties on good-first-issues
+  - https://drips.network/ # upstream dependency splits

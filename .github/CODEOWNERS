@@ -1,0 +1,11 @@
+# Maintainers are auto-requested for review on all changes.
+# Streams: contract + docs.
+*                       @Neziahtech
+
+/contracts/             @Neziahtech
+/frontend/              @Neziahtech
+/.github/workflows/     @Neziahtech
+
+# Sensitive: require explicit maintainer review.
+/SECURITY.md            @Neziahtech
+/deny.toml              @Neziahtech

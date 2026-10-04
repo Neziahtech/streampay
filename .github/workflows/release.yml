@@ -1,0 +1,58 @@
+name: Release
+
+# Tag-driven release: builds the reproducible contract Wasm, records its
+# SHA-256 digest, and attaches both to a GitHub Release draft. Deployments
+# can then be verified byte-for-byte against the published digest.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  attestations: write
+
+jobs:
+  wasm:
+    name: Build + attest contract Wasm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+
+      - name: Test before releasing
+        run: cargo test -p streampay-contract --locked
+
+      - name: Build release Wasm
+        run: cargo build --release --locked --target wasm32v1-none -p streampay-contract
+
+      - name: Digest
+        id: digest
+        run: |
+          wasm=target/wasm32v1-none/release/streampay_contract.wasm
+          sha256sum "$wasm" | tee SHA256SUMS
+          echo "hash=$(awk '{print $1}' SHA256SUMS)" >> "$GITHUB_OUTPUT"
+
+      - name: Create/edit release draft
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: |
+            target/wasm32v1-none/release/streampay_contract.wasm
+            SHA256SUMS
+          body: |
+            ## StreamPay contract `${{ github.ref_name }}`
+
+            Wasm SHA-256: `${{ steps.digest.outputs.hash }}`
+
+            Reproduce with:
+            ```sh
+            cargo build --release --locked --target wasm32v1-none -p streampay-contract
+            sha256sum target/wasm32v1-none/release/streampay_contract.wasm
+            ```
+            Verify the digest above matches before deploying.
