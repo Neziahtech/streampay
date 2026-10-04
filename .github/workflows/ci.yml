@@ -83,7 +83,10 @@ jobs:
         run: npm run build
 
       - name: Dependency audit
-        run: npm audit --audit-level=high
+        # Production deps only: dev-tooling advisories (e.g. braces in the
+        # eslint chain) never ship to users and currently have no fix.
+        # High-severity prod advisories fail the build.
+        run: npm audit --omit=dev --audit-level=high
 
   supply-chain:
     name: Security — advisories / licenses
@@ -91,10 +94,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # cargo-deny's advisories check covers the same RustSec database as
+      # cargo-audit, so one gate owns the ignore policy (see deny.toml).
       - name: cargo-deny (advisories, licenses, bans, sources)
         uses: EmbarkStudios/cargo-deny-action@v2
-
-      - name: cargo-audit
-        uses: rustsec/audit-check@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}

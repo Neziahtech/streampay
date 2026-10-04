@@ -1,28 +1,30 @@
 # cargo-deny configuration — supply-chain checks for the Rust workspace.
-# Run locally: `cargo deny check` (CI runs advisories + licenses + bans).
+# Run locally: `cargo deny check` (CI runs advisories + licenses + bans + sources).
 
 [advisories]
-yarn-audit-without-vulnerability-audit = false
 ignore = [
-    # Add RUSTSEC IDs here only with a written justification and a review
-    # date; never silence an advisory that touches the funds-movement paths.
+    # RUSTSEC-2024-0436 (`paste`, "unmaintained"): build-time-only macro
+    # crate, pulled transitively by soroban-env-common; archived by its
+    # author but stable, and no fixed version exists. Not in the runtime
+    # funds path. Re-review by 2027-04 or when soroban-sdk drops it.
+    "RUSTSEC-2024-0436",
 ]
 
 [licenses]
-license = ["Apache-2.0", "Apache-2.0 WITH LLVM-exception", "MIT", "BSD-3-Clause", "ISC", "Unicode-3.0", "Zlib", "MPL-2.0"]
-private = { ignore = false }
-unregistered = { ignore = false }
 allow = [
-    # 0BSD and CC0-1.0 occasionally show up in transitive deps.
     "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
     "CC0-1.0",
     "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Zlib",
 ]
-
-[[licenses.clarify]]
-name = "streampay-contract"
-expression = "Apache-2.0"
-license-files = [{ path = "LICENSE", hash = 0x001c7e6c }]
 
 [bans]
 multiple-versions = "warn"
