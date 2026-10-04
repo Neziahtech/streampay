@@ -9,6 +9,33 @@ interface: they are only ever appended to, never renumbered or reused.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-04
+
+### Changed
+- `soroban-sdk` 27 → 28. Its build script now requires the stellar-cli
+  toolchain, so contract Wasm is built with `stellar contract build`
+  (stellar-cli ≥ 25.2) in CI, the release workflow, and the deploy script
+  instead of plain `cargo build --target wasm32v1-none`. Artifact name and
+  location are unchanged.
+- Frontend upgraded to Next.js 16 and `eslint-config-next` 16; linting
+  moved to ESLint flat config (`eslint.config.mjs`) since Next 16 removes
+  `next lint`. ESLint stays on the 9.x line (10 is incompatible with the
+  current plugin chain).
+- `@stellar/stellar-sdk` 14 → 17 and `@stellar/freighter-api` 4 → 6 —
+  verified against the app's RPC and signing call sites.
+- CI actions bumped (checkout v7, setup-node v7, action-gh-release v3).
+
+### Fixed
+- `deny.toml` rewritten against the cargo-deny 0.20 schema (the previous
+  file failed to parse, so the gate never actually ran); the `paste`
+  "unmaintained" advisory is ignored with written justification and the
+  redundant cargo-audit step removed in favor of cargo-deny as the single
+  advisory gate.
+- Dependency audit CI now covers production dependencies
+  (`npm audit --omit=dev --audit-level=high`); `postcss` and `toml` are
+  pinned to patched versions via npm `overrides` to clear the two high
+  advisories reachable through `next` and `@stellar/stellar-sdk`.
+
 ## [0.2.0] - 2026-10-04
 
 ### Added
@@ -52,6 +79,7 @@ adopted (no `v0.1.0` tag exists; tagging begins with `v0.2.0`).
 - Docs: README, ARCHITECTURE.md, GOOD_FIRST_ISSUES.md, CONTRIBUTING.md,
   SECURITY.md. Apache-2.0.
 
-[Unreleased]: https://github.com/Neziahtech/streampay/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Neziahtech/streampay/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Neziahtech/streampay/releases/tag/v0.3.0
 [0.2.0]: https://github.com/Neziahtech/streampay/releases/tag/v0.2.0
 [0.1.0]: https://github.com/Neziahtech/streampay/releases
