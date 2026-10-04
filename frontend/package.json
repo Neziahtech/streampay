@@ -7,16 +7,13 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint",
+    "lint": "eslint .",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@stellar/freighter-api": "^4.1.0",
-    "@stellar/stellar-sdk": "^14.0.0",
-    "next": "^16.3.8",
     "@stellar/freighter-api": "^6.0.1",
     "@stellar/stellar-sdk": "^17.2.1",
-    "next": "^15.1.6",
+    "next": "^16.3.8",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
@@ -24,8 +21,8 @@
     "@types/node": "^26.6.3",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
-    "eslint": "^8.57.1",
-    "eslint-config-next": "^15.1.6",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^16.3.8",
     "typescript": "^5.7.0"
   },
   "overrides": {

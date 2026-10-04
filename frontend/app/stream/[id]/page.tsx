@@ -42,7 +42,9 @@ export default function StreamDetail() {
   }, [id]);
 
   useEffect(() => {
-    void reload();
+    void (async () => {
+      await reload();
+    })();
     const t = setInterval(() => void reload(), 15_000); // live accrual
     return () => clearInterval(t);
   }, [reload]);
