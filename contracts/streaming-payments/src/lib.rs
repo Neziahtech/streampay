@@ -52,18 +52,6 @@ pub struct StreamingPayments;
 
 #[contractimpl]
 impl StreamingPayments {
-    /// Deliberate bloat demonstration function to test CI wasm diffing.
-    #[inline(never)]
-    pub fn __bloat_demo_test(input: u64) -> u64 {
-        let mut val = input;
-        for i in 0..500 {
-            val = val.wrapping_mul(6364136223846793005).wrapping_add(i as u64);
-            val ^= val >> 17;
-            val ^= val << 31;
-        }
-        val
-    }
-
     /// Creates a linear payment stream and pulls `deposit_amount` of `token`
     /// from `sender` into this contract.
     ///
