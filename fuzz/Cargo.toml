@@ -19,3 +19,10 @@ path = "fuzz_targets/streamed_at.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "dispute_bond"
+path = "fuzz_targets/dispute_bond.rs"
+test = false
+doc = false
+bench = false

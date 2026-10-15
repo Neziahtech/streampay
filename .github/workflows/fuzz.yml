@@ -1,8 +1,9 @@
 name: Fuzz
 
-# Coverage-guided fuzzing of the pure accrual math. Scheduled and manual only;
-# `continue-on-error` keeps a found crash from blocking unrelated PRs — crashes
-# must become regression tests (see docs/GOOD_FIRST_ISSUES.md #4).
+# Coverage-guided fuzzing of the pure accrual and dispute-bond math.
+# Scheduled and manual only; `continue-on-error` keeps a found crash from
+# blocking unrelated PRs — crashes must become regression tests (see
+# docs/GOOD_FIRST_ISSUES.md #4).
 
 on:
   schedule:
@@ -18,10 +19,14 @@ permissions:
   contents: read
 
 jobs:
-  streamed_at:
-    name: fuzz streamed_at
+  fuzz:
+    name: fuzz ${{ matrix.target }}
     runs-on: ubuntu-latest
     continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [streamed_at, dispute_bond]
     steps:
       - uses: actions/checkout@v7
 
@@ -33,6 +38,6 @@ jobs:
       - name: Run fuzz session
         working-directory: fuzz
         run: |
-          cargo +nightly fuzz run streamed_at -- \
+          cargo +nightly fuzz run ${{ matrix.target }} -- \
             -max_total_time=${{ github.event.inputs.max_total_time || '60' }} \
             -rss_limit_mb=4096
