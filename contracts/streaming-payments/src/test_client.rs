@@ -27,6 +27,19 @@ pub trait StreamingPaymentsApi {
         end_time: u64,
         cancelable: bool,
     ) -> Result<u64, StreamError>;
+    #[allow(clippy::too_many_arguments)]
+    fn create_stream_vested(
+        env: Env,
+        sender: Address,
+        recipient: Address,
+        token: Address,
+        deposit_amount: i128,
+        start_time: u64,
+        end_time: u64,
+        cancelable: bool,
+        schedule: crate::Schedule,
+    ) -> Result<u64, StreamError>;
+    fn get_schedule(env: Env, stream_id: u64) -> Result<Option<crate::Schedule>, StreamError>;
     fn withdraw(env: Env, stream_id: u64, amount: i128) -> Result<(), StreamError>;
     fn withdraw_max(env: Env, stream_id: u64) -> Result<i128, StreamError>;
     fn cancel_stream(env: Env, caller: Address, stream_id: u64) -> Result<(), StreamError>;

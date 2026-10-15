@@ -26,6 +26,26 @@ use crate::{StreamError, MAX_DURATION_SECONDS, MAX_FEE_BPS};
 const DAY: u64 = 24 * 60 * 60;
 const DEPOSIT: i128 = 10_000_000_000;
 
+/// Builds the simplest valid [`crate::Schedule`]: one step covering the full
+/// window at 100 % (10_000 bps), with `cliff_time` set as given.
+fn make_single_step_schedule(
+    env: &soroban_sdk::Env,
+    start: u64,
+    end: u64,
+    cliff: u64,
+) -> crate::Schedule {
+    let _ = end; // end is validated at creation, not stored in the step
+    let mut steps = soroban_sdk::Vec::new(env);
+    steps.push_back(crate::VestingStep {
+        time: start,
+        rate_bps: 10_000,
+    });
+    crate::Schedule {
+        cliff_time: cliff,
+        steps,
+    }
+}
+
 /// Unwraps the contract's rejection into its `StreamError`.
 macro_rules! rejected {
     ($call:expr) => {
@@ -228,6 +248,55 @@ fn probe(branch: Branch) -> Option<StreamError> {
                 &1,
             )))
         }
+        Branch::WithdrawBeforeCliff => {
+            let f = Fixture::setup_quiet();
+            let now = f.env.ledger().timestamp();
+            // cliff_time = start + 5 days, but we try to withdraw at start + 1 day.
+            let start = now;
+            let end = now + 10 * DAY;
+            let cliff = now + 5 * DAY;
+            let schedule = make_single_step_schedule(&f.env, start, end, cliff);
+            let id = f
+                .client
+                .mock_all_auths()
+                .create_stream_vested(
+                    &f.sender,
+                    &f.recipient,
+                    &f.token,
+                    &DEPOSIT,
+                    &start,
+                    &end,
+                    &false,
+                    &schedule,
+                )
+                .unwrap();
+            f.advance_time(DAY); // 1 day elapsed, but cliff is at 5 days
+            Some(rejected!(f.client.mock_all_auths().try_available(&id)))
+        }
+        Branch::CreateInvalidSchedule => {
+            let f = Fixture::setup_quiet();
+            let now = f.env.ledger().timestamp();
+            // Steps sum to only 5_000 bps instead of 10_000.
+            let mut steps = soroban_sdk::Vec::new(&f.env);
+            steps.push_back(crate::VestingStep {
+                time: now + DAY,
+                rate_bps: 5_000,
+            });
+            let schedule = crate::Schedule {
+                cliff_time: now + DAY,
+                steps,
+            };
+            Some(rejected!(f.client.mock_all_auths().try_create_stream_vested(
+                &f.sender,
+                &f.recipient,
+                &f.token,
+                &DEPOSIT,
+                &(now + DAY),
+                &(now + 10 * DAY),
+                &false,
+                &schedule,
+            )))
+        }
         // Invariant-protected: a stored stream always satisfies
         // `0 <= withdrawn <= streamed <= deposit <= i128::MAX`, so these
         // checked subtractions/addition can never cross an i128 boundary —
@@ -359,7 +428,9 @@ fn stream_error_variant_list_is_exhaustive() {
             | StreamError::FeeRateTooHigh
             | StreamError::NotGovernor
             | StreamError::NoPendingGovernor
-            | StreamError::InsufficientTreasuryBalance => StreamError::ALL.contains(&e),
+            | StreamError::InsufficientTreasuryBalance
+            | StreamError::CliffNotReached
+            | StreamError::InvalidSchedule => StreamError::ALL.contains(&e),
         }
     }
 

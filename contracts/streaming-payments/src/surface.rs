@@ -86,13 +86,18 @@ pub enum Branch {
     /// `withdraw_treasury`: amount exceeds fees collected minus fees already
     /// withdrawn.
     WithdrawTreasuryExceedsBalance,
+    // ----------------------------------------------------------- schedule
+    /// `withdraw` / `withdraw_max` / `available`: called before `cliff_time`.
+    WithdrawBeforeCliff,
+    /// `create_stream_vested`: the schedule is structurally invalid.
+    CreateInvalidSchedule,
 }
 
 impl Branch {
     /// Every branch, in declaration order. The matrix test walks this list and
     /// the coverage test requires each [`StreamError`] variant to be produced by
     /// one of these (or retired).
-    pub const ALL: [Branch; 24] = [
+    pub const ALL: [Branch; 26] = [
         Branch::CreateDepositNonPositive,
         Branch::CreateStartTimeInPast,
         Branch::CreateInvalidTimeRange,
@@ -117,6 +122,8 @@ impl Branch {
         Branch::AcceptGovernorNotNominee,
         Branch::WithdrawTreasuryAmountNonPositive,
         Branch::WithdrawTreasuryExceedsBalance,
+        Branch::WithdrawBeforeCliff,
+        Branch::CreateInvalidSchedule,
     ];
 
     /// The entrypoint(s) through which this branch can fire. Shared helpers
@@ -127,7 +134,7 @@ impl Branch {
             Branch::CreateDepositNonPositive
             | Branch::CreateStartTimeInPast
             | Branch::CreateInvalidTimeRange
-            | Branch::CreateDurationTooLong => &["create_stream"],
+            | Branch::CreateDurationTooLong => &["create_stream", "create_stream_vested"],
             Branch::WithdrawAmountNonPositive | Branch::WithdrawAmountExceedsAvailable => {
                 &["withdraw"]
             }
@@ -138,6 +145,7 @@ impl Branch {
             Branch::TopUpAmountNonPositive | Branch::TopUpDepositOverflow => &["top_up"],
             Branch::StreamNotFound => &[
                 "get_stream",
+                "get_schedule",
                 "available",
                 "withdraw",
                 "withdraw_max",
@@ -145,7 +153,7 @@ impl Branch {
                 "top_up",
             ],
             Branch::StreamNotActive => &["withdraw", "withdraw_max", "cancel_stream", "top_up"],
-            Branch::CapacityOverflow => &["create_stream", "top_up"],
+            Branch::CapacityOverflow => &["create_stream", "create_stream_vested", "top_up"],
             Branch::RateProductOverflow => &[
                 "streamed_at",
                 "available",
@@ -166,6 +174,8 @@ impl Branch {
             Branch::WithdrawTreasuryAmountNonPositive | Branch::WithdrawTreasuryExceedsBalance => {
                 &["withdraw_treasury"]
             }
+            Branch::WithdrawBeforeCliff => &["available", "withdraw", "withdraw_max"],
+            Branch::CreateInvalidSchedule => &["create_stream_vested"],
         }
     }
 
@@ -199,6 +209,8 @@ impl Branch {
             Branch::AcceptGovernorNoPending => StreamError::NoPendingGovernor,
             Branch::WithdrawTreasuryAmountNonPositive => StreamError::ZeroAmount,
             Branch::WithdrawTreasuryExceedsBalance => StreamError::InsufficientTreasuryBalance,
+            Branch::WithdrawBeforeCliff => StreamError::CliffNotReached,
+            Branch::CreateInvalidSchedule => StreamError::InvalidSchedule,
         }
     }
 
@@ -245,6 +257,12 @@ impl Branch {
             Branch::WithdrawTreasuryExceedsBalance => {
                 "amount exceeds fees collected minus fees already withdrawn"
             }
+            Branch::WithdrawBeforeCliff => {
+                "current time is before the stream's cliff_time; nothing is claimable yet"
+            }
+            Branch::CreateInvalidSchedule => {
+                "schedule steps are empty, unsorted, out of bounds, or rates do not sum to 10_000 bps"
+            }
         }
     }
 
@@ -262,7 +280,29 @@ impl Branch {
             Branch::PayoutOverflow
             | Branch::AvailableBalanceOverflow
             | Branch::CancelSplitOverflow => Reachability::Defensive,
-            _ => Reachability::Reachable,
+            Branch::CreateDepositNonPositive
+            | Branch::CreateStartTimeInPast
+            | Branch::CreateInvalidTimeRange
+            | Branch::CreateDurationTooLong
+            | Branch::WithdrawAmountNonPositive
+            | Branch::WithdrawAmountExceedsAvailable
+            | Branch::WithdrawMaxNothingToWithdraw
+            | Branch::CancelStreamNotCancellable
+            | Branch::CancelStreamNotAuthorized
+            | Branch::TopUpAmountNonPositive
+            | Branch::TopUpDepositOverflow
+            | Branch::StreamNotFound
+            | Branch::StreamNotActive
+            | Branch::CapacityOverflow
+            | Branch::RateProductOverflow
+            | Branch::SetFeeRateTooHigh
+            | Branch::GovernorNotAllowed
+            | Branch::AcceptGovernorNoPending
+            | Branch::AcceptGovernorNotNominee
+            | Branch::WithdrawTreasuryAmountNonPositive
+            | Branch::WithdrawTreasuryExceedsBalance
+            | Branch::WithdrawBeforeCliff
+            | Branch::CreateInvalidSchedule => Reachability::Reachable,
         }
     }
 }

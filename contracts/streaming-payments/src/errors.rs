@@ -61,6 +61,13 @@ pub enum StreamError {
     /// A treasury withdrawal exceeds the fees collected minus fees already
     /// withdrawn for that token.
     InsufficientTreasuryBalance = 17,
+    /// A withdrawal or `withdraw_max` was attempted before the stream's cliff
+    /// time has been reached; nothing is claimable yet.
+    CliffNotReached = 18,
+    /// The vesting schedule passed to `create_stream_vested` is invalid:
+    /// steps are empty, not sorted, extend past `end_time`, or their rates
+    /// do not sum to exactly `10_000` bps (100 % of the deposit).
+    InvalidSchedule = 19,
 }
 
 impl StreamError {
@@ -85,6 +92,8 @@ impl StreamError {
         StreamError::NotGovernor,
         StreamError::NoPendingGovernor,
         StreamError::InsufficientTreasuryBalance,
+        StreamError::CliffNotReached,
+        StreamError::InvalidSchedule,
     ];
 
     /// The stable numeric value carried across the contract boundary

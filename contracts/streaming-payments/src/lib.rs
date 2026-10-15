@@ -57,11 +57,15 @@ use surface::Branch;
 
 pub use errors::StreamError;
 pub use events::{
-    FeeCharged, FeeWithdrawn, StreamCancelled, StreamCreated, StreamToppedUp, Withdrawn,
+    FeeCharged, FeeWithdrawn, StreamCancelled, StreamCreated, StreamCreatedVested, StreamToppedUp,
+    Withdrawn,
 };
-// `streamed_at` is re-exported for the fuzz target and downstream rate
-// calculators: it is a pure function requiring no `Env`.
-pub use stream::{streamed_at, Stream, StreamStatus, MAX_DURATION_SECONDS, MAX_PAGE_SIZE};
+// `streamed_at` and `scheduled_vested_at` are re-exported for the fuzz target
+// and downstream rate calculators: both are pure functions requiring no `Env`.
+pub use stream::{
+    scheduled_vested_at, streamed_at, Schedule, Stream, StreamStatus, VestingStep,
+    MAX_DURATION_SECONDS, MAX_PAGE_SIZE,
+};
 pub use treasury::{fee_amount, FeeScan, Treasury, TreasuryStatus, BPS_DENOMINATOR, MAX_FEE_BPS};
 
 /// The StreamPay streaming-payments contract.
@@ -202,6 +206,121 @@ impl StreamingPayments {
         }
 
         Ok(id)
+    }
+
+    /// Creates a linear payment stream with an optional cliff and piecewise
+    /// vesting schedule, then pulls `deposit_amount` of `token` from `sender`.
+    ///
+    /// All the same preconditions as [`create_stream`] apply. Additionally:
+    ///
+    /// * `schedule.steps` must be non-empty, sorted in strict ascending
+    ///   `time` order, anchored at `start_time`, stay within `[start_time,
+    ///   end_time)`, and their `rate_bps` values must sum to exactly `10_000`.
+    /// * `schedule.cliff_time` must be in `[start_time, end_time]`.
+    ///
+    /// The deposit is funded in full up-front exactly as with `create_stream`.
+    /// The cliff only gates *withdrawals* — cancellation splits are always
+    /// based on the vested amount at the time of cancellation regardless of
+    /// cliff.
+    ///
+    /// Returns the new stream id.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_stream_vested(
+        env: Env,
+        sender: Address,
+        recipient: Address,
+        token: Address,
+        deposit_amount: i128,
+        start_time: u64,
+        end_time: u64,
+        cancelable: bool,
+        schedule: Schedule,
+    ) -> Result<u64, StreamError> {
+        sender.require_auth();
+
+        if deposit_amount <= 0 {
+            return Err(surface::reject(Branch::CreateDepositNonPositive));
+        }
+        let now = env.ledger().timestamp();
+        if start_time < now {
+            return Err(surface::reject(Branch::CreateStartTimeInPast));
+        }
+        if end_time <= start_time {
+            return Err(surface::reject(Branch::CreateInvalidTimeRange));
+        }
+        let duration = end_time - start_time;
+        if duration > MAX_DURATION_SECONDS {
+            return Err(surface::reject(Branch::CreateDurationTooLong));
+        }
+        stream::validate_capacity(deposit_amount, duration)?;
+        stream::validate_schedule(&schedule, start_time, end_time)?;
+
+        let fee_bps = treasury::current_fee_bps(&env);
+        let fee = treasury::fee_amount(deposit_amount, fee_bps)?;
+        let pull_amount = deposit_amount
+            .checked_add(fee)
+            .ok_or(StreamError::MathOverflow)?;
+
+        TokenClient::new(&env, &token).transfer_from(
+            &env.current_contract_address(),
+            &sender,
+            &env.current_contract_address(),
+            &pull_amount,
+        );
+
+        let id = stream::next_stream_id(&env);
+        let s = Stream {
+            id,
+            sender: sender.clone(),
+            recipient: recipient.clone(),
+            token: token.clone(),
+            deposit: deposit_amount,
+            withdrawn: 0,
+            start_time,
+            end_time,
+            cancelable,
+            status: StreamStatus::Active,
+        };
+        stream::put_stream(&env, &s);
+        stream::put_schedule(&env, id, &schedule);
+        stream::index_stream(&env, &s);
+        if fee > 0 {
+            treasury::apply_fee(&env, &token, id, fee)?;
+        }
+
+        StreamCreatedVested {
+            stream_id: id,
+            sender,
+            recipient,
+            token,
+            deposit: deposit_amount,
+            start_time,
+            end_time,
+            cancelable,
+            cliff_time: schedule.cliff_time,
+        }
+        .publish(&env);
+
+        if fee > 0 {
+            FeeCharged {
+                stream_id: id,
+                token: s.token.clone(),
+                payer: s.sender.clone(),
+                amount: fee,
+                fee_bps,
+            }
+            .publish(&env);
+        }
+
+        Ok(id)
+    }
+
+    /// Read-only view of the vesting schedule attached to a stream, if any.
+    /// Returns `None` for plain linear streams created with `create_stream`.
+    /// Reverts with [`StreamError::StreamNotFound`] for unknown ids.
+    pub fn get_schedule(env: Env, stream_id: u64) -> Result<Option<Schedule>, StreamError> {
+        stream::get_stream(&env, stream_id)?;
+        Ok(stream::get_schedule(&env, stream_id))
     }
 
     /// Withdraws up to `amount` of the accrued-but-unwithdrawn balance and
