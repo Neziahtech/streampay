@@ -31,17 +31,31 @@ const DAY: u64 = 24 * 60 * 60;
 /// 1000 tokens with 7 decimals (default for SAC-issued assets in tests).
 const DEPOSIT: i128 = 10_000_000_000;
 
-struct Fixture {
-    env: Env,
-    token: Address,
-    client: Client<'static>,
-    sender: Address,
-    recipient: Address,
+pub(crate) struct Fixture {
+    pub(crate) env: Env,
+    pub(crate) token: Address,
+    pub(crate) client: Client<'static>,
+    pub(crate) sender: Address,
+    pub(crate) recipient: Address,
 }
 
 impl Fixture {
-    fn setup() -> Self {
-        let env = Env::default();
+    pub(crate) fn setup() -> Self {
+        Self::setup_with_snapshot(true)
+    }
+
+    /// Like [`Fixture::setup`], but disables the SDK's test-snapshot capture.
+    /// The error-surface matrix asserts through the branch trace, so a snapshot
+    /// file per probe would be pure noise.
+    pub(crate) fn setup_quiet() -> Self {
+        Self::setup_with_snapshot(false)
+    }
+
+    fn setup_with_snapshot(capture_snapshots: bool) -> Self {
+        let mut env = Env::default();
+        env.set_config(soroban_sdk::testutils::EnvTestConfig {
+            capture_snapshot_at_drop: capture_snapshots,
+        });
         env.mock_all_auths();
         let sac = env.register_stellar_asset_contract_v2(Address::generate(&env));
         let token = sac.address();
@@ -74,7 +88,13 @@ impl Fixture {
 
     /// Creates a stream starting `start_in` seconds from now, lasting
     /// `duration` seconds, with the given deposit and cancelability.
-    fn create_stream(&self, deposit: i128, start_in: u64, duration: u64, cancelable: bool) -> u64 {
+    pub(crate) fn create_stream(
+        &self,
+        deposit: i128,
+        start_in: u64,
+        duration: u64,
+        cancelable: bool,
+    ) -> u64 {
         let now = self.env.ledger().timestamp();
         self.client.mock_all_auths().create_stream(
             &self.sender,
@@ -87,7 +107,7 @@ impl Fixture {
         )
     }
 
-    fn advance_time(&self, seconds: u64) {
+    pub(crate) fn advance_time(&self, seconds: u64) {
         self.env.ledger().with_mut(|li| li.timestamp += seconds);
     }
 }

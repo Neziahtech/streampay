@@ -44,9 +44,15 @@
 //!   recipient can always withdraw accrued funds, dispute or not.
 
 mod dispute;
+#[cfg(test)]
+extern crate std;
+
+#[cfg(test)]
+mod error_surface_test;
 mod errors;
 mod events;
 mod stream;
+pub mod surface;
 #[cfg(test)]
 mod test;
 #[cfg(test)]
@@ -58,6 +64,8 @@ pub use dispute::{
     bond_shares, required_bond, Dispute, DISPUTE_BOND_BPS, DISPUTE_TIMEOUT_SECONDS,
     MIN_DISPUTE_BOND,
 };
+use surface::Branch;
+
 pub use errors::StreamError;
 pub use events::{
     DisputeExpired, DisputeRaised, DisputeResolved, StreamCancelled, StreamCreated, StreamToppedUp,
@@ -101,18 +109,18 @@ impl StreamingPayments {
         sender.require_auth();
 
         if deposit_amount <= 0 {
-            return Err(StreamError::ZeroAmount);
+            return Err(surface::reject(Branch::CreateDepositNonPositive));
         }
         let now = env.ledger().timestamp();
         if start_time < now {
-            return Err(StreamError::StartTimeInPast);
+            return Err(surface::reject(Branch::CreateStartTimeInPast));
         }
         if end_time <= start_time {
-            return Err(StreamError::InvalidTimeRange);
+            return Err(surface::reject(Branch::CreateInvalidTimeRange));
         }
         let duration = end_time - start_time;
         if duration > MAX_DURATION_SECONDS {
-            return Err(StreamError::DurationTooLong);
+            return Err(surface::reject(Branch::CreateDurationTooLong));
         }
         stream::validate_capacity(deposit_amount, duration)?;
 
@@ -165,13 +173,13 @@ impl StreamingPayments {
     /// accrued, at or after `end_time` the full remainder is available.
     pub fn withdraw(env: Env, stream_id: u64, amount: i128) -> Result<(), StreamError> {
         if amount <= 0 {
-            return Err(StreamError::ZeroAmount);
+            return Err(surface::reject(Branch::WithdrawAmountNonPositive));
         }
         let mut s = Self::authorize_withdrawal(&env, stream_id)?;
 
         let available = stream::available_amount(&env, &s)?;
         if amount > available {
-            return Err(StreamError::AmountExceedsAvailable);
+            return Err(surface::reject(Branch::WithdrawAmountExceedsAvailable));
         }
 
         Self::pay_out(&env, &mut s, amount)
@@ -191,7 +199,7 @@ impl StreamingPayments {
 
         let amount = stream::available_amount(&env, &s)?;
         if amount <= 0 {
-            return Err(StreamError::NothingToWithdraw);
+            return Err(surface::reject(Branch::WithdrawMaxNothingToWithdraw));
         }
 
         Self::pay_out(&env, &mut s, amount)?;
@@ -204,7 +212,7 @@ impl StreamingPayments {
         let s = stream::get_stream(env, stream_id)?;
         s.recipient.require_auth();
         if s.status != StreamStatus::Active {
-            return Err(StreamError::StreamNotActive);
+            return Err(surface::reject(Branch::StreamNotActive));
         }
         Ok(s)
     }
@@ -216,7 +224,7 @@ impl StreamingPayments {
         s.withdrawn = s
             .withdrawn
             .checked_add(amount)
-            .ok_or(StreamError::MathOverflow)?;
+            .ok_or_else(|| surface::reject(Branch::PayoutOverflow))?;
         if s.withdrawn == s.deposit {
             s.status = StreamStatus::Depleted;
         }
@@ -252,7 +260,7 @@ impl StreamingPayments {
 
         let mut s = stream::get_stream(&env, stream_id)?;
         if s.status != StreamStatus::Active {
-            return Err(StreamError::StreamNotActive);
+            return Err(surface::reject(Branch::StreamNotActive));
         }
         if dispute::get_dispute_opt(&env, stream_id).is_some() {
             return Err(StreamError::DisputeActive);
@@ -260,10 +268,10 @@ impl StreamingPayments {
         if caller != s.sender {
             if caller == s.recipient {
                 if !s.cancelable {
-                    return Err(StreamError::StreamNotCancellable);
+                    return Err(surface::reject(Branch::CancelStreamNotCancellable));
                 }
             } else {
-                return Err(StreamError::NotAuthorized);
+                return Err(surface::reject(Branch::CancelStreamNotAuthorized));
             }
         }
 
@@ -274,7 +282,7 @@ impl StreamingPayments {
         s.withdrawn = s
             .withdrawn
             .checked_add(recipient_amount)
-            .ok_or(StreamError::MathOverflow)?;
+            .ok_or_else(|| surface::reject(Branch::CancelSplitOverflow))?;
         stream::put_stream(&env, &s);
 
         StreamCancelled {
@@ -319,11 +327,11 @@ impl StreamingPayments {
     /// `docs/ARCHITECTURE.md` for the design considerations and roadmap.
     pub fn top_up(env: Env, stream_id: u64, amount: i128) -> Result<(), StreamError> {
         if amount <= 0 {
-            return Err(StreamError::ZeroAmount);
+            return Err(surface::reject(Branch::TopUpAmountNonPositive));
         }
         let mut s = stream::get_stream(&env, stream_id)?;
         if s.status != StreamStatus::Active {
-            return Err(StreamError::StreamNotActive);
+            return Err(surface::reject(Branch::StreamNotActive));
         }
         s.sender.require_auth();
         if dispute::get_dispute_opt(&env, stream_id).is_some() {
@@ -333,7 +341,7 @@ impl StreamingPayments {
         let new_deposit = s
             .deposit
             .checked_add(amount)
-            .ok_or(StreamError::MathOverflow)?;
+            .ok_or_else(|| surface::reject(Branch::TopUpDepositOverflow))?;
         stream::validate_capacity(new_deposit, s.duration())?;
 
         // Interaction: pull the added funds from the sender.
