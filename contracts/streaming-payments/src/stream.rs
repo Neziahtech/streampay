@@ -27,8 +27,8 @@ pub const MAX_PAGE_SIZE: u32 = 50;
 /// eventually archived off-chain (and auto-restored at a fee when next read).
 /// Every mutating entrypoint extends the stream entry's TTL, so a stream that
 /// is actually being used never goes cold.
-const TTL_THRESHOLD_LEDGERS: u32 = 200_000; // extend when TTL drops below ~11.5 days
-const TTL_EXTEND_LEDGERS: u32 = 500_000; // extend to ~29 days
+pub(crate) const TTL_THRESHOLD_LEDGERS: u32 = 200_000; // extend when TTL drops below ~11.5 days
+pub(crate) const TTL_EXTEND_LEDGERS: u32 = 500_000; // extend to ~29 days
 
 /// Lifecycle state of a stream.
 #[contracttype]
@@ -84,6 +84,21 @@ pub enum DataKey {
     /// Append-only index of stream ids created (as sender) by the given
     /// address. Same advisory semantics as [`DataKey::RecipientStreams`].
     SenderStreams(Address),
+    /// Treasury governor address (instance storage; set once by the
+    /// contract constructor, later by two-step nomination/acceptance).
+    Governor,
+    /// Pending governor nominee (instance storage; set by
+    /// `nominate_governor`, cleared by `accept_governor`).
+    PendingGovernor,
+    /// Configured protocol fee in basis points (instance storage; absent
+    /// means 0 — fees disabled, the v0.3 behavior).
+    FeeBps,
+    /// Per-token fee accounting: fees charged minus fees withdrawn
+    /// (persistent storage; written only by fee-affecting entrypoints).
+    Treasury(Address),
+    /// Fee charged for one stream at creation time (persistent storage;
+    /// written only when the fee rounds above zero, so absent == 0).
+    StreamFee(u64),
 }
 
 /// Seconds elapsed of the stream window at the current ledger time.
