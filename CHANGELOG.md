@@ -9,6 +9,20 @@ interface: they are only ever appended to, never renumbered or reused.
 
 ## [Unreleased]
 
+### Added
+- Recipient-initiated dispute flow (#55): `raise_dispute` (bonded flag that
+  freezes `cancel_stream`/`top_up` for a 7-day timelock), sender-only
+  `resolve_dispute` (accept: bond refunded + pro-rata unwind; reject: bond
+  slashed to the sender, stream resumes), permissionless `expire_dispute`
+  (bond split 50/50, stream resumes), plus `get_dispute` /
+  `required_dispute_bond` views. Anti-griefing bond = 5% of the deposit
+  scaling linearly per dispute round on the stream; accrued withdrawals and
+  accrual are never frozen. New events `DisputeRaised` / `DisputeResolved` /
+  `DisputeExpired`; new `StreamError` codes 14–16 (append-only). Covered by
+  unit/property tests (incl. the locks-plus-outstanding-bonds balance
+  invariant) and a new `dispute_bond` fuzz target. `docs/ARCHITECTURE.md` §8
+  documents the freeze policy and griefing-threshold math.
+
 ## [0.3.0] - 2026-10-04
 
 ### Changed

@@ -11,12 +11,16 @@ reentrancy, TTL strategy, and the design decisions behind the v1 API. Read the
 │                        StreamingPayments                           │
 │                                                                    │
 │  lib.rs      entrypoints: create_stream / withdraw / withdraw_max / │
-│              cancel_stream / top_up / get_stream / available /      │
+│              cancel_stream / top_up / raise_dispute /              │
+│              resolve_dispute / expire_dispute / get_stream /       │
+│              available / get_dispute / required_dispute_bond /     │
 │              recipient_streams / sender_streams                    │
 │  stream.rs   Stream type, storage, checked accrual math            │
+│  dispute.rs  Dispute state, escalating bond math, expiry split     │
 │  errors.rs   StreamError — stable numeric codes, append-only       │
 │  events.rs   StreamCreated / Withdrawn / StreamCancelled /         │
-│              StreamToppedUp (stream_id as topic)                   │
+│              StreamToppedUp / DisputeRaised / DisputeResolved /    │
+│              DisputeExpired (stream_id as topic)                   │
 └──────────────────────────┬─────────────────────────────────────────┘
                            │ token interface (SAC-compatible)
                            ▼
@@ -31,6 +35,8 @@ reentrancy, TTL strategy, and the design decisions behind the v1 API. Read the
 | `DataKey::Stream(id)` | `Stream` | full per-stream state |
 | `DataKey::RecipientStreams(addr)` | `Vec<u64>` | append-only ids where `addr` receives |
 | `DataKey::SenderStreams(addr)` | `Vec<u64>` | append-only ids created by `addr` |
+| `DisputeKey::Active(id)` | `Dispute` | the open dispute on `id` (bond, window) — its presence *is* the freeze flag |
+| `DisputeKey::Count(id)` | `u32` | disputes ever raised on `id`; persists across resolution, drives the escalating bond |
 
 Streams live in **persistent** storage. Every mutating entrypoint that touches
 a stream extends its TTL (`TTL_THRESHOLD_LEDGERS = 200_000`, extend to
@@ -123,10 +129,22 @@ callback finds `withdrawn` already updated, and `available_amount` reverts to
 the *post-write* (smaller or zero) value. The suite contains a
 malicious-token test that attempts exactly this reentry.
 
+The dispute paths follow the same ordering: `resolve_dispute` deletes the
+`Dispute` entry and (on accept) finalizes the `Stream` **before** any of the
+bond/settlement transfers; `expire_dispute` deletes the entry before paying
+the split. A reentrant token callback during a bond transfer therefore never
+sees a half-closed dispute — and the freeze checks in `cancel_stream` /
+`top_up` re-read the dispute entry rather than trusting a caller-supplied
+state.
+
 **Balance invariant:** the contract's token balance is always
-`≥ Σ (deposit − withdrawn)` across live streams. Funds enter only via
-`create_stream`/`top_up` and leave only via `withdraw`/`cancel_stream`, and
-every exit is bounded by the invariant `0 ≤ withdrawn ≤ streamed ≤ deposit`.
+`≥ Σ (deposit − withdrawn)` across live (non-cancelled) streams, **plus the
+sum of the outstanding dispute bonds**. Funds enter only via
+`create_stream`/`top_up`/`raise_dispute` and leave only via
+`withdraw`/`cancel_stream`/`resolve_dispute`/`expire_dispute`, and every exit
+is bounded by the invariant `0 ≤ withdrawn ≤ streamed ≤ deposit`. A random
+scenario property test re-checks this exact equality after every operation
+(`property_contract_balance_equals_locks_plus_outstanding_bonds`).
 
 ## 6. Lifecycle states
 
@@ -150,6 +168,27 @@ every exit is bounded by the invariant `0 ≤ withdrawn ≤ streamed ≤ deposit
 - Cancelling a not-yet-started stream is a 100 % refund to the sender.
 - `top_up` on a cancelled/depleted stream reverts.
 
+### Disputed: an overlay, not a status
+
+A dispute never changes `StreamStatus`. It is an orthogonal *overlay* — the
+existence of a `DisputeKey::Active(id)` entry — layered on top of `Active`:
+
+```text
+ Active ──raise_dispute(bond)──▶ Active + Dispute ──resolve(accept=false)──▶ Active (bond → sender)
+    │                                 │     │
+    │                                 │     ├─resolve(accept=true)──▶ Cancelled (pro-rata unwind,
+    │                                 │     │                         bond → recipient)
+    │                                 │     └─expire_dispute (after 7 d)──▶ Active
+    │                                 │                                    (bond split 50/50)
+    │                                 └── withdraw / accrual keep working ──▶ (possibly Depleted)
+```
+
+While disputed: `cancel_stream` and `top_up` revert with `DisputeActive`;
+`withdraw`, `withdraw_max`, and accrual are unaffected. A stream *can* reach
+`Depleted` underneath an open dispute (the recipient withdrew everything);
+resolution then only settles the bond. `Depleted` and `Cancelled` streams can
+never be disputed (`StreamNotActive`).
+
 ## 7. Error surface
 
 `StreamError` variants carry explicit numeric codes (`contracterror`), part of
@@ -169,6 +208,9 @@ the public interface:
 | 11 | `MathOverflow` | a checked computation would overflow |
 | 12 | `NotAuthorized` | caller is neither sender nor (cancelable) recipient |
 | 13 | `NothingToWithdraw` | `withdraw_max` with an empty accrued balance |
+| 14 | `DisputeActive` | cancel/top-up attempted while a dispute is open (also: second `raise_dispute`) |
+| 15 | `DisputeNotFound` | resolve/expire/get a stream without an open dispute |
+| 16 | `DisputeNotExpired` | `expire_dispute` called before the timelock elapsed |
 
 Codes are **append-only**: never renumber or reuse a variant.
 
@@ -202,6 +244,62 @@ entry itself.
 Simplicity is a security feature; richer flows belong in composing contracts
 or off-chain UX.
 
+**Recipient-initiated disputes: freeze the lifecycle, never the earnings.**
+The recipient can flag an active stream (wrong address, coerced creation),
+which freezes `cancel_stream` and `top_up` for up to one timelock window.
+What the freeze *excludes* is deliberate: accrual keeps running and the
+recipient keeps full access to `withdraw` / `withdraw_max`. Reasoning — (a)
+accrued funds are property the recipient already earned by the stream's own
+rules; seizing them during a dispute the recipient initiated would punish
+the party we are trying to protect, and would make "coerced creation"
+strictly worse for the victim; (b) the dispute is a *hold on mutations*, not
+a clawback: the sender's funds keep flowing exactly as scheduled, so nothing
+about the stream's economics changes while the parties sort things out; (c)
+freezing withdrawals would also freeze the only action a disputed recipient
+can use to mitigate harm. A dispute is stored as a separate `Dispute` entry
+rather than a fourth `StreamStatus`, which keeps existing stream
+serialization stable and makes the withdraw path provably untouched.
+
+**Disputes are economically bounded, never free.** A free flag lets a
+recipient grief any sender — so raising pulls a bond via `transfer_from`:
+`bondₙ = max(1 unit, 5 % of deposit × n)`, where `n` is the dispute count on
+*that stream* (persisted in `DisputeKey::Count`). Outcomes: sender rejects
+(bad faith) → the bond is slashed to the sender as compensation for the
+frozen window and the stream resumes; sender accepts → the bond is refunded
+and the stream unwinds with the normal pro-rata cancel split; timelock
+expires with no verdict → the bond is **split 50/50** (sender rounds up).
+
+*Griefing-threshold math* (cost per blocked hour vs stream value `D`,
+timelock `T` = 7 days = 168 h, base bond `b` = 5 %·D):
+
+- Cheapest attack — the sender stays passive and every dispute dies at
+  expiry: the attacker loses `ceil(n·b/2)` per blocked week, i.e.
+  `n·b/(2·168) ≈ 0.0149 %·D·n` **per blocked hour** on round `n`.
+- Cumulative attacker cost after `k` griefing weeks:
+  `Σ n·b/2 = b·k(k+1)/4 ≈ 1.25 %·D·k²`. It crosses the *entire stream value*
+  at `k = 2·√(D/b) ≈ 9` weeks — after ~9 rounds the attacker has burned more
+  than the stream is worth, while the beneficiary (the recipient) has
+  meanwhile withdrawn everything accrued anyway.
+- If the sender instead actively rejects each dispute, the cost doubles
+  (full bond `n·b`, not half), crossing `D` after ≈ 6 rounds. The sender's
+  defense is therefore either one cheap transaction (`resolve_dispute`) or
+  simply waiting — both put the escalating cost on the attacker.
+- The passive-sender half-slashed expiry is the compromise that keeps the
+  legitimate case bounded too: a genuine victim whose coercer never responds
+  loses only half an escalating bond per window and always keeps accrued
+  funds; rejecting to zero (full refund at expiry) would make serial disputes
+  free, and full slashing at expiry would over-punish legitimate recipients
+  of unresponsive senders.
+
+Rejected alternatives: a fixed non-escalating bond (serial griefing settles
+into a constant hourly price); disputes as a `StreamStatus` variant (breaks
+"withdrawals always work" or requires special-casing the status enum);
+recipient-initiated *bond withdrawal* before expiry (turns the bond into a
+free option: freeze the stream, refund yourself, repeat); on-chain
+arbitration committees (out of scope — a dispute hold only needs to be long
+enough for the sender to choose: accept and unwind at the normal pro-rata
+cost, or reject and put the conflict on record while collecting the bond).
+
 ## 9. Testing strategy
 
 - **Unit tests** (`test.rs`) cover every spec edge case: withdraw before
@@ -222,6 +320,20 @@ or off-chain UX.
 - **`withdraw_max`** shares the `withdraw` payout tail (`pay_out`) so both
   paths inherit the same CEI ordering and reentrancy proof; index pagination
   and TTL behavior have dedicated tests in `test.rs`.
+- **Disputes** are covered end to end in `test.rs`: the freeze policy
+  (cancel/top-up blocked, withdrawals and accrual alive), auth, double-raise
+  rejection, both resolution outcomes with exact bond accounting, expiry
+  timing and the odd-bond split, serial-griefing bond escalation, expiry on
+  a stream the recipient drained mid-dispute, and the event payloads. The
+  balance invariant is re-asserted after every step of a seeded random
+  operation script — `sum(deposit − withdrawn)` over live streams plus the
+  outstanding dispute bonds.
+- **Dispute-bond math is pure** (`required_bond`, `bond_shares` take no
+  `Env`), so the `dispute_bond` `cargo-fuzz` target
+  ([`fuzz/`](../fuzz/fuzz_targets/dispute_bond.rs)) fuzzes the anti-griefing
+  core: the floor, monotonic escalation in rounds and deposit, genuine
+  `MathOverflow` only, and the expiry split's conservation
+  (`sender + recipient == bond`).
 
 ## 10. Open problems / roadmap hooks
 

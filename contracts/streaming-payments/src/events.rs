@@ -57,3 +57,52 @@ pub struct StreamToppedUp {
     /// Stream deposit after the top-up.
     pub new_deposit: i128,
 }
+
+/// Emitted when the recipient raises a dispute, freezing the stream's
+/// cancel/top-up mutations until resolution or expiry. The bond (stream
+/// token, held by the contract) accompanies the flag.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisputeRaised {
+    #[topic]
+    pub stream_id: u64,
+    pub recipient: Address,
+    /// Bond pulled into the contract for the duration of the dispute.
+    pub bond: i128,
+    /// First ledger timestamp at which the dispute can be expired.
+    pub expires_at: u64,
+}
+
+/// Emitted when the sender resolves an open dispute. `accept = true`
+/// refunds the bond to the recipient and unwinds the stream pro-rata
+/// (a `StreamCancelled` event accompanies it); `accept = false` treats the
+/// dispute as bad-faith and slashes the bond to the sender, resuming the
+/// stream normally.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisputeResolved {
+    #[topic]
+    pub stream_id: u64,
+    pub sender: Address,
+    /// Whether the sender accepted the dispute as legitimate.
+    pub accept: bool,
+    /// The bond at stake (paid to the recipient on accept, slashed to the
+    /// sender otherwise).
+    pub bond: i128,
+}
+
+/// Emitted when a dispute's timelock expires without a verdict: the stream
+/// resumes and the bond is split, `sender_share` rounding up.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisputeExpired {
+    #[topic]
+    pub stream_id: u64,
+    pub recipient: Address,
+    pub bond: i128,
+    /// Half of the bond (rounded up) paid to the sender as compensation for
+    /// the frozen window.
+    pub sender_share: i128,
+    /// The remainder of the bond refunded to the recipient.
+    pub recipient_share: i128,
+}

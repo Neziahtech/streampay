@@ -41,4 +41,11 @@ pub enum StreamError {
     NotAuthorized = 12,
     /// `withdraw_max` found nothing accrued-but-unwithdrawn to pay out.
     NothingToWithdraw = 13,
+    /// A dispute is open on the stream: `cancel_stream` and `top_up` are
+    /// frozen until the sender resolves it or the timelock expires.
+    DisputeActive = 14,
+    /// No open dispute exists on the stream.
+    DisputeNotFound = 15,
+    /// The dispute's timelock has not elapsed yet.
+    DisputeNotExpired = 16,
 }
