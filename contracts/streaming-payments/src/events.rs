@@ -20,6 +20,24 @@ pub struct StreamCreated {
     pub cancelable: bool,
 }
 
+/// Emitted when a new stream with a vesting schedule is created. The schedule
+/// is not repeated in the event (clients read it via `get_schedule`); the
+/// cliff time is included for indexer convenience.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamCreatedVested {
+    #[topic]
+    pub stream_id: u64,
+    pub sender: Address,
+    pub recipient: Address,
+    pub token: Address,
+    pub deposit: i128,
+    pub start_time: u64,
+    pub end_time: u64,
+    pub cancelable: bool,
+    pub cliff_time: u64,
+}
+
 /// Emitted when the recipient withdraws accrued funds.
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]

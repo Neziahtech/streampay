@@ -11,6 +11,190 @@ use soroban_sdk::{contracttype, Address, Env, MuxedAddress, Vec};
 use crate::errors::StreamError;
 use crate::surface::{self, Branch};
 
+/// Basis-point denominator shared with treasury math. One full schedule sums
+/// to exactly this many bps.
+const BPS_DENOM: u32 = 10_000;
+
+/// One step in a vesting schedule: the stream accrues at `rate_bps / 10_000`
+/// of its deposit-per-second rate from this `time` until the next step's time
+/// (or `end_time` for the final step).
+///
+/// Steps must be stored in strict ascending `time` order, and the sum of all
+/// `rate_bps` values must equal `10_000` (100 % of the deposit).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VestingStep {
+    /// Absolute Unix timestamp (seconds) at which this rate takes effect.
+    pub time: u64,
+    /// Rate in basis points (1 bp = 0.01 %). `rate_bps / 10_000` of the
+    /// deposit accrues linearly per second within this step's window.
+    pub rate_bps: u32,
+}
+
+/// Optional vesting schedule that augments a stream with a cliff and
+/// piecewise-constant accrual rates.
+///
+/// # Semantics
+///
+/// - `cliff_time` — nothing is claimable before this timestamp, even if
+///   `start_time` has passed and time has elapsed. The deposit is locked
+///   up-front as usual; the cliff only gates *withdrawal*, not funding.
+/// - `steps` — defines a piecewise-constant accrual schedule over the
+///   `[start_time, end_time)` window. Each step's `time` is the absolute
+///   timestamp at which its rate becomes effective. Accrual within a step is
+///   linear at `rate_bps / 10_000` of the deposit's total-window rate.
+///
+/// # Invariants enforced at creation (`validate_schedule`)
+///
+/// 1. `steps` is non-empty.
+/// 2. Every step's `time` lies in `[start_time, end_time)`, in strict ascending
+///    order.
+/// 3. `steps[0].time == start_time` — the schedule covers the full window.
+/// 4. The sum of all `rate_bps` == `10_000`.
+/// 5. `cliff_time` is in `[start_time, end_time]`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Schedule {
+    pub cliff_time: u64,
+    pub steps: Vec<VestingStep>,
+}
+
+/// Validates a [`Schedule`] against its parent stream's time bounds.
+///
+/// Called once at `create_stream_vested`; stored only after passing.
+pub fn validate_schedule(
+    schedule: &Schedule,
+    start_time: u64,
+    end_time: u64,
+) -> Result<(), StreamError> {
+    if schedule.steps.is_empty() {
+        return Err(surface::reject(Branch::CreateInvalidSchedule));
+    }
+    if schedule.cliff_time < start_time || schedule.cliff_time > end_time {
+        return Err(surface::reject(Branch::CreateInvalidSchedule));
+    }
+    // First step must anchor at start_time.
+    if schedule.steps.get(0).map(|s| s.time) != Some(start_time) {
+        return Err(surface::reject(Branch::CreateInvalidSchedule));
+    }
+
+    let mut rate_sum: u32 = 0;
+    let mut prev_time: u64 = 0;
+    let n = schedule.steps.len();
+    for i in 0..n {
+        let step = schedule.steps.get(i).unwrap();
+        // Strict ascending order; all times within the window.
+        if i > 0 && step.time <= prev_time {
+            return Err(surface::reject(Branch::CreateInvalidSchedule));
+        }
+        if step.time >= end_time {
+            return Err(surface::reject(Branch::CreateInvalidSchedule));
+        }
+        rate_sum = rate_sum
+            .checked_add(step.rate_bps)
+            .ok_or_else(|| surface::reject(Branch::CreateInvalidSchedule))?;
+        prev_time = step.time;
+    }
+
+    if rate_sum != BPS_DENOM {
+        return Err(surface::reject(Branch::CreateInvalidSchedule));
+    }
+
+    Ok(())
+}
+
+/// Pure vested-amount function for a scheduled stream.
+///
+/// Computes how much of `deposit` has vested at a point `elapsed` seconds into
+/// the `[start_time, end_time)` window, according to `schedule`. The cliff is
+/// not enforced here — it gates *withdrawals*, not the accrual accounting used
+/// by cancellation splits. Callers that need cliff enforcement (withdraw paths)
+/// check it separately.
+///
+/// Each step covers `[step.time, next_step.time)` (or `[step.time, end_time)`
+/// for the last step). Within that window the accrual is:
+///
+/// ```text
+/// step_deposit  = deposit * step.rate_bps / 10_000   (floor)
+/// step_duration = next_step.time - step.time          (or end_time - step.time)
+/// contribution  = step_deposit * step_elapsed / step_duration   (floor)
+/// ```
+///
+/// Summed across all steps whose window overlaps `[start_time, start_time + elapsed)`.
+///
+/// This is a pure function (no `Env`): the fuzz harness can call it directly.
+pub fn scheduled_vested_at(
+    deposit: i128,
+    start_time: u64,
+    end_time: u64,
+    schedule: &Schedule,
+    elapsed: u64,
+) -> Result<i128, StreamError> {
+    if elapsed == 0 || deposit <= 0 {
+        return Ok(0);
+    }
+
+    let now = start_time.saturating_add(elapsed).min(end_time);
+    let mut total: i128 = 0;
+    let n = schedule.steps.len();
+
+    for i in 0..n {
+        let step = schedule.steps.get(i).unwrap();
+        let step_start = step.time;
+        let step_end = if i + 1 < n {
+            schedule.steps.get(i + 1).unwrap().time
+        } else {
+            end_time
+        };
+
+        if now <= step_start {
+            break; // this step hasn't started yet
+        }
+
+        let step_duration = step_end - step_start; // >= 1 by invariant
+        let step_elapsed = now.min(step_end) - step_start;
+
+        // step_deposit = floor(deposit * rate_bps / 10_000)
+        // Overflow guard: deposit fits i128, rate_bps <= 10_000, so
+        // deposit * rate_bps fits u128 whenever deposit * 10_000 fits.
+        let step_deposit_u128 = (deposit as u128)
+            .checked_mul(step.rate_bps as u128)
+            .ok_or_else(|| surface::reject(Branch::RateProductOverflow))?
+            / (BPS_DENOM as u128);
+        let step_deposit = step_deposit_u128.min(deposit as u128) as i128;
+
+        // Linear accrual within the step.
+        let contribution = (step_deposit as u128)
+            .checked_mul(step_elapsed as u128)
+            .ok_or_else(|| surface::reject(Branch::RateProductOverflow))?
+            / (step_duration as u128);
+
+        total = total
+            .checked_add(contribution as i128)
+            .ok_or(StreamError::MathOverflow)?;
+    }
+
+    // Cap at deposit to absorb any rounding residual on the final step.
+    Ok(total.min(deposit))
+}
+
+/// Loads the optional [`Schedule`] for `stream_id`. Returns `None` for plain
+/// linear streams (the v0.x default).
+pub fn get_schedule(env: &Env, stream_id: u64) -> Option<Schedule> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::Schedule(stream_id))
+}
+
+/// Persists a [`Schedule`] and extends its TTL in lock-step with its stream.
+pub fn put_schedule(env: &Env, stream_id: u64, schedule: &Schedule) {
+    let key = DataKey::Schedule(stream_id);
+    env.storage().persistent().set(&key, schedule);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+}
+
 /// Maximum supported stream duration: 100 years, including leap days
 /// (36,525 days). Bounds worst-case rate multiplications and rejects
 /// nonsensical windows early.
@@ -99,6 +283,9 @@ pub enum DataKey {
     /// Fee charged for one stream at creation time (persistent storage;
     /// written only when the fee rounds above zero, so absent == 0).
     StreamFee(u64),
+    /// Optional vesting schedule attached to a stream (persistent storage;
+    /// absent means plain linear accrual — the v0.x default).
+    Schedule(u64),
 }
 
 /// Seconds elapsed of the stream window at the current ledger time.
@@ -157,17 +344,38 @@ pub fn streamed_at(deposit: i128, duration: u64, elapsed: u64) -> Result<i128, S
 
 /// Amount streamed (accrued) at the current ledger time.
 ///
-/// See [`streamed_at`] for the rate semantics.
+/// For streams with an attached [`Schedule`] this delegates to
+/// [`scheduled_vested_at`]; for plain streams it uses [`streamed_at`].
 pub fn streamed_amount(env: &Env, stream: &Stream) -> Result<i128, StreamError> {
     let elapsed = elapsed_seconds(env, stream.start_time, stream.end_time);
-    streamed_at(stream.deposit, stream.duration(), elapsed)
+    if let Some(schedule) = get_schedule(env, stream.id) {
+        scheduled_vested_at(
+            stream.deposit,
+            stream.start_time,
+            stream.end_time,
+            &schedule,
+            elapsed,
+        )
+    } else {
+        streamed_at(stream.deposit, stream.duration(), elapsed)
+    }
 }
 
-/// Accrued-but-unwithdrawn balance at the current ledger time. Zero for
-/// cancelled streams (their payout was settled atomically at cancellation).
+/// Accrued-but-unwithdrawn balance at the current ledger time.
+///
+/// Returns `StreamError::CliffNotReached` when the stream has a schedule and
+/// the current time has not yet passed `cliff_time`. Zero for cancelled
+/// streams (their payout was settled atomically at cancellation).
 pub fn available_amount(env: &Env, stream: &Stream) -> Result<i128, StreamError> {
     if stream.status == StreamStatus::Cancelled {
         return Ok(0);
+    }
+    // Enforce cliff: nothing claimable before cliff_time.
+    if let Some(ref schedule) = get_schedule(env, stream.id) {
+        let now = env.ledger().timestamp();
+        if now < schedule.cliff_time {
+            return Err(surface::reject(Branch::WithdrawBeforeCliff));
+        }
     }
     let streamed = streamed_amount(env, stream)?;
     streamed
@@ -212,13 +420,21 @@ pub fn get_stream(env: &Env, id: u64) -> Result<Stream, StreamError> {
         .ok_or_else(|| surface::reject(Branch::StreamNotFound))
 }
 
-/// Persists a stream and extends its storage TTL.
+/// Persists a stream and extends its storage TTL. If the stream has an
+/// attached schedule its TTL is extended in lockstep.
 pub fn put_stream(env: &Env, stream: &Stream) {
     let key = DataKey::Stream(stream.id);
     env.storage().persistent().set(&key, stream);
     env.storage()
         .persistent()
         .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+    // Keep the schedule entry alive alongside its stream.
+    let sched_key = DataKey::Schedule(stream.id);
+    if env.storage().persistent().has(&sched_key) {
+        env.storage()
+            .persistent()
+            .extend_ttl(&sched_key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+    }
 }
 
 /// Appends a stream's id to both parties' address indexes.
