@@ -1,0 +1,148 @@
+name: Wasm Function Diff
+
+on:
+  pull_request:
+    paths:
+      - 'contracts/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/wasm-diff.yml'
+      - '.github/scripts/**'
+  workflow_dispatch:
+
+concurrency:
+  group: wasm-diff-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  wasm-diff:
+    name: Function-level Wasm binary diff
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Head (PR)
+        uses: actions/checkout@v7
+        with:
+          path: head-repo
+
+      - name: Checkout Base Branch
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.base_ref || 'main' }}
+          path: base-repo
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+
+      - name: Install stellar-cli
+        run: |
+          curl -fsSL https://github.com/stellar/stellar-cli/releases/download/v28.1.0/stellar-cli-28.1.0-x86_64-unknown-linux-gnu.tar.gz | tar xz
+          sudo install stellar /usr/local/bin/stellar
+          stellar --version
+
+      - name: Install disassembly tools (wabt & binaryen)
+        # wabt provides wasm-objdump (primary tool); binaryen provides wasm-dis
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wabt binaryen
+          wasm-objdump --version
+          wasm-dis --version
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            head-repo/target
+            base-repo/target
+          key: ${{ runner.os }}-wasm-diff-${{ hashFiles('head-repo/Cargo.lock', 'base-repo/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-wasm-diff-
+
+      - name: Create artifacts directory
+        run: mkdir -p artifacts/base artifacts/head
+
+      - name: Build Base Wasm
+        working-directory: base-repo/contracts/streaming-payments
+        run: |
+          stellar contract build
+          cp ../../target/wasm32v1-none/release/streampay_contract.wasm ../../../artifacts/base/streampay_contract.wasm
+          sha256sum ../../../artifacts/base/streampay_contract.wasm
+
+      - name: Build Head Wasm
+        working-directory: head-repo/contracts/streaming-payments
+        run: |
+          stellar contract build
+          cp ../../target/wasm32v1-none/release/streampay_contract.wasm ../../../artifacts/head/streampay_contract.wasm
+          sha256sum ../../../artifacts/head/streampay_contract.wasm
+
+      - name: Disassemble Wasm Binaries (wasm-objdump)
+        run: |
+          wasm-objdump -d artifacts/base/streampay_contract.wasm > artifacts/base/streampay_contract.dis
+          wasm-objdump -d artifacts/head/streampay_contract.wasm > artifacts/head/streampay_contract.dis
+
+      - name: Run Function-Level Diff & Normalization
+        run: |
+          python head-repo/.github/scripts/wasm_diff.py \
+            --base artifacts/base/streampay_contract.wasm \
+            --head artifacts/head/streampay_contract.wasm \
+            --base-dis artifacts/base/streampay_contract.dis \
+            --head-dis artifacts/head/streampay_contract.dis \
+            --output-json artifacts/wasm_diff.json \
+            --output-markdown artifacts/wasm_diff_report.md
+
+      - name: Display Report in CI Summary
+        run: |
+          cat artifacts/wasm_diff_report.md >> $GITHUB_STEP_SUMMARY
+
+      - name: Post or Update PR Comment
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request'
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const reportPath = 'artifacts/wasm_diff_report.md';
+            if (!fs.existsSync(reportPath)) {
+              core.setFailed(`Report file ${reportPath} not found`);
+              return;
+            }
+            const reportBody = fs.readFileSync(reportPath, 'utf8');
+            const botMarker = '<!-- wasm-diff-report -->';
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const existingComment = comments.find(c => c.body && c.body.includes(botMarker));
+            if (existingComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existingComment.id,
+                body: reportBody,
+              });
+              console.log(`Updated existing PR comment ID: ${existingComment.id}`);
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: reportBody,
+              });
+              console.log('Created new PR comment');
+            }
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wasm-diff-results
+          path: artifacts/
