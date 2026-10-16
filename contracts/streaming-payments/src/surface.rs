@@ -86,13 +86,29 @@ pub enum Branch {
     /// `withdraw_treasury`: amount exceeds fees collected minus fees already
     /// withdrawn.
     WithdrawTreasuryExceedsBalance,
+    // --------------------------------------------------- token interactions
+    /// `create_stream`: the token refused the pull of `deposit_amount + fee`
+    /// (missing balance/allowance, a non-transferable asset, a non-SEP-41
+    /// callee). Nothing is persisted, so no stream id is consumed.
+    CreateDepositTransferFailed,
+    /// `top_up`: the token refused the pull of the added funds; `deposit` is
+    /// left unchanged.
+    TopUpTransferFailed,
+    /// `withdraw` / `withdraw_max` / the recipient leg of `cancel_stream`: the
+    /// token refused the payout to the stream recipient.
+    RecipientPayoutFailed,
+    /// `cancel_stream`: the token refused the refund of unaccrued funds to the
+    /// sender; the whole cancellation rolls back.
+    SenderRefundFailed,
+    /// `withdraw_treasury`: the token refused the payout of collected fees.
+    TreasuryPayoutFailed,
 }
 
 impl Branch {
     /// Every branch, in declaration order. The matrix test walks this list and
     /// the coverage test requires each [`StreamError`] variant to be produced by
     /// one of these (or retired).
-    pub const ALL: [Branch; 24] = [
+    pub const ALL: [Branch; 29] = [
         Branch::CreateDepositNonPositive,
         Branch::CreateStartTimeInPast,
         Branch::CreateInvalidTimeRange,
@@ -117,6 +133,11 @@ impl Branch {
         Branch::AcceptGovernorNotNominee,
         Branch::WithdrawTreasuryAmountNonPositive,
         Branch::WithdrawTreasuryExceedsBalance,
+        Branch::CreateDepositTransferFailed,
+        Branch::TopUpTransferFailed,
+        Branch::RecipientPayoutFailed,
+        Branch::SenderRefundFailed,
+        Branch::TreasuryPayoutFailed,
     ];
 
     /// The entrypoint(s) through which this branch can fire. Shared helpers
@@ -166,6 +187,11 @@ impl Branch {
             Branch::WithdrawTreasuryAmountNonPositive | Branch::WithdrawTreasuryExceedsBalance => {
                 &["withdraw_treasury"]
             }
+            Branch::CreateDepositTransferFailed => &["create_stream", "create_streams"],
+            Branch::TopUpTransferFailed => &["top_up"],
+            Branch::RecipientPayoutFailed => &["withdraw", "withdraw_max", "cancel_stream"],
+            Branch::SenderRefundFailed => &["cancel_stream"],
+            Branch::TreasuryPayoutFailed => &["withdraw_treasury"],
         }
     }
 
@@ -199,6 +225,11 @@ impl Branch {
             Branch::AcceptGovernorNoPending => StreamError::NoPendingGovernor,
             Branch::WithdrawTreasuryAmountNonPositive => StreamError::ZeroAmount,
             Branch::WithdrawTreasuryExceedsBalance => StreamError::InsufficientTreasuryBalance,
+            Branch::CreateDepositTransferFailed => StreamError::DepositTransferFailed,
+            Branch::TopUpTransferFailed => StreamError::TopUpTransferFailed,
+            Branch::RecipientPayoutFailed => StreamError::RecipientPayoutFailed,
+            Branch::SenderRefundFailed => StreamError::SenderRefundFailed,
+            Branch::TreasuryPayoutFailed => StreamError::TreasuryPayoutFailed,
         }
     }
 
@@ -244,6 +275,19 @@ impl Branch {
             }
             Branch::WithdrawTreasuryExceedsBalance => {
                 "amount exceeds fees collected minus fees already withdrawn"
+            }
+            Branch::CreateDepositTransferFailed => {
+                "the token refuses the deposit (+fee) pull (allowance, balance, or a non-compliant token)"
+            }
+            Branch::TopUpTransferFailed => {
+                "the token refuses the pull of the added funds"
+            }
+            Branch::RecipientPayoutFailed => {
+                "the token refuses a payout to the recipient"
+            }
+            Branch::SenderRefundFailed => "the token refuses the refund to the sender",
+            Branch::TreasuryPayoutFailed => {
+                "the token refuses the payout of collected protocol fees"
             }
         }
     }

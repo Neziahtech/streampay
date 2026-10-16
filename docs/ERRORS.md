@@ -25,6 +25,11 @@ Every expected failure is a `StreamError` with a stable numeric code. This docum
 | 15 | `NotGovernor` | reachable (2 branch(es)) | `accept_governor`, `nominate_governor`, `set_fee_bps`, `withdraw_treasury` | the caller is not the treasury governor; the caller is not the nominated governor |
 | 16 | `NoPendingGovernor` | reachable (1 branch(es)) | `accept_governor` | accept_governor with no nomination pending |
 | 17 | `InsufficientTreasuryBalance` | reachable (1 branch(es)) | `withdraw_treasury` | amount exceeds fees collected minus fees already withdrawn |
+| 18 | `DepositTransferFailed` | reachable (1 branch(es)) | `create_stream`, `create_streams` | the token refuses the deposit (+fee) pull (allowance, balance, or a non-compliant token) |
+| 19 | `TopUpTransferFailed` | reachable (1 branch(es)) | `top_up` | the token refuses the pull of the added funds |
+| 20 | `RecipientPayoutFailed` | reachable (1 branch(es)) | `cancel_stream`, `withdraw`, `withdraw_max` | the token refuses a payout to the recipient |
+| 21 | `SenderRefundFailed` | reachable (1 branch(es)) | `cancel_stream` | the token refuses the refund to the sender |
+| 22 | `TreasuryPayoutFailed` | reachable (1 branch(es)) | `withdraw_treasury` | the token refuses the payout of collected protocol fees |
 
 ## Branch matrix (entrypoint × condition → error)
 
@@ -54,6 +59,11 @@ Every expected failure is a `StreamError` with a stable numeric code. This docum
 | `AcceptGovernorNotNominee` | `accept_governor` | `NotGovernor` | 15 | the caller is not the nominated governor | reachable |
 | `WithdrawTreasuryAmountNonPositive` | `withdraw_treasury` | `ZeroAmount` | 9 | treasury withdrawal amount is zero or negative | reachable |
 | `WithdrawTreasuryExceedsBalance` | `withdraw_treasury` | `InsufficientTreasuryBalance` | 17 | amount exceeds fees collected minus fees already withdrawn | reachable |
+| `CreateDepositTransferFailed` | `create_stream`, `create_streams` | `DepositTransferFailed` | 18 | the token refuses the deposit (+fee) pull (allowance, balance, or a non-compliant token) | reachable |
+| `TopUpTransferFailed` | `top_up` | `TopUpTransferFailed` | 19 | the token refuses the pull of the added funds | reachable |
+| `RecipientPayoutFailed` | `withdraw`, `withdraw_max`, `cancel_stream` | `RecipientPayoutFailed` | 20 | the token refuses a payout to the recipient | reachable |
+| `SenderRefundFailed` | `cancel_stream` | `SenderRefundFailed` | 21 | the token refuses the refund to the sender | reachable |
+| `TreasuryPayoutFailed` | `withdraw_treasury` | `TreasuryPayoutFailed` | 22 | the token refuses the payout of collected protocol fees | reachable |
 
 ## Retired codes
 

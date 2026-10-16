@@ -11,6 +11,15 @@
 //! from coverage in `surface.rs`) rather than removed or reused, so the wire
 //! codes of every existing client stay valid forever.
 //!
+//! Token-side failures are always translated into one of the `*TransferFailed`
+//! variants below. A token contract's own error numbers live in the same
+//! `Error(Contract, #N)` namespace as this enum's codes, so letting a raw
+//! token failure surface would let — say — a token's `#5` masquerade as
+//! [`StreamError::StreamNotActive`] in clients. The contract therefore invokes
+//! every token transfer through the SDK's fallible (`try_`) client and maps
+//! any failure to a distinct StreamPay code; the original token error is
+//! intentionally not propagated.
+//!
 //! [`StreamError::ALL`] mirrors the variant set for the generated error-surface
 //! coverage test. The exhaustive match in
 //! `error_surface_test::stream_error_variant_list_is_exhaustive` fails to
@@ -61,6 +70,28 @@ pub enum StreamError {
     /// A treasury withdrawal exceeds the fees collected minus fees already
     /// withdrawn for that token.
     InsufficientTreasuryBalance = 17,
+    /// The token pull in `create_stream` failed: the sender's balance or
+    /// allowance was insufficient (the pull covers `deposit_amount + fee`),
+    /// or the asset refused the transfer (frozen/unauthorized/deauthorized
+    /// holder, or any non-compliant token). Nothing is persisted when it
+    /// fails, so no stream id is consumed.
+    DepositTransferFailed = 18,
+    /// The token pull in `top_up` failed (see
+    /// [`StreamError::DepositTransferFailed`]; the stream's deposit is left
+    /// untouched).
+    TopUpTransferFailed = 19,
+    /// The payout of accrued funds to the stream recipient failed — from
+    /// `withdraw`, `withdraw_max`, or the recipient leg of `cancel_stream`.
+    /// State changes made before the transfer are rolled back with the error.
+    RecipientPayoutFailed = 20,
+    /// The refund of unaccrued funds back to the sender failed during
+    /// `cancel_stream` (the recipient leg, if any, was already paid).
+    /// The cancellation is rolled back in full, so the stream stays active.
+    SenderRefundFailed = 21,
+    /// The payout of collected protocol fees failed in `withdraw_treasury`.
+    /// The recorded withdrawal and the `FeeWithdrawn` event are rolled back
+    /// with it, so the fee ledger stays unchanged.
+    TreasuryPayoutFailed = 22,
 }
 
 impl StreamError {
@@ -85,6 +116,11 @@ impl StreamError {
         StreamError::NotGovernor,
         StreamError::NoPendingGovernor,
         StreamError::InsufficientTreasuryBalance,
+        StreamError::DepositTransferFailed,
+        StreamError::TopUpTransferFailed,
+        StreamError::RecipientPayoutFailed,
+        StreamError::SenderRefundFailed,
+        StreamError::TreasuryPayoutFailed,
     ];
 
     /// The stable numeric value carried across the contract boundary

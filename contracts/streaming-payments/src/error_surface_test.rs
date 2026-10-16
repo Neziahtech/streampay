@@ -20,7 +20,7 @@ use soroban_sdk::testutils::Address as _;
 
 use crate::stream::streamed_at;
 use crate::surface::{trace, Branch, Reachability, RETIRED_CODES};
-use crate::test::Fixture;
+use crate::test::{Fixture, RefusingFixture};
 use crate::{StreamError, MAX_DURATION_SECONDS, MAX_FEE_BPS};
 
 const DAY: u64 = 24 * 60 * 60;
@@ -228,6 +228,68 @@ fn probe(branch: Branch) -> Option<StreamError> {
                 &1,
             )))
         }
+        // ---------------------------------------------- token interactions
+        //
+        // These branches fire when the *token* refuses a movement. The probes
+        // use [`RefusingFixture`]: a minimal SEP-41 contract whose error code
+        // deliberately equals 13 (`NothingToWithdraw`), so receiving StreamPay's
+        // own code proves the raw token error did not leak.
+        Branch::CreateDepositTransferFailed => {
+            let f = RefusingFixture::setup_quiet();
+            f.refuse(false, true); // refuses the incoming pull
+            let now = f.env.ledger().timestamp();
+            Some(rejected!(f.client.mock_all_auths().try_create_stream(
+                &f.sender,
+                &f.recipient,
+                &f.token,
+                &DEPOSIT,
+                &now,
+                &(now + 2 * DAY),
+                &false,
+            )))
+        }
+        Branch::TopUpTransferFailed => {
+            let f = RefusingFixture::setup_quiet();
+            let id = f.create(DEPOSIT, 0, 10 * DAY);
+            f.refuse(false, true); // stops accepting incoming transfers
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_top_up(&id, &DEPOSIT)))
+        }
+        Branch::RecipientPayoutFailed => {
+            let f = RefusingFixture::setup_quiet();
+            let id = f.create(DEPOSIT, 0, 10 * DAY);
+            f.advance_time(DAY); // 1 of 10 days accrued
+            f.refuse(true, false); // asset stops paying out
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_withdraw(&id, &(DEPOSIT / 10))))
+        }
+        Branch::SenderRefundFailed => {
+            let f = RefusingFixture::setup_quiet();
+            // Not started: recipient_amount is 0, so only the refund leg runs.
+            let id = f.create(DEPOSIT, DAY, 10 * DAY);
+            f.refuse(true, false);
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_cancel_stream(&f.sender, &id)))
+        }
+        Branch::TreasuryPayoutFailed => {
+            let f = RefusingFixture::setup_quiet();
+            f.client.mock_all_auths().set_fee_bps(&f.governor, &100);
+            // Charges a fee into the treasury ledger (1 % of the deposit).
+            let _id = f.create(DEPOSIT, 0, 10 * DAY);
+            f.refuse(true, false);
+            Some(rejected!(f.client.mock_all_auths().try_withdraw_treasury(
+                &f.governor,
+                &f.token,
+                &f.recipient,
+                &1,
+            )))
+        }
         // Invariant-protected: a stored stream always satisfies
         // `0 <= withdrawn <= streamed <= deposit <= i128::MAX`, so these
         // checked subtractions/addition can never cross an i128 boundary —
@@ -359,7 +421,12 @@ fn stream_error_variant_list_is_exhaustive() {
             | StreamError::FeeRateTooHigh
             | StreamError::NotGovernor
             | StreamError::NoPendingGovernor
-            | StreamError::InsufficientTreasuryBalance => StreamError::ALL.contains(&e),
+            | StreamError::InsufficientTreasuryBalance
+            | StreamError::DepositTransferFailed
+            | StreamError::TopUpTransferFailed
+            | StreamError::RecipientPayoutFailed
+            | StreamError::SenderRefundFailed
+            | StreamError::TreasuryPayoutFailed => StreamError::ALL.contains(&e),
         }
     }
 

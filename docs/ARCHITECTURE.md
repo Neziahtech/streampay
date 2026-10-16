@@ -178,6 +178,18 @@ callback finds `withdrawn` already updated, and `available_amount` reverts to
 the *post-write* (smaller or zero) value. The suite contains a
 malicious-token test that attempts exactly this reentry.
 
+**Token failures are caught and re-typed, never swallowed.** Every token call
+goes through the SDK's fallible (`try_`) client; any failure — missing
+allowance or balance, an asset that refuses to move, a non-SEP-41 callee — is
+re-raised as the matching `*TransferFailed` code (18–22, §7). The mapping is
+necessary because contract error numbers share the `Error(Contract, #N)`
+namespace: without it, a token's own `#5` would surface to clients as
+StreamPay's `StreamNotActive`. The mapped error is still returned as `Err`,
+so the host rolls back the *entire* invocation — effects already written and
+the event log included — exactly as an uncaught token error would have.
+Tests assert this rollback per entrypoint (state, balances, and events after
+a refused transfer).
+
 **Balance invariant:** the contract's token balance is always
 `≥ Σ (deposit − withdrawn)` across live streams **plus** `Σ (charged_total −
 withdrawn_total)` across token treasuries. Funds enter only via
@@ -228,11 +240,19 @@ the public interface:
 | 11 | `MathOverflow` | a checked computation would overflow |
 | 12 | `NotAuthorized` | caller is neither sender nor (cancelable) recipient |
 | 13 | `NothingToWithdraw` | `withdraw_max` with an empty accrued balance |
-
 | 14 | `FeeRateTooHigh` | `set_fee_bps` above `MAX_FEE_BPS` |
 | 15 | `NotGovernor` | non-governor calls a governor-gated function (also: non-nominee `accept_governor`) |
 | 16 | `NoPendingGovernor` | `accept_governor` with no nomination pending |
 | 17 | `InsufficientTreasuryBalance` | treasury withdrawal above fees collected minus fees withdrawn |
+| 18 | `DepositTransferFailed` | `create_stream` / `create_streams` token pull failed (allowance/balance, or the asset refused the transfer) |
+| 19 | `TopUpTransferFailed` | `top_up`'s token pull failed; `deposit` left unchanged |
+| 20 | `RecipientPayoutFailed` | token refused a payout to the recipient (`withdraw`, `withdraw_max`, or the recipient leg of `cancel_stream`) |
+| 21 | `SenderRefundFailed` | token refused the sender's refund at cancellation; the cancellation rolls back |
+| 22 | `TreasuryPayoutFailed` | token refused the payout of collected protocol fees in `withdraw_treasury`; the withdrawal record and event roll back |
+
+Codes 18–22 are *transfer-failure* codes: a token's own error number is
+deliberately never propagated (see §5), so clients can always branch on these
+instead of parsing an opaque `Error(Contract, #N)`.
 
 Codes are **append-only**: never renumber or reuse a variant. Codes 2
 (`NotStreamSender`) and 3 (`NotStreamRecipient`) are **retired**: they were
