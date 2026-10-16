@@ -10,13 +10,20 @@ reentrancy, TTL strategy, and the design decisions behind the v1 API. Read the
 ┌────────────────────────────────────────────────────────────────────┐
 │                        StreamingPayments                           │
 │                                                                    │
-│  lib.rs      entrypoints: create_stream / withdraw / withdraw_max / │
+│  lib.rs      entrypoints: create_stream(s) / withdraw / withdraw_max /│
 │              cancel_stream / top_up / get_stream / available /      │
-│              recipient_streams / sender_streams                    │
+│              recipient_streams / sender_streams / set_fee_bps /    │
+│              nominate_governor / accept_governor / withdraw_treasury│
+│              treasury_status / stream_fee / verify_treasury /       │
+│              total_streams                                         │
 │  stream.rs   Stream type, storage, checked accrual math            │
+│  treasury.rs protocol-fee math, per-token accounting, governor,    │
+│              verification scan (see §11)                           │
 │  errors.rs   StreamError — stable numeric codes, append-only       │
-│  events.rs   StreamCreated / Withdrawn / StreamCancelled /         │
-│              StreamToppedUp (stream_id as topic)                   │
+│  events.rs   StreamCreated / Withdrawn / StreamCancelled /        │
+│              StreamToppedUp / FeeCharged (stream_id topic);        │
+│              StreamsCreated (sender topic), FeeWithdrawn          │
+│              (token topic)                                         │
 └──────────────────────────┬─────────────────────────────────────────┘
                            │ token interface (SAC-compatible)
                            ▼
@@ -31,6 +38,11 @@ reentrancy, TTL strategy, and the design decisions behind the v1 API. Read the
 | `DataKey::Stream(id)` | `Stream` | full per-stream state |
 | `DataKey::RecipientStreams(addr)` | `Vec<u64>` | append-only ids where `addr` receives |
 | `DataKey::SenderStreams(addr)` | `Vec<u64>` | append-only ids created by `addr` |
+| `DataKey::Governor` *(instance)* | `Address` | treasury governor (constructor-set, two-step rotated) |
+| `DataKey::PendingGovernor` *(instance)* | `Address` | rotation in progress |
+| `DataKey::FeeBps` *(instance)* | `u32` | fee rate in basis points; absent = 0 (disabled) |
+| `DataKey::Treasury(token)` | `Treasury` | per-token fee accounting (`charged_total`, `withdrawn_total`) |
+| `DataKey::StreamFee(id)` | `StreamFeeRecord` | fee charged at creation: amount + token; absent = 0 |
 
 Streams live in **persistent** storage. Every mutating entrypoint that touches
 a stream extends its TTL (`TTL_THRESHOLD_LEDGERS = 200_000`, extend to
@@ -40,16 +52,58 @@ way to bound state bloat without penalizing active users. Index entries get
 the same TTL treatment on write *and* on read, so an actively-queried address
 stays hot.
 
+Nothing extends `DataKey::NextStreamId`, the contract instance entry or the
+Wasm code entry, and invoking a contract does not auto-extend instance/code
+entries either. All three therefore expire `min_persistent_entry_ttl - 1` =
+4,095 ledgers (~5.7 h) after creation unless something extends them — an
+operational constraint §12 covers in detail.
+
 There is still **no global registry** of all streams (no contract-wide
 `Vec<u64>`): that would make `create_stream` cost grow with total stream count.
 Instead, discovery is **per-address**: `create_stream` appends the new id to
 the sender's and the recipient's own index lists — each bounded by that one
 user's activity, written only at creation, and paginated on read
 (`recipient_streams` / `sender_streams`, `limit` clamped to
-`MAX_PAGE_SIZE = 50`). The indexes are *advisory*: never authorize against
-them; the `Stream` entry is the source of truth, and `StreamCreated` events
-remain the complete audit trail (an external indexer can still rebuild or
-cross-check the lists).
+`MAX_PAGE_SIZE = 50`). `create_streams` reserves its contiguous id range with
+one counter write and groups token pulls by token; stream records and address
+indexes remain per stream. The indexes are *advisory*: never authorize against
+them; the `Stream` entry is the source of truth. A single-stream call emits
+`StreamCreated`; a batch emits one `StreamsCreated` event listing its ids.
+Fee-enabled batches retain one `FeeCharged` event per charged stream, keeping
+the fee ledger independently auditable.
+
+### Storage layout decision & read/write profiling
+
+A gas optimization evaluation (`scripts/benchmark_storage.sh`, benchmark harness at `contracts/streaming-payments/examples/storage_benchmark.rs`) profiled resource consumption across stream lifecycle operations and evaluated splitting hot mutable fields (`withdrawn`, `status`) from cold immutable fields (`sender`, `recipient`, `token`, `deposit`, `start_time`, `end_time`, `cancelable`).
+
+#### Lifecycle Resource Costs (Monolithic Layout)
+
+| Operation | Type | Storage Footprint | CPU Instructions | Memory (Bytes) |
+|---|---|---|---:|---:|
+| `create_stream` | Write | 1 Stream + 2 Indexes | 509,718 | 201,404 |
+| `get_stream` | Read | 1 Stream Entry | 61,239 | 38,379 |
+| `available` | Read | 1 Stream Entry | 54,361 | 37,727 |
+| `withdraw` | RMW | 1 Stream Entry | 333,895 | 135,533 |
+| `top_up` | RMW | 1 Stream Entry | 419,382 | 159,563 |
+| `cancel_stream` | RMW | 1 Stream Entry | 504,711 | 167,915 |
+| `withdraw_max` | RMW | 1 Stream Entry | 330,953 | 131,167 |
+
+#### Architecture Comparison: Monolithic vs Split (Hot/Cold)
+
+| Storage Pattern | Entry Count | Keys Written/Read | CPU Instructions | Memory (Bytes) |
+|---|:---:|:---:|---:|---:|
+| Monolithic `Stream` Write | 1 | 1 key | 54,004 | 39,817 |
+| Split (Cold + Hot) Write | 2 | 2 keys | 90,988 *(+68.5%)* | 57,315 |
+| Monolithic `Stream` Read | 1 | 1 key | 45,094 | 34,207 |
+| Split Read (Both: required by `withdraw`/`cancel`) | 2 | 2 keys | 71,030 *(+57.5%)* | 47,314 |
+| Split Read (Hot-only: status check) | 1 | 1 key | 39,009 | 25,013 |
+
+#### Storage Layout Decision & Negative Result
+
+1. **Monolithic Layout Retained:** Stream state remains in a single `DataKey::Stream(u64)` persistent entry (~188 bytes XDR).
+2. **Negative Result for Hot/Cold Splitting:** In Soroban's storage and metering architecture, ledger entry overhead, storage keys, and per-entry footprint fees heavily outweigh minor payload byte differences. Every mutating entrypoint (`withdraw`, `withdraw_max`, `cancel_stream`, `top_up`) strictly requires both configuration fields (token, deposit, window, recipient/sender authorization) and state fields (`withdrawn`, `status`). Splitting state forces two ledger reads and one write across two keys, incurring a **+57.5% CPU read penalty** and a **+68.5% CPU write penalty** without saving gas on any mutation path.
+3. **Double-Read Elimination:** The contract avoids double reads in `withdraw`: `authorize_withdrawal` loads `s` once and passes `&mut s` directly to `pay_out`, preventing redundant re-reads.
+
 
 ## 3. Accrual math
 
@@ -91,6 +145,7 @@ nothing has accrued, at `now ≥ end_time` the full duration has elapsed.
 | Action | who may call | auth consumed |
 |---|---|---|
 | `create_stream` | anyone; `sender` must authorize | sender |
+| `create_streams` | anyone; `sender` must authorize once for the batch | sender |
 | `withdraw` | recipient only | recipient |
 | `cancel_stream` | sender always; recipient iff `cancelable` | caller |
 | `top_up` | sender only | sender |
@@ -113,9 +168,9 @@ happen **before** the token transfers:
   emit `Withdrawn`, *then* `token.transfer`.
 - `cancel_stream`: set `Cancelled`, record the payout as withdrawn, emit
   `StreamCancelled`, *then* the two transfers.
-- `create_stream` / `top_up`: pull tokens first, persist after — if a
-  reentrant callback abused the transfer-in, the persisted state still
-  reconciles with the balance (invariant below).
+- `create_stream` / `create_streams` / `top_up`: pull tokens before persisting
+  stream records — if a reentrant callback abused the transfer-in, the
+  persisted state still reconciles with the balance (invariant below).
 
 Additionally, `withdraw` and `cancel_stream` re-read `status` after auth: a
 malicious token contract that reenters `withdraw` during its own transfer
@@ -124,9 +179,13 @@ the *post-write* (smaller or zero) value. The suite contains a
 malicious-token test that attempts exactly this reentry.
 
 **Balance invariant:** the contract's token balance is always
-`≥ Σ (deposit − withdrawn)` across live streams. Funds enter only via
-`create_stream`/`top_up` and leave only via `withdraw`/`cancel_stream`, and
-every exit is bounded by the invariant `0 ≤ withdrawn ≤ streamed ≤ deposit`.
+`≥ Σ (deposit − withdrawn)` across live streams **plus** `Σ (charged_total −
+withdrawn_total)` across token treasuries. Funds enter only via
+`create_stream`/`top_up` and leave only via `withdraw`/`cancel_stream`
+(stream leg) and `withdraw_treasury` (fee leg), and every exit is bounded
+by `0 ≤ withdrawn ≤ streamed ≤ deposit` or by the collectible fee balance
+respectively. The two ledgers never mix: the fee a sender paid at creation
+is never part of any stream's `deposit`, so no payout path can reach it.
 
 ## 6. Lifecycle states
 
@@ -170,7 +229,26 @@ the public interface:
 | 12 | `NotAuthorized` | caller is neither sender nor (cancelable) recipient |
 | 13 | `NothingToWithdraw` | `withdraw_max` with an empty accrued balance |
 
-Codes are **append-only**: never renumber or reuse a variant.
+| 14 | `FeeRateTooHigh` | `set_fee_bps` above `MAX_FEE_BPS` |
+| 15 | `NotGovernor` | non-governor calls a governor-gated function (also: non-nominee `accept_governor`) |
+| 16 | `NoPendingGovernor` | `accept_governor` with no nomination pending |
+| 17 | `InsufficientTreasuryBalance` | treasury withdrawal above fees collected minus fees withdrawn |
+
+Codes are **append-only**: never renumber or reuse a variant. Codes 2
+(`NotStreamSender`) and 3 (`NotStreamRecipient`) are **retired**: they were
+reserved role checks that no entrypoint ever produced, so they are kept (never
+renumbered or reused) but marked unreachable.
+
+The authoritative, machine-generated view of this surface lives in
+[`docs/ERRORS.md`](./ERRORS.md): a per-branch table mapping every
+`(entrypoint, condition)` decision to its code, emitted from the contract's own
+instrumentation (`src/surface.rs`) by `cargo run -p streampay-contract --example
+error_surface_doc`, with a CI step that regenerates it and fails on drift. Each
+rejection site calls `surface::reject(Branch::…)` instead of returning a raw
+code, so the mapping is generated rather than hand-maintained; the
+`error_surface_test.rs` matrix proves every reachable branch fires its declared
+code, and the coverage test fails CI on any error code with zero reachable
+branches (unless explicitly retired) or any branch that lacks a code.
 
 ## 8. Design decisions (and rejected alternatives)
 
@@ -215,13 +293,30 @@ or off-chain UX.
   deposit` exactly.
 - **Rate math is pure** (`streamed_at` takes no `Env`), so the `cargo-fuzz`
   target in [`fuzz/`](../fuzz/fuzz_targets/streamed_at.rs) hammers it without
-  a Soroban host: bounds, exact floor-ratio reference comparison,
-  monotonicity, and "errors are only ever genuine `MathOverflow`". CI runs a
-  scheduled session (`fuzz.yml`, non-blocking); any crash becomes a regression
-  unit test.
+  a Soroban host: bounds (`0 <= result <= deposit`), exact floor-ratio
+  reference comparison, monotonicity in elapsed time, full-duration exactness
+  (`streamed_at(d, dur, dur) == d` for admissible pairs), and no panics for
+  arbitrary inputs (including negative deposits and zero duration where
+  the function returns `Ok(0)` or `Err(MathOverflow)`). CI runs a scheduled
+  session (`fuzz.yml`, non-blocking); any crash becomes a regression unit test.
+- **Error surface** (`error_surface_test.rs`): the branch registry in
+  `surface.rs` is walked by generated tests — one probe per branch asserts the
+  exact branch fires its declared code — plus coverage tests proving no code is
+  dead and no branch uncoded. `docs/ERRORS.md` is generated from the same table
+  and diffed in CI.
 - **`withdraw_max`** shares the `withdraw` payout tail (`pay_out`) so both
   paths inherit the same CEI ordering and reentrancy proof; index pagination
   and TTL behavior have dedicated tests in `test.rs`.
+- **Treasury property test** (`property_random_activity_sequences_keep_the_verifier_in_agreement`):
+  seeded (reproducible) random activity sequences — creates, partial/full
+  withdrawals, over-withdraw attempts, cancels by both parties, top-ups,
+  fee reconfigurations, treasury drains and guaranteed-fail treasury
+  attempts, across two tokens — assert after **every** step that
+  `treasury_status` equals an independent off-chain model, the paged
+  `verify_treasury` scan sums exactly to `charged_total` (the verifier
+  always agrees), per-stream `stream_fee` reads match the model, and the
+  contract's token balance equals outstanding stream funds plus collectible
+  fees — the fee ledger and the stream ledger never mix.
 
 ## 10. Open problems / roadmap hooks
 
@@ -231,5 +326,179 @@ or off-chain UX.
   budget, likely `try_create_batch` with per-item results.
 - Gas optimization pass on storage reads — `cancel_stream` does one
   read-modify-write; a `Stream` split into hot/cold fields could shave bytes.
-- Event indexer service — TypeScript worker polling `getEvents` per topic
-  `stream_id`, materializing stream history for the UI.
+- Event indexer & reconciler services — TypeScript workers polling `getEvents` per topic
+  `stream_id`, materializing stream history for the UI, and continuously auditing on-chain truth.
+  Instrumented with Prometheus metrics, Grafana dashboards, and alert rules (see [`infra/observability`](../infra/observability/README.md)
+  and [`docs/RUNBOOK.md`](./RUNBOOK.md)).
+- Contract-side TTL maintenance — extend `NextStreamId`, the instance entry and
+  the code entry from inside the contract (or from the deploy path) instead of
+  relying on the external sentinel. Costs rent on the write path but removes
+  the ~5.7 h cliff in §12 entirely.
+
+## 11. Treasury: protocol fees and their auditable distribution
+
+An **optional** fee layer, on by default *off* (`fee_bps = 0`), that funds
+protocol sustainability without touching a single line of the per-second
+accrual math.
+
+### 11.1 Fee model — charged at the deposit boundary only
+
+When (and only when) a stream is created while `fee_bps > 0`, the sender
+pays `deposit + fee` in a single `transfer_from` pull, where
+
+```text
+fee = deposit × fee_bps / 10_000        (floored; fee_bps ≤ MAX_FEE_BPS = 100)
+```
+
+- The stream's stored `deposit` is exactly the requested amount. `streamed_at`,
+  `available`, `withdraw`, `withdraw_max` and `cancel_amounts` are byte-for-byte
+  the v0.3 code paths — the fee is invisible to accrual and payout.
+- **Non-refundable, outside the stream.** The fee is never split, never
+  refunded, and never enters either leg of a cancellation.
+- **Floored to zero ⇒ no fee.** A fee that rounds below one whole token unit
+  charges nothing, stores nothing (`StreamFee` entry absent), and emits no
+  `FeeCharged` event.
+- **Top-ups are fee-free.** The fee is charged once, at creation; `top_up`
+  pulls face value only. (Charging per top-up would make the fee a tax on
+  *changing* a payroll, not on opening one; rejected for v1.)
+- **Only new streams pay.** `set_fee_bps` applies to streams created
+  afterwards; existing streams' economics are frozen at their creation-time
+  boundary.
+- **`fee_bps == 0` (the default, and the only mode any v0.3 deployment ran)
+  is bit-for-bit backward compatible:** no extra pull, no treasury writes,
+  no extra event, identical balances.
+
+Economic defaults are deliberately conservative: the protocol cap
+`MAX_FEE_BPS = 100` (1 %) is a hard constant, not governor-settable —
+raising it requires a new Wasm release and is an auditable interface change.
+
+### 11.2 Accumulation account
+
+Fees accumulate per token in `DataKey::Treasury(token) → { charged_total,
+withdrawn_total }`, written only in lockstep with the fee events:
+`charged_total` moves exactly when a `FeeCharged` is emitted,
+`withdrawn_total` exactly when a `FeeWithdrawn` is. Each funded stream also
+stores its own fee under `DataKey::StreamFee(id) → { token, amount }`, so
+the per-stream record and the per-token totals are two independent records
+of the same fact.
+
+### 11.3 Withdrawal governance
+
+- The governor is bound **at deploy time** by `__constructor(governor)` —
+  no `initialize()` call to front-run, no admin-less window.
+- Rotation is **two-step** (`nominate_governor` → `accept_governor`): only
+  an address that can prove control by authorizing the acceptance becomes
+  governor, so a typo'd nomination can never strand the treasury.
+- `withdraw_treasury(token, recipient, amount)` is governor-only, bounded
+  by `charged_total − withdrawn_total` (`InsufficientTreasuryBalance`), and
+  follows CEI: accounting + `FeeWithdrawn` event before the transfer.
+- `set_fee_bps` is governor-only and capped at `MAX_FEE_BPS`.
+
+### 11.4 Cancel-refund decision table (fees × cancellation)
+
+| State at cancel | Recipient leg | Sender leg | Treasury |
+|---|---|---|---|
+| before `start_time` | 0 | full `deposit` | keeps the fee (not refunded) |
+| mid-stream | `streamed − withdrawn` | `deposit − streamed` | keeps the fee |
+| at/after `end_time` | `deposit − withdrawn` | 0 | keeps the fee |
+| cancelled/depleted stream | reverts `StreamNotActive` — unchanged | — | — |
+
+The split legs are exactly the fee-less formulas; the fee sits outside
+both. Proof: `cancel_amounts` operates solely on `deposit`, `withdrawn` and
+`streamed_at` — none of which the fee layer ever mutates.
+
+### 11.5 Open verification — `fee_total == Σ fee events`, from public reads
+
+Three independently readable records must always agree:
+
+1. **Stored totals:** `treasury_status(token)` → `charged_total`,
+   `withdrawn_total`, `collectible`.
+2. **Stored per-stream fees:** `verify_treasury(token, start_id, count)`
+   pages over the stream-id space (`count` clamped to `MAX_PAGE_SIZE`),
+   summing `StreamFee` entries for that token (the record carries its
+   token, so interleaved multi-token ids filter correctly). Page from id 1
+   until `done`; the Σ must equal `charged_total`. `stream_fee(stream_id)`
+   gives the per-stream value, and `total_streams()` gives the scan range.
+3. **Event trail:** `FeeCharged` (topic: `stream_id`; data: token, payer,
+   amount, effective `fee_bps`) and `FeeWithdrawn` (topic: `token`; data:
+   governor, recipient, amount, cumulative `withdrawn_total`) via RPC
+   `getEvents`.
+
+`scripts/verify-fees.ts` automates all three cross-checks against a public
+RPC endpoint; anyone can run it with no keys. The scan extends the TTL of
+every fee entry it touches, so an actively-verified ledger stays hot; an
+old, unverified range may have archived entries — same recovery story as
+an abandoned stream (restore via RPC before re-verifying that range).
+
+### 11.6 Rejected alternatives
+
+- **Fee out of the deposit** (recipient receives `deposit − fee`): couples
+  the fee to accrual, retroactively complicates every payout formula and
+  the cancel split, and violates "fees never touch the accrual math".
+  Rejected.
+- **Fee on top-ups as well:** turns the fee into a tax on payroll
+  adjustments; the sender's ongoing cost becomes unpredictable. Rejected
+  for v1 (documented; would need its own event and decision table).
+- **Governor-less or deploy-script-initialized treasury:** any post-deploy
+  `initialize` has a front-running window on a public chain. Rejected in
+  favor of a constructor.
+- **One-step governor transfer:** a typo'd address irreversibly strands
+  all future fees. Rejected in favor of nominate/accept.
+- **Unbounded in-contract `verify_all` scan:** violates the "no unbounded
+  scans" rule (instruction budget); the bounded paged scan composes to a
+  full verification at the client layer instead.
+
+## 12. TTL and rent operations
+
+§2 describes what the contract extends. This section is the other half: what
+it never touches, and the operational tooling that exists because of it —
+[`infra/ttl-sentinel/`](../infra/ttl-sentinel/README.md).
+
+| Entry | Extended on-chain? | Worst-case cliff | At 5 s/ledger |
+|---|---|---:|---:|
+| `Stream(id)` | yes, every mutating entrypoint | 200,000 ledgers | 11.6 d |
+| `SenderStreams` / `RecipientStreams` | yes, on write **and** on page read | 200,000 ledgers | 11.6 d |
+| `NextStreamId` | **never** | 4,095 ledgers | **5.7 h** |
+| contract instance | **never** | 4,095 ledgers | **5.7 h** |
+| Wasm code | **never** | 4,095 ledgers | **5.7 h** |
+
+Two properties with real consequences:
+
+- **The extension threshold is a cliff, not a target.** `extend_ttl(200_000,
+  500_000)` only fires when the remaining TTL is already below the threshold,
+  and then sets `liveUntil = now + 500_000`. The last write that ever extends
+  a stream can land as late as `L_ext + 300_000`, which leaves exactly  200,000 ledgers: the worst case is *tight*, so alert thresholds must be
+  derived from the 200,000 cliff rather than from the comfortable 500,000
+  extension target.
+- **Never-extended entries are the sharp edge.** `next_stream_id` reads the
+  counter with `get().unwrap_or(1)` and writes it back without extending it,
+  and a plain `stellar contract deploy` (or
+  [`scripts/deploy_testnet.sh`](../scripts/deploy_testnet.sh)) leaves the
+  instance and code entries un-extended. Every deployment therefore has a
+  ~5.7-hour window before stream creation and *all* reads — `get_stream`
+  included — start failing on archived entries, until the entry is restored
+  (a paid operation) and extended.
+
+`infra/ttl-sentinel` scans every class, reads `liveUntilLedgerSeq` for each
+key, projects expiry per class against a sampled ledger cadence, and alerts on
+`warn` / `crit` / `expired` transitions (console, JSONL, webhook sinks).
+Alerting is read-only and key-less; enumeration is counter-driven
+(`1..next_id-1`, batched `getLedgerEntries`) so it never depends on event
+retention. Extension is a **separate, off-by-default** component with its own
+funded key, a per-transaction entry cap, dry-run default and a persisted
+monthly budget meter — the protocol lets anyone extend anyone's entry, so that
+key only ever needs to cover fees.
+
+The same module projects rent from *measured* entry sizes (504 B per stream
+entry; index entries by id count) against the CAP-0066 fee curve. That is
+direct input for pricing and dust economics: ~0.021 XLM per live stream per
+month at the floor fee, plus ~14.6 XLM per MiB of Wasm per month — code rent
+is scale-invariant, so bytecode is the dominant cost centre below roughly 80
+live streams.
+
+`cargo test` cannot cover any of this today: the contract's tests advance
+`ledger().timestamp()` but never the ledger sequence, so no test archives an
+entry. The sentinel's own suite fast-forwards a fake chain ledger-by-ledger
+and asserts the observed alert timing, plus a constants-sync test that fails
+if `TTL_THRESHOLD_LEDGERS` / `TTL_EXTEND_LEDGERS`, the extension call sites or
+the never-extended counter drift from what this section documents.

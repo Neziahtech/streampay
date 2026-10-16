@@ -1,9 +1,9 @@
 //! Events emitted by StreamPay.
 //!
-//! Every event is keyed by `stream_id` as a topic, so indexers can filter per
-//! stream efficiently. Non-`#[topic]` fields are event data.
+//! Per-stream events are keyed by `stream_id`; `StreamsCreated` is keyed by
+//! sender and carries the batch ids. Non-topic fields are event data.
 
-use soroban_sdk::{contractevent, Address};
+use soroban_sdk::{contractevent, Address, Vec};
 
 /// Emitted when a new stream is created and its deposit pulled in.
 #[contractevent]
@@ -18,6 +18,15 @@ pub struct StreamCreated {
     pub start_time: u64,
     pub end_time: u64,
     pub cancelable: bool,
+}
+
+/// Emitted once after an atomic batch creates its streams.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamsCreated {
+    #[topic]
+    pub sender: Address,
+    pub stream_ids: Vec<u64>,
 }
 
 /// Emitted when the recipient withdraws accrued funds.
@@ -56,4 +65,43 @@ pub struct StreamToppedUp {
     pub amount: i128,
     /// Stream deposit after the top-up.
     pub new_deposit: i128,
+}
+
+/// Emitted exactly once per funded stream that owes a protocol fee, in the
+/// same transaction as (and immediately after) `StreamCreated`. Keyed by
+/// `stream_id` so fee history is auditable per stream; the stream's stored
+/// fee (`stream_fee` read) and the token's `treasury_status` totals must
+/// always reconcile with the sum of these events — that reconciliation is
+/// the treasury invariant, checkable by anyone via `verify_treasury` and
+/// `scripts/verify-fees.ts`.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FeeCharged {
+    #[topic]
+    pub stream_id: u64,
+    pub token: Address,
+    /// The sender who paid the fee on top of the deposit.
+    pub payer: Address,
+    /// Fee amount in smallest token units (deposit * fee_bps / 10_000, floored).
+    pub amount: i128,
+    /// The fee rate in basis points that produced this amount.
+    pub fee_bps: u32,
+}
+
+/// Emitted when the treasury governor withdraws accumulated protocol fees for
+/// one token. Keyed by `token` (treasury accounting is per token);
+/// `withdrawn_total` carries the cumulative withdrawn amount so event
+/// consumers can reconcile against `treasury_status` without reading state.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FeeWithdrawn {
+    #[topic]
+    pub token: Address,
+    /// The governor who authorized the withdrawal.
+    pub governor: Address,
+    /// Where the withdrawn fees were sent.
+    pub recipient: Address,
+    pub amount: i128,
+    /// Total fees withdrawn for this token after this withdrawal.
+    pub withdrawn_total: i128,
 }
