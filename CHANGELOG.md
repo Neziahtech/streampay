@@ -35,6 +35,24 @@ interface: they are only ever appended to, never renumbered or reused.
   `--send=no` simulation before sending, `MIN_FEE` gate, optional reclaim).
 - `docs/SCHEDULED_INTENTS.md` — keeper guide plus replay / front-running /
   under-funded-keeper griefing threat model and a testnet run log.
+- **Optional asset allowlist policy module** (`policy.rs`, issue #75): an
+  opt-in, strictly-governed policy module restricting which assets may be used
+  in new streams while guaranteeing existing streams of a removed asset remain
+  fully withdrawable and refundable (the anti-brick invariant).
+- Two-step admin handoff (`policy_propose_handoff` / `policy_accept_handoff` /
+  `policy_cancel_handoff`), requiring proposed admin authorization before
+  transferring control.
+- Timelock on policy changes: allowlist mutations are queued with a timestamp
+  (`policy_propose_asset`) and executable only after a configurable delay
+  (`policy_timelock_delay`, default 48h), with permissionless execution
+  (`policy_execute_asset`) preventing governance hostage situations.
+- Append-only policy events: `PolicyInitialized`, `PolicyAssetQueued`,
+  `PolicyAssetExecuted`, `PolicyHandoffProposed`, `PolicyHandoffAccepted`,
+  `PolicyHandoffCancelled`.
+- New `StreamError` variants (appended): `PolicyAssetNotAllowed` (31),
+  `PolicyTimelockNotElapsed` (32), `PolicyNoQueuedChange` (33),
+  `PolicyNotInitialized` (34), `PolicyNoPendingHandoff` (35).
+- Governance failure table and model documentation in `docs/POLICY_GOVERNANCE.md`.
 - **Optional protocol-fee treasury** (`treasury.rs`): a fee charged once at
   the deposit boundary of `create_stream` (`deposit × fee_bps / 10_000`,
   floored, sender pays `deposit + fee`). The stream's `deposit` and every
@@ -131,6 +149,14 @@ interface: they are only ever appended to, never renumbered or reused.
 - Append-only deployment records in `deployments/` (promotion log, per-run
   records, per-environment contract-interface baselines) and the design +
   operator docs `docs/DEPLOY_PIPELINE.md` and `docs/CANARY_RUNBOOK.md`.
+- [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) §13–§14: the append-only
+  public-interface rules (storage keys, event shapes, error codes — current
+  tail 17) and the Soroban traps we've hit, each re-verified against the
+  current toolchain: `extend_ttl` panics `Error(Storage, MissingValue)` on
+  never-written keys (read paths existence-check first), `#[contractimpl]`
+  signatures are syntactic (type aliases produce undefined spec types), and
+  sdk-28 rejects plain `cargo build` for Wasm (requires `stellar contract
+  build`). Linked from the README and CONTRIBUTING.
 
 ### Changed
 - **Deployment interface:** the contract now has a constructor. Deploy with

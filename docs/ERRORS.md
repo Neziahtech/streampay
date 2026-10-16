@@ -38,6 +38,11 @@ Every expected failure is a `StreamError` with a stable numeric code. This docum
 | 28 | `RecipientPayoutFailed` | reachable (1 branch(es)) | `cancel_stream`, `withdraw`, `withdraw_max` | the token refuses a payout to the recipient |
 | 29 | `SenderRefundFailed` | reachable (1 branch(es)) | `cancel_stream` | the token refuses the refund to the sender |
 | 30 | `TreasuryPayoutFailed` | reachable (1 branch(es)) | `withdraw_treasury` | the token refuses the payout of collected protocol fees |
+| 31 | `PolicyAssetNotAllowed` | reachable (1 branch(es)) | `create_stream`, `create_streams` | the asset is not permitted by the policy module allowlist |
+| 32 | `PolicyTimelockNotElapsed` | reachable (1 branch(es)) | `policy_execute_asset` | the timelock delay has not elapsed for this queued policy change |
+| 33 | `PolicyNoQueuedChange` | reachable (1 branch(es)) | `policy_execute_asset` | no policy change is queued for the specified asset |
+| 34 | `PolicyNotInitialized` | reachable (1 branch(es)) | `policy_accept_handoff`, `policy_cancel_handoff`, `policy_execute_asset`, `policy_propose_asset`, `policy_propose_handoff`, `policy_set_timelock_delay` | the policy module has not been initialized |
+| 35 | `PolicyNoPendingHandoff` | reachable (1 branch(es)) | `policy_accept_handoff`, `policy_cancel_handoff` | no admin handoff proposal is pending |
 
 ## Branch matrix (entrypoint × condition → error)
 
@@ -80,6 +85,11 @@ Every expected failure is a `StreamError` with a stable numeric code. This docum
 | `RecipientPayoutFailed` | `withdraw`, `withdraw_max`, `cancel_stream` | `RecipientPayoutFailed` | 28 | the token refuses a payout to the recipient | reachable |
 | `SenderRefundFailed` | `cancel_stream` | `SenderRefundFailed` | 29 | the token refuses the refund to the sender | reachable |
 | `TreasuryPayoutFailed` | `withdraw_treasury` | `TreasuryPayoutFailed` | 30 | the token refuses the payout of collected protocol fees | reachable |
+| `PolicyAssetNotAllowed` | `create_stream`, `create_streams` | `PolicyAssetNotAllowed` | 31 | the asset is not permitted by the policy module allowlist | reachable |
+| `PolicyTimelockNotElapsed` | `policy_execute_asset` | `PolicyTimelockNotElapsed` | 32 | the timelock delay has not elapsed for this queued policy change | reachable |
+| `PolicyNoQueuedChange` | `policy_execute_asset` | `PolicyNoQueuedChange` | 33 | no policy change is queued for the specified asset | reachable |
+| `PolicyNotInitialized` | `policy_execute_asset`, `policy_propose_asset`, `policy_propose_handoff`, `policy_accept_handoff`, `policy_cancel_handoff`, `policy_set_timelock_delay` | `PolicyNotInitialized` | 34 | the policy module has not been initialized | reachable |
+| `PolicyNoPendingHandoff` | `policy_accept_handoff`, `policy_cancel_handoff` | `PolicyNoPendingHandoff` | 35 | no admin handoff proposal is pending | reachable |
 
 ## Retired codes
 

@@ -179,6 +179,14 @@ happen **before** the token transfers:
   emit `Withdrawn`, *then* `token.transfer`.
 - `cancel_stream`: set `Cancelled`, record the payout as withdrawn, emit
   `StreamCancelled`, *then* the two transfers.
+- `create_stream` / `create_streams` / `top_up`: pull tokens before persisting
+  stream records — if a reentrant callback abused the transfer-in, the
+  persisted state still reconciles with the balance (invariant below).
+- `withdraw_treasury`: bump `withdrawn_total`, persist the treasury, emit
+  `FeeWithdrawn`, *then* `token.transfer` (§11.3).
+- `create_stream` / `top_up`: pull tokens first, persist after — if a
+  reentrant callback abused the transfer-in, the persisted state still
+  reconciles with the balance (invariant below).
 - `create_stream` / `create_streams` / `top_up`: pull tokens first, persist after — if a
   reentrant callback abused the transfer-in, the persisted state still
   reconciles with the balance (invariant below).
@@ -237,6 +245,40 @@ is never part of any stream's `deposit`, so no payout path can reach it.
   nothing left to split.
 - Cancelling a not-yet-started stream is a 100 % refund to the sender.
 - `top_up` on a cancelled/depleted stream reverts.
+
+### 6.1 Withdraw / cancel race semantics
+
+`withdraw` (recipient) and `cancel_stream` (sender) are strictly serial: each
+invocation runs to completion — CEI state writes included — before the next
+begins, even when both land in the same ledger. There is no interleaving and
+no partial application: **last write wins in execution order**, the losing
+call observes the post-write state, and the losing call never mutates
+balances. No dedicated race error code exists; the loser always receives the
+existing `StreamNotActive` (**code 5**).
+
+| # | First call | Second call | Result of second call | Recipient balance | Sender balance |
+|---|---|---|---|---|---|
+| 1 | `withdraw(a)`, partial (`a < streamed`) | `cancel_stream` | succeeds — splits the remainder: `streamed − a` to recipient, `deposit − streamed` to sender | `streamed` at cancel time (conserved exactly) | `headroom + (deposit − streamed)` |
+| 2 | `withdraw_max` (drains to `Depleted`) | `cancel_stream` | reverts `StreamNotActive` (5) | unchanged by the loser | unchanged by the loser |
+| 3 | `cancel_stream` | `withdraw` / `withdraw_max` | reverts `StreamNotActive` (5) | cancel payout only | cancel refund only |
+
+Properties pinned by the `race_*` regression tests in `src/test.rs`:
+
+- **Conservation across the overlap** (row 1): the recipient's total across
+  both calls equals the amount accrued at the later call; the sender's refund
+  is exactly the unaccrued remainder. No unit is lost or double-paid.
+- **The loser is a no-op** (rows 2–3): state, balances, and the event log
+  after the reverting call are identical to the state right after the winner.
+- **Ordering is temporal, not identity-based**: the same table applies whether
+  the recipient or a `cancelable` stream's recipient cancels; authorization
+  is checked independently of the race (§4).
+
+This table is normative for future entrypoints too: any `pause_stream`-like
+or batched lifecycle operation must preserve "loser reverts with an existing
+code, state untouched" rather than introducing a new interleaving case; if it
+cannot, it needs an append-only error code and an updated table, not a silent
+drift. The same-ledger ordering is documented in the rustdoc of `withdraw` and
+`cancel_stream`.
 
 ## 7. Error surface
 
@@ -358,6 +400,24 @@ griefing) is in [`SCHEDULED_INTENTS.md`](./SCHEDULED_INTENTS.md).
   arbitrary inputs (including negative deposits and zero duration where
   the function returns `Ok(0)` or `Err(MathOverflow)`). CI runs a scheduled
   session (`fuzz.yml`, non-blocking); any crash becomes a regression unit test.
+- **Rate math is pure** (`streamed_at` takes no `Env`), so it runs anywhere a
+  plain Rust function runs — no Soroban host required. That is why the
+  contract crate is built as `rlib` alongside `cdylib`
+  (`contracts/streaming-payments/Cargo.toml`): the `cargo-fuzz` harness in
+  [`fuzz/`](../fuzz/fuzz_targets/streamed_at.rs) (its own workspace, excluded
+  from the root one because cargo-fuzz needs nightly-only settings) links
+  `streamed_at` natively and hammers it with five oracles asserted on every
+  input `(deposit, duration, elapsed)`:
+  1. no panics, ever (including negatives and zeros);
+  2. `Ok(result)` implies `0 <= result <= max(deposit, 0)`;
+  3. when `deposit × elapsed` fits in `u128`, the result equals an
+     independent floor-ratio reference implementation exactly;
+  4. `Err` is *only ever* `MathOverflow`, and only when that product
+     genuinely overflows (degenerate inputs return `Ok(0)`);
+  5. monotonicity: one more elapsed second never pays out less.
+
+  CI runs a scheduled session (`fuzz.yml`, non-blocking); any crash becomes a
+  regression unit test.
 - **Error surface** (`error_surface_test.rs`): the branch registry in
   `surface.rs` is walked by generated tests — one probe per branch asserts the
   exact branch fires its declared code — plus coverage tests proving no code is
@@ -588,3 +648,142 @@ entry. The sentinel's own suite fast-forwards a fake chain ledger-by-ledger
 and asserts the observed alert timing, plus a constants-sync test that fails
 if `TTL_THRESHOLD_LEDGERS` / `TTL_EXTEND_LEDGERS`, the extension call sites or
 the never-extended counter drift from what this section documents.
+
+## 13. Append-only public interface: storage keys, event shapes, error codes
+
+Three wire surfaces are promises to already-deployed clients, indexers, and —
+most strictly — to data already sitting in persistent storage. The CHANGELOG
+states the rule up front ("only ever appended to, never renumbered or
+reused"); this section is the contributor-facing detail of what counts as
+which surface and how each one may evolve.
+
+### 13.1 Error codes (§7)
+
+- Append new `StreamError` variants at the tail with the next free code.
+  Never renumber, never reuse a retired code. Codes 2 and 3
+  (`NotStreamSender` / `NotStreamRecipient`) are retired-but-sacred: kept,
+  documented, unreachable.
+- `NothingToWithdraw = 13` was the tail of the pre-treasury surface; the
+  treasury layer then *appended* 14–17, so the current tail is
+  `InsufficientTreasuryBalance = 17`. That is exactly how evolution is meant
+  to look: 13's meaning never moved while the tail advanced past it.
+- The plumbing keeps the table honest: every variant is mirrored in
+  `StreamError::ALL`, an exhaustive-match test forces new variants into that
+  list in the same change, the `surface.rs` branch registry ties each variant
+  to reachable `(entrypoint, condition)` branches, and CI diffs the generated
+  `docs/ERRORS.md` for drift (§7).
+
+### 13.2 Storage keys
+
+`DataKey` (stream.rs) is XDR-encoded **by variant name**, so:
+
+- Append new variants; never rename, retype, or remove existing ones. A
+  rename would orphan every already-stored entry under the old name.
+- Reordering variants is harmless (names, not indices, are on the wire) —
+  but keep the table in §2 updated either way.
+
+Value types are the stricter case: `#[contracttype]` structs (`Stream`,
+`Treasury`, `StreamFeeRecord`, `TreasuryStatus`, `FeeScan`) encode
+**positionally** as an XDR vector — field order, count, and types are all
+load-bearing for decoding entries written by older Wasm. In practice a
+stored struct's field list is frozen: to evolve one, add a new key carrying
+a new struct and migrate/cross-read deliberately, rather than editing the
+existing type. `StreamStatus` is name-encoded like `DataKey`, but is nested
+inside stored `Stream` values — same practical freeze.
+
+### 13.3 Event shapes
+
+Events are the off-chain ledger indexers consume; fields decode by position
+(`#[topic]` fields first, then data fields, in declaration order):
+
+| Event | Topic | Data, in declaration order |
+|---|---|---|
+| `StreamCreated` | `stream_id: u64` | `sender`, `recipient`, `token: Address`; `deposit: i128`; `start_time`, `end_time: u64`; `cancelable: bool` |
+| `Withdrawn` | `stream_id: u64` | `recipient: Address`; `amount: i128`; `withdrawn_total: i128` |
+| `StreamCancelled` | `stream_id: u64` | `cancelled_by: Address`; `recipient_amount: i128`; `sender_amount: i128` |
+| `StreamToppedUp` | `stream_id: u64` | `sender: Address`; `amount: i128`; `new_deposit: i128` |
+| `FeeCharged` | `stream_id: u64` | `token: Address`; `payer: Address`; `amount: i128`; `fee_bps: u32` |
+| `FeeWithdrawn` | `token: Address` | `governor: Address`; `recipient: Address`; `amount: i128`; `withdrawn_total: i128` |
+
+Never add, remove, reorder, or retype fields of an existing event; emit a
+new event type instead. Tests must filter by contract and compare typed XDR
+values, not stringified output (see CONTRIBUTING).
+
+## 14. Soroban-specific traps we've hit
+
+Everything here was re-verified against the current source and toolchain;
+each item names the code that demonstrates the safe pattern.
+
+### 14.1 `extend_ttl` panics on a never-written key — existence-check first
+
+`extend_ttl` is not a no-op for absent entries: calling it on a persistent
+key that was never written **panics** with
+
+```text
+HostError: Error(Storage, MissingValue)
+["trying to get non-existing value for contract data key", [NextStreamId]]
+```
+
+(verified against `soroban-env-host` 28.0.2). The consequences:
+
+- **Every read path that extends a TTL must existence-check before
+  extending.** Both read-extending paths do, and a new one must copy the
+  pattern:
+  - `page_stream_ids` (stream.rs): `let Some(ids) = storage.get(key) else
+    { return Vec::new(env) }` — an address with no streams returns an empty
+    page *without* touching `extend_ttl`, precisely because the key was
+    never written. Without that early return, the most common probe of all
+    — "what streams does this unknown address have?" — would panic.
+  - `scan_fees` (treasury.rs): extends a `StreamFee(id)` entry only inside
+    `if let Some(record) = stored` — fee-less ids simply don't exist.
+- **Write paths are safe by construction**: `put_stream`, `push_to_index`,
+  and `put_treasury`/`apply_fee` all `set` the entry before calling
+  `extend_ttl` on the same key. Keep that order.
+- Storage *reads* that don't extend (e.g. `get_stream`, `stream_fee`,
+  `treasury_status`) have no such constraint — `get` on a missing key is
+  the well-behaved `Option` case.
+
+### 14.2 `#[contractimpl]` signatures are syntactic — plain types, no aliases
+
+The `#[contractimpl]` macro generates the exported interface spec from the
+type tokens *as written*; it does not resolve Rust type aliases. Defining
+`type StreamIds = Vec<u64>` and using it as an entrypoint return type
+compiles cleanly — `cargo check --all-targets` passes, and even
+`stellar contract build` succeeds — but the generated spec references
+`StreamIds` as an undefined type, and the CLI reports:
+
+```text
+⚠️  streampay-contract: type 'StreamIds' referenced by function
+    'recipient_streams' output is not defined in the spec
+```
+
+Client generators and spec consumers then get a broken interface — the
+build "worked", the ecosystem didn't. Rule: spell concrete SDK types
+literally in every entrypoint signature (`Vec<u64>`, never an alias), as
+`recipient_streams` / `sender_streams` and the mirrored test-client trait
+in `test_client.rs` both do. The same applies to `#[contractclient]`
+traits: the test client repeats the plain types for the same reason.
+
+### 14.3 `soroban-sdk` 28 requires the Stellar CLI to build Wasm
+
+Since the sdk 27 → 28 upgrade, the sdk's build script handshakes with
+`stellar-cli` (spec-shaking v2). A plain
+
+```bash
+cargo build -p streampay-contract --target wasm32v1-none --release
+```
+
+fails with:
+
+```text
+error: soroban-sdk requires stellar-cli v25.2.0+ to build a contract
+To fix, build with `stellar contract build` using stellar-cli v25.2.0+.
+```
+
+The supported build path is therefore `stellar contract build` (CI pins
+stellar-cli v28.1.0) with the `wasm32v1-none` target installed
+(`rustup target add wasm32v1-none`). Host-side work is unaffected:
+`cargo check` and `cargo test -p streampay-contract` need no CLI. If your
+Wasm build fails at a `build-script-build` step before compiling a single
+line of contract code, you're hitting this — check `stellar --version`
+first.

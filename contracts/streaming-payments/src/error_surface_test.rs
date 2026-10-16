@@ -401,6 +401,64 @@ fn probe(branch: Branch) -> Option<StreamError> {
                 &1,
             )))
         }
+        // ------------------------------------------------------------ policy
+        Branch::PolicyAssetNotAllowed => {
+            let f = Fixture::setup_quiet();
+            let admin = soroban_sdk::Address::generate(&f.env);
+            f.client.mock_all_auths().policy_init(&admin);
+            f.client.mock_all_auths().policy_set_timelock_delay(&0);
+            f.client
+                .mock_all_auths()
+                .policy_propose_asset(&f.token, &false);
+            f.client.mock_all_auths().policy_execute_asset(&f.token);
+            let now = f.env.ledger().timestamp();
+            Some(rejected!(f.client.mock_all_auths().try_create_stream(
+                &f.sender,
+                &f.recipient,
+                &f.token,
+                &DEPOSIT,
+                &(now + DAY),
+                &(now + 2 * DAY),
+                &false,
+            )))
+        }
+        Branch::PolicyTimelockNotElapsed => {
+            let f = Fixture::setup_quiet();
+            let admin = soroban_sdk::Address::generate(&f.env);
+            f.client.mock_all_auths().policy_init(&admin);
+            f.client
+                .mock_all_auths()
+                .policy_propose_asset(&f.token, &false);
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_policy_execute_asset(&f.token)))
+        }
+        Branch::PolicyNoQueuedChange => {
+            let f = Fixture::setup_quiet();
+            let admin = soroban_sdk::Address::generate(&f.env);
+            f.client.mock_all_auths().policy_init(&admin);
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_policy_execute_asset(&f.token)))
+        }
+        Branch::PolicyNotInitialized => {
+            let f = Fixture::setup_quiet();
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_policy_execute_asset(&f.token)))
+        }
+        Branch::PolicyNoPendingHandoff => {
+            let f = Fixture::setup_quiet();
+            let admin = soroban_sdk::Address::generate(&f.env);
+            f.client.mock_all_auths().policy_init(&admin);
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_policy_accept_handoff()))
+        }
         // Invariant-protected: a stored stream always satisfies
         // `0 <= withdrawn <= streamed <= deposit <= i128::MAX`, so these
         // checked subtractions/addition can never cross an i128 boundary —
@@ -545,7 +603,12 @@ fn stream_error_variant_list_is_exhaustive() {
             | StreamError::TopUpTransferFailed
             | StreamError::RecipientPayoutFailed
             | StreamError::SenderRefundFailed
-            | StreamError::TreasuryPayoutFailed => StreamError::ALL.contains(&e),
+            | StreamError::TreasuryPayoutFailed
+            | StreamError::PolicyAssetNotAllowed
+            | StreamError::PolicyTimelockNotElapsed
+            | StreamError::PolicyNoQueuedChange
+            | StreamError::PolicyNotInitialized
+            | StreamError::PolicyNoPendingHandoff => StreamError::ALL.contains(&e),
         }
     }
 

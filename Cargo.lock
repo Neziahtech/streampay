@@ -1994,6 +1994,14 @@ version = "0.1.0"
 dependencies = [
  "proptest",
  "soroban-sdk",
+ "streampay-model",
+]
+
+[[package]]
+name = "streampay-model"
+version = "0.1.0"
+dependencies = [
+ "arbitrary",
 ]
 
 [[package]]

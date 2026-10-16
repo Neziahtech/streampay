@@ -115,6 +115,16 @@ pub enum StreamError {
     /// The recorded withdrawal and the `FeeWithdrawn` event are rolled back
     /// with it, so the fee ledger stays unchanged.
     TreasuryPayoutFailed = 30,
+    /// The asset is not permitted by the policy module allowlist.
+    PolicyAssetNotAllowed = 31,
+    /// The timelock delay has not elapsed for this queued policy change.
+    PolicyTimelockNotElapsed = 32,
+    /// No policy change is queued for the specified asset.
+    PolicyNoQueuedChange = 33,
+    /// The policy module has not been initialized.
+    PolicyNotInitialized = 34,
+    /// No admin handoff proposal is pending.
+    PolicyNoPendingHandoff = 35,
 }
 
 impl StreamError {
@@ -152,6 +162,11 @@ impl StreamError {
         StreamError::RecipientPayoutFailed,
         StreamError::SenderRefundFailed,
         StreamError::TreasuryPayoutFailed,
+        StreamError::PolicyAssetNotAllowed,
+        StreamError::PolicyTimelockNotElapsed,
+        StreamError::PolicyNoQueuedChange,
+        StreamError::PolicyNotInitialized,
+        StreamError::PolicyNoPendingHandoff,
     ];
 
     /// The stable numeric value carried across the contract boundary

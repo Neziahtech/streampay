@@ -83,15 +83,16 @@ pub trait StreamingPaymentsApi {
     fn stream_fee(env: Env, stream_id: u64) -> Result<i128, StreamError>;
     fn verify_treasury(env: Env, token: Address, start_id: u64, count: u32) -> FeeScan;
     fn total_streams(env: Env) -> u64;
-    fn set_oracle_config(
-        env: Env,
-        caller: Address,
-        publishers: Vec<Address>,
-        threshold: u32,
-        max_stale_seconds: u64,
-    ) -> Result<(), StreamError>;
-    fn submit_oracle_time(env: Env, publisher: Address, timestamp: u64) -> Result<(), StreamError>;
-    fn resolve_time(env: Env, stream_id: u64) -> Result<(u64, bool), StreamError>;
-    fn oracle_config(env: Env) -> Option<OracleConfig>;
-    fn oracle_report(env: Env, publisher: Address) -> Option<OracleReport>;
+    fn policy_init(env: Env, admin: Address);
+    fn policy_propose_asset(env: Env, asset: Address, allowed: bool) -> Result<(), StreamError>;
+    fn policy_execute_asset(env: Env, asset: Address) -> Result<(), StreamError>;
+    fn policy_propose_handoff(env: Env, new_admin: Address) -> Result<(), StreamError>;
+    fn policy_accept_handoff(env: Env) -> Result<(), StreamError>;
+    fn policy_cancel_handoff(env: Env) -> Result<(), StreamError>;
+    fn policy_admin(env: Env) -> Option<Address>;
+    fn policy_pending_admin(env: Env) -> Option<Address>;
+    fn policy_timelock_delay(env: Env) -> u64;
+    fn policy_set_timelock_delay(env: Env, delay: u64) -> Result<(), StreamError>;
+    fn policy_is_asset_allowed(env: Env, asset: Address) -> bool;
+    fn policy_get_queued_asset(env: Env, asset: Address) -> Option<crate::QueuedAssetChange>;
 }

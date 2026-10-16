@@ -48,9 +48,14 @@
 extern crate std;
 
 #[cfg(test)]
+mod differential_harness;
+#[cfg(test)]
+mod differential_test;
+#[cfg(test)]
 mod error_surface_test;
 mod errors;
 mod events;
+mod policy;
 mod schedule;
 #[cfg(test)]
 mod schedule_test;
@@ -72,10 +77,12 @@ use surface::Branch;
 
 pub use errors::StreamError;
 pub use events::{
-    FeeCharged, FeeWithdrawn, ScheduledIntentCancelled, ScheduledIntentExpired,
-    ScheduledStreamExecuted, StreamCancelled, StreamCreated, StreamScheduled, StreamToppedUp,
-    StreamsCreated, Withdrawn,
+    FeeCharged, FeeWithdrawn, PolicyAssetExecuted, PolicyAssetQueued, PolicyHandoffAccepted,
+    PolicyHandoffCancelled, PolicyHandoffProposed, PolicyInitialized, ScheduledIntentCancelled,
+    ScheduledIntentExpired, ScheduledStreamExecuted, StreamCancelled, StreamCreated,
+    StreamScheduled, StreamToppedUp, StreamsCreated, Withdrawn,
 };
+pub use policy::QueuedAssetChange;
 pub use schedule::{IntentStatus, ScheduledIntent, MAX_OCCURRENCES};
 // `streamed_at` is re-exported for the fuzz target and downstream rate
 // calculators: it is a pure function requiring no `Env`.
@@ -243,6 +250,10 @@ impl StreamingPayments {
 
         let now = env.ledger().timestamp();
         Self::validate_stream_creation(now, deposit_amount, start_time, end_time)?;
+
+        // Policy check: if the policy module is active, the asset must be on
+        // the allowlist. Uninitialized policy permits all assets (opt-in).
+        policy::check_asset_allowed(&env, &token)?;
 
         // Protocol fee, computed at the deposit boundary only. The accrual
         // math (`deposit`, `streamed_at`, cancel splits) never sees it.
@@ -417,6 +428,7 @@ impl StreamingPayments {
                 input.start_time,
                 input.end_time,
             )?;
+            policy::check_asset_allowed(&env, &input.token)?;
 
             let fee = treasury::fee_amount(input.deposit_amount, fee_bps)?;
             let pull_amount = input
@@ -532,6 +544,30 @@ impl StreamingPayments {
     /// A token-side failure to deliver the payout returns
     /// [`StreamError::RecipientPayoutFailed`] and rolls the recorded
     /// `withdrawn` update back with it.
+    ///
+    /// # Ordering against `cancel_stream` (same-ledger race)
+    ///
+    /// `withdraw` and `cancel_stream` are strictly serial: each invocation
+    /// runs to completion — including its CEI state writes — before the next
+    /// begins, even when both land in the same ledger. There is no
+    /// interleaving and no partial application; whichever call executes
+    /// first wins, and the loser observes the post-write state:
+    ///
+    /// * If `cancel_stream` executes first, the stream is already `Cancelled`
+    ///   when `withdraw` runs, so it reverts with
+    ///   [`StreamError::StreamNotActive`] (code 5) without moving tokens.
+    /// * If `withdraw` executes first, a subsequent `cancel_stream` splits
+    ///   only the *remaining* balance (`streamed − withdrawn`). If this
+    ///   withdrawal drained the stream (`withdrawn == deposit`, status
+    ///   `Depleted`), the cancel instead reverts with
+    ///   [`StreamError::StreamNotActive`] (code 5).
+    ///
+    /// The losing call never mutates state, so the funds-conservation
+    /// outcome is identical to the serial composition: the recipient
+    /// receives exactly the amount accrued at the later call and the sender
+    /// is refunded the unaccrued remainder. Regression tests pin these
+    /// sequences in `test.rs` (`race_*`); the race table lives in
+    /// `docs/ARCHITECTURE.md` §6.1.
     pub fn withdraw(env: Env, stream_id: u64, amount: i128) -> Result<(), StreamError> {
         if amount <= 0 {
             return Err(surface::reject(Branch::WithdrawAmountNonPositive));
@@ -624,6 +660,26 @@ impl StreamingPayments {
     /// share and [`StreamError::SenderRefundFailed`] for the sender's refund —
     /// and any failure rolls the whole cancellation back: the stream stays
     /// `Active`, `withdrawn` is restored, and no event survives.
+    ///
+    /// # Ordering against `withdraw` (same-ledger race)
+    ///
+    /// The counterpart of the ordering documented on
+    /// [`StreamingPayments::withdraw`]: cancellation is atomic and sees the
+    /// `withdrawn` balance as of *its* execution point.
+    ///
+    /// * If the recipient's `withdraw` executes first, the cancel splits the
+    ///   remainder only (`streamed − withdrawn` to the recipient,
+    ///   `deposit − streamed` to the sender). If that withdrawal already
+    ///   drained the stream to `Depleted`, the cancel reverts with
+    ///   [`StreamError::StreamNotActive`] (code 5).
+    /// * If this cancel executes first, the stream is `Cancelled` and any
+    ///   later `withdraw` / `withdraw_max` reverts with
+    ///   [`StreamError::StreamNotActive`] (code 5).
+    ///
+    /// Last write wins in execution order; no interleaving exists within a
+    /// ledger, and the losing call leaves state and balances untouched.
+    /// Pinned by the `race_*` regression tests in `test.rs`; see
+    /// `docs/ARCHITECTURE.md` §6.1 for the race table.
     pub fn cancel_stream(env: Env, caller: Address, stream_id: u64) -> Result<(), StreamError> {
         caller.require_auth();
 
@@ -1281,55 +1337,81 @@ impl StreamingPayments {
         next.saturating_sub(1)
     }
 
-    // -------------------------------------------------------------- oracle --
+    // ------------------------------------------------------------- policy --
     //
-    // External time reference clock registry, authorized publisher updates,
-    // and quorum resolution with staleness validation.
+    // The optional asset allowlist and governance layer: restricts which assets
+    // may be streamed while guaranteeing existing streams remain withdrawable
+    // and refundable (anti-brick). Features a two-step admin handoff, a timelock
+    // on all allowlist mutations, and permissionless execution once matured.
 
-    /// Sets or updates the oracle publisher registry, threshold, and staleness bound.
-    /// Governor-only.
-    pub fn set_oracle_config(
+    /// Initializes the policy module with `admin`. Callable once only; panics
+    /// if called again. Admin authorization is required.
+    pub fn policy_init(env: Env, admin: Address) {
+        policy::init(&env, &admin);
+    }
+
+    /// Queues an allowlist mutation (adding or removing `asset`) with a
+    /// timelock delay. Callable only by the current admin.
+    pub fn policy_propose_asset(
         env: Env,
-        caller: Address,
-        publishers: Vec<Address>,
-        threshold: u32,
-        max_stale_seconds: u64,
+        asset: Address,
+        allowed: bool,
     ) -> Result<(), StreamError> {
-        treasury::require_governor(&env, &caller)?;
-        oracle::set_oracle_config(&env, publishers, threshold, max_stale_seconds)?;
-        OracleConfigUpdated {
-            governor: caller,
-            threshold,
-            max_stale_seconds,
-        }
-        .publish(&env);
-        Ok(())
+        policy::propose_asset(&env, asset, allowed)
     }
 
-    /// Submits a reference timestamp report from an authorized publisher.
-    pub fn submit_oracle_time(
-        env: Env,
-        publisher: Address,
-        timestamp: u64,
-    ) -> Result<(), StreamError> {
-        oracle::submit_oracle_time(&env, publisher, timestamp)
+    /// Executes a queued asset allowlist change after the timelock has elapsed.
+    ///
+    /// Callable by anyone: once a change has been vetted by the admin and the
+    /// public timelock delay has expired, execution is permissionless so it
+    /// cannot be stalled or held hostage by an absent admin.
+    pub fn policy_execute_asset(env: Env, asset: Address) -> Result<(), StreamError> {
+        policy::execute_asset(&env, asset)
     }
 
-    /// Public read: resolves the reference timestamp for a stream.
-    /// Returns `(resolved_timestamp, is_oracle)`.
-    pub fn resolve_time(env: Env, stream_id: u64) -> Result<(u64, bool), StreamError> {
-        let s = stream::get_stream(&env, stream_id)?;
-        let resolved = oracle::resolve_stream_time(&env, stream_id, s.use_oracle);
-        Ok((resolved.timestamp, resolved.is_oracle))
+    /// Proposes a new admin for the two-step handoff (admin-only).
+    pub fn policy_propose_handoff(env: Env, new_admin: Address) -> Result<(), StreamError> {
+        policy::propose_handoff(&env, new_admin)
     }
 
-    /// Public read: returns current oracle configuration, if configured.
-    pub fn oracle_config(env: Env) -> Option<OracleConfig> {
-        oracle::get_oracle_config(&env)
+    /// Accepts the pending admin handoff. Callable only by the proposed new
+    /// admin, consuming their authorization and clearing the proposal.
+    pub fn policy_accept_handoff(env: Env) -> Result<(), StreamError> {
+        policy::accept_handoff(&env)
     }
 
-    /// Public read: returns the latest report for an authorized publisher, if any.
-    pub fn oracle_report(env: Env, publisher: Address) -> Option<OracleReport> {
-        oracle::get_oracle_report(&env, publisher)
+    /// Cancels a pending admin handoff (admin-only).
+    pub fn policy_cancel_handoff(env: Env) -> Result<(), StreamError> {
+        policy::cancel_handoff(&env)
+    }
+
+    /// Returns the current policy admin, if initialized.
+    pub fn policy_admin(env: Env) -> Option<Address> {
+        policy::admin(&env)
+    }
+
+    /// Returns the pending policy admin nominee, if any.
+    pub fn policy_pending_admin(env: Env) -> Option<Address> {
+        policy::pending_admin(&env)
+    }
+
+    /// Returns the on-chain timelock delay in seconds.
+    pub fn policy_timelock_delay(env: Env) -> u64 {
+        policy::timelock_delay(&env)
+    }
+
+    /// Sets the timelock delay in seconds (admin-only).
+    pub fn policy_set_timelock_delay(env: Env, delay: u64) -> Result<(), StreamError> {
+        policy::set_timelock_delay(&env, delay)
+    }
+
+    /// Read-only check whether `asset` is currently allowed for new streams.
+    pub fn policy_is_asset_allowed(env: Env, asset: Address) -> bool {
+        policy::is_asset_allowed(&env, &asset)
+    }
+
+    /// Returns the queued allowlist change for `asset`, if any.
+    pub fn policy_get_queued_asset(env: Env, asset: Address) -> Option<QueuedAssetChange> {
+        policy::get_queued_asset(&env, &asset)
     }
 }

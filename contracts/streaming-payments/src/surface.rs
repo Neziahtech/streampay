@@ -119,13 +119,24 @@ pub enum Branch {
     SenderRefundFailed,
     /// `withdraw_treasury`: the token refused the payout of collected fees.
     TreasuryPayoutFailed,
+    // ------------------------------------------------------------ policy
+    /// `create_stream`: asset is not on the policy allowlist.
+    PolicyAssetNotAllowed,
+    /// `policy_execute_asset`: timelock delay has not elapsed.
+    PolicyTimelockNotElapsed,
+    /// `policy_execute_asset`: no change queued for the asset.
+    PolicyNoQueuedChange,
+    /// policy admin entrypoints called before initialization.
+    PolicyNotInitialized,
+    /// `policy_accept_handoff` / `policy_cancel_handoff`: no handoff pending.
+    PolicyNoPendingHandoff,
 }
 
 impl Branch {
     /// Every branch, in declaration order. The matrix test walks this list and
     /// the coverage test requires each [`StreamError`] variant to be produced by
     /// one of these (or retired).
-    pub const ALL: [Branch; 37] = [
+    pub const ALL: [Branch; 42] = [
         Branch::CreateDepositNonPositive,
         Branch::CreateStartTimeInPast,
         Branch::CreateInvalidTimeRange,
@@ -163,6 +174,11 @@ impl Branch {
         Branch::RecipientPayoutFailed,
         Branch::SenderRefundFailed,
         Branch::TreasuryPayoutFailed,
+        Branch::PolicyAssetNotAllowed,
+        Branch::PolicyTimelockNotElapsed,
+        Branch::PolicyNoQueuedChange,
+        Branch::PolicyNotInitialized,
+        Branch::PolicyNoPendingHandoff,
     ];
 
     /// The entrypoint(s) through which this branch can fire. Shared helpers
@@ -232,6 +248,19 @@ impl Branch {
             Branch::RecipientPayoutFailed => &["withdraw", "withdraw_max", "cancel_stream"],
             Branch::SenderRefundFailed => &["cancel_stream"],
             Branch::TreasuryPayoutFailed => &["withdraw_treasury"],
+            Branch::PolicyAssetNotAllowed => &["create_stream", "create_streams"],
+            Branch::PolicyTimelockNotElapsed | Branch::PolicyNoQueuedChange => {
+                &["policy_execute_asset"]
+            }
+            Branch::PolicyNotInitialized => &[
+                "policy_execute_asset",
+                "policy_propose_asset",
+                "policy_propose_handoff",
+                "policy_accept_handoff",
+                "policy_cancel_handoff",
+                "policy_set_timelock_delay",
+            ],
+            Branch::PolicyNoPendingHandoff => &["policy_accept_handoff", "policy_cancel_handoff"],
         }
     }
 
@@ -278,6 +307,11 @@ impl Branch {
             Branch::RecipientPayoutFailed => StreamError::RecipientPayoutFailed,
             Branch::SenderRefundFailed => StreamError::SenderRefundFailed,
             Branch::TreasuryPayoutFailed => StreamError::TreasuryPayoutFailed,
+            Branch::PolicyAssetNotAllowed => StreamError::PolicyAssetNotAllowed,
+            Branch::PolicyTimelockNotElapsed => StreamError::PolicyTimelockNotElapsed,
+            Branch::PolicyNoQueuedChange => StreamError::PolicyNoQueuedChange,
+            Branch::PolicyNotInitialized => StreamError::PolicyNotInitialized,
+            Branch::PolicyNoPendingHandoff => StreamError::PolicyNoPendingHandoff,
         }
     }
 
@@ -349,6 +383,15 @@ impl Branch {
             Branch::TreasuryPayoutFailed => {
                 "the token refuses the payout of collected protocol fees"
             }
+            Branch::PolicyAssetNotAllowed => {
+                "the asset is not permitted by the policy module allowlist"
+            }
+            Branch::PolicyTimelockNotElapsed => {
+                "the timelock delay has not elapsed for this queued policy change"
+            }
+            Branch::PolicyNoQueuedChange => "no policy change is queued for the specified asset",
+            Branch::PolicyNotInitialized => "the policy module has not been initialized",
+            Branch::PolicyNoPendingHandoff => "no admin handoff proposal is pending",
         }
     }
 

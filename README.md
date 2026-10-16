@@ -33,6 +33,8 @@ Everything is on-chain and trust-minimized: no admin key, no upgrade path, funds
 
 A stream is a half-open window `[start_time, end_time)`. At any ledger timestamp the contract computes `deposit × elapsed / duration` with checked math (products widened to `u128`, results floored to whole token units and capped at the deposit). **Every edge case you can think of — withdrawing before start, after end, cancelling a never-started stream, topping up after end — is covered by a unit test** (see `contracts/streaming-payments/src/test.rs`).
 
+How it works in depth, including the design invariants and the Soroban-specific traps contributors keep rediscovering (`extend_ttl` on missing keys, `#[contractimpl]` signature rules, the sdk-28 build path): [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md).
+
 ## Architecture overview
 
 ```text
@@ -180,9 +182,9 @@ Fuzz the accrual math (nightly, optional):
 cd fuzz && cargo +nightly fuzz run streamed_at -- -max_total_time=60
 ```
 
-**Live testnet demo in one command:** [`./scripts/deploy_testnet.sh`](./scripts/deploy_testnet.sh)
-deploys the contract, mints a demo token, and opens a 1-hour stream — full
-walkthrough in [`docs/DEMO.md`](./docs/DEMO.md).
+**Testnet Demo & Walkthrough:**
+- **One-command deploy & demo stream:** [`./scripts/deploy_testnet.sh`](./scripts/deploy_testnet.sh) deploys the contract, mints demo SAC tokens, and opens an active 1-hour stream.
+- **Full lifecycle walkthrough:** See [`docs/DEMO.md`](./docs/DEMO.md) for step-by-step CLI commands (`create_stream` → `withdraw` / `withdraw_max` → `cancel_stream`), expected outputs, and troubleshooting.
 
 Run the frontend:
 

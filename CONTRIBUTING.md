@@ -112,8 +112,10 @@ lint/typecheck/build when frontend files are touched) are the minimum gate.
 
 ### Docs
 
-- Update `docs/ARCHITECTURE.md` when behavior changes — it's the source of
-  truth for design decisions, including rejected alternatives.
+- Update [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) when behavior
+  changes — it's the source of truth for design decisions, including
+  rejected alternatives, the append-only public-interface rules (§13), and
+  the Soroban-specific traps to avoid rediscovering the hard way (§14).
 - Error codes and events are documented in tables; keep the tables in sync.
 
 ## Branch & PR process

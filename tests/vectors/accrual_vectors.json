@@ -1,0 +1,198 @@
+[
+  {
+    "deposit": "0",
+    "duration": "0",
+    "elapsed": "0",
+    "expected_result": "0",
+    "expected_error": null
+  },
+  {
+    "deposit": "0",
+    "duration": "100",
+    "elapsed": "50",
+    "expected_result": "0",
+    "expected_error": null
+  },
+  {
+    "deposit": "1000",
+    "duration": "0",
+    "elapsed": "0",
+    "expected_result": "0",
+    "expected_error": null
+  },
+  {
+    "deposit": "1000",
+    "duration": "0",
+    "elapsed": "10",
+    "expected_result": "0",
+    "expected_error": null
+  },
+  {
+    "deposit": "1000",
+    "duration": "100",
+    "elapsed": "0",
+    "expected_result": "0",
+    "expected_error": null
+  },
+  {
+    "deposit": "-100",
+    "duration": "100",
+    "elapsed": "50",
+    "expected_result": "0",
+    "expected_error": null
+  },
+  {
+    "deposit": "1000",
+    "duration": "100",
+    "elapsed": "-10",
+    "expected_result": "0",
+    "expected_error": null
+  },
+  {
+    "deposit": "1000",
+    "duration": "100",
+    "elapsed": "1",
+    "expected_result": "10",
+    "expected_error": null
+  },
+  {
+    "deposit": "1000",
+    "duration": "100",
+    "elapsed": "99",
+    "expected_result": "990",
+    "expected_error": null
+  },
+  {
+    "deposit": "1000",
+    "duration": "100",
+    "elapsed": "100",
+    "expected_result": "1000",
+    "expected_error": null
+  },
+  {
+    "deposit": "1000",
+    "duration": "100",
+    "elapsed": "101",
+    "expected_result": "1000",
+    "expected_error": null
+  },
+  {
+    "deposit": "1000",
+    "duration": "100",
+    "elapsed": "100000",
+    "expected_result": "1000",
+    "expected_error": null
+  },
+  {
+    "deposit": "10000",
+    "duration": "100",
+    "elapsed": "25",
+    "expected_result": "2500",
+    "expected_error": null
+  },
+  {
+    "deposit": "10000",
+    "duration": "100",
+    "elapsed": "50",
+    "expected_result": "5000",
+    "expected_error": null
+  },
+  {
+    "deposit": "10000",
+    "duration": "100",
+    "elapsed": "75",
+    "expected_result": "7500",
+    "expected_error": null
+  },
+  {
+    "deposit": "3",
+    "duration": "10",
+    "elapsed": "1",
+    "expected_result": "0",
+    "expected_error": null
+  },
+  {
+    "deposit": "3",
+    "duration": "10",
+    "elapsed": "4",
+    "expected_result": "1",
+    "expected_error": null
+  },
+  {
+    "deposit": "170141183460469231731687303715884105727",
+    "duration": "18446744073709551615",
+    "elapsed": "0",
+    "expected_result": "0",
+    "expected_error": null
+  },
+  {
+    "deposit": "170141183460469231731687303715884105727",
+    "duration": "18446744073709551615",
+    "elapsed": "1",
+    "expected_result": "9223372036854775808",
+    "expected_error": null
+  },
+  {
+    "deposit": "170141183460469231731687303715884105727",
+    "duration": "18446744073709551615",
+    "elapsed": "18446744073709551615",
+    "expected_result": null,
+    "expected_error": "MathOverflow"
+  },
+  {
+    "deposit": "170141183460469231731687303715884105727",
+    "duration": "100",
+    "elapsed": "100",
+    "expected_result": null,
+    "expected_error": "MathOverflow"
+  },
+  {
+    "deposit": "85070591730234615865843651857942052863",
+    "duration": "1000",
+    "elapsed": "2",
+    "expected_result": "170141183460469231731687303715884105",
+    "expected_error": null
+  },
+  {
+    "deposit": "85070591730234615865843651857942052863",
+    "duration": "1000",
+    "elapsed": "5",
+    "expected_result": null,
+    "expected_error": "MathOverflow"
+  },
+  {
+    "deposit": "340282366920938463463374607431768211455",
+    "duration": "1000",
+    "elapsed": "1",
+    "expected_result": "340282366920938463463374607431768211",
+    "expected_error": null
+  },
+  {
+    "deposit": "340282366920938463463374607431768211455",
+    "duration": "1000",
+    "elapsed": "2",
+    "expected_result": null,
+    "expected_error": "MathOverflow"
+  },
+  {
+    "deposit": "1",
+    "duration": "1000000000",
+    "elapsed": "999999999",
+    "expected_result": "0",
+    "expected_error": null
+  },
+  {
+    "deposit": "1",
+    "duration": "1000000000",
+    "elapsed": "1000000000",
+    "expected_result": "1",
+    "expected_error": null
+  },
+  {
+    "deposit": "9999999999",
+    "duration": "10000000000",
+    "elapsed": "9999999999",
+    "expected_result": "9999999998",
+    "expected_error": null
+  }
+]

@@ -178,31 +178,53 @@ pub struct FeeWithdrawn {
     pub withdrawn_total: i128,
 }
 
-/// Emitted when the oracle publisher set, threshold, or max staleness is updated.
+/// Emitted when the policy module is initialized with its initial admin.
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct OracleConfigUpdated {
-    #[topic]
-    pub governor: Address,
-    pub threshold: u32,
-    pub max_stale_seconds: u64,
+pub struct PolicyInitialized {
+    pub admin: Address,
 }
 
-/// Emitted when an authorized publisher submits an external timestamp report.
+/// Emitted when an asset allowlist mutation is proposed and queued under timelock.
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct OracleTimeReported {
+pub struct PolicyAssetQueued {
     #[topic]
-    pub publisher: Address,
-    pub reported_time: u64,
-    pub ledger_time: u64,
+    pub asset: Address,
+    pub allowed: bool,
+    pub executable_after: u64,
 }
 
-/// Emitted when an oracle-enabled stream falls back to ledger time due to insufficient fresh reports.
+/// Emitted when a queued asset allowlist change is executed after timelock expiry.
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct OracleStaleFallback {
+pub struct PolicyAssetExecuted {
     #[topic]
-    pub stream_id: u64,
-    pub ledger_time: u64,
+    pub asset: Address,
+    pub allowed: bool,
+}
+
+/// Emitted when the admin proposes a new admin in step 1 of the two-step handoff.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PolicyHandoffProposed {
+    #[topic]
+    pub current_admin: Address,
+    pub proposed_admin: Address,
+}
+
+/// Emitted when the proposed admin accepts the handoff in step 2.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PolicyHandoffAccepted {
+    #[topic]
+    pub new_admin: Address,
+}
+
+/// Emitted when a pending admin handoff is cancelled by the current admin.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PolicyHandoffCancelled {
+    #[topic]
+    pub proposed_admin: Address,
 }

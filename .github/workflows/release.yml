@@ -1,8 +1,9 @@
 name: Release
 
 # Tag-driven release: builds the reproducible contract Wasm, records its
-# SHA-256 digest, and attaches both to a GitHub Release draft. Deployments
-# can then be verified byte-for-byte against the published digest.
+# SHA-256 digest and pinned toolchain metadata, and attaches both to a
+# GitHub Release draft. Deployments can then be verified byte-for-byte
+# against the published digest.
 
 on:
   push:
@@ -12,6 +13,7 @@ on:
 permissions:
   contents: write
   attestations: write
+  id-token: write
 
 jobs:
   wasm:
@@ -38,12 +40,45 @@ jobs:
         working-directory: contracts/streaming-payments
         run: stellar contract build
 
-      - name: Digest
+      - name: Compute digest and emit toolchain release metadata
         id: digest
         run: |
           wasm=target/wasm32v1-none/release/streampay_contract.wasm
           sha256sum "$wasm" | tee SHA256SUMS
-          echo "hash=$(awk '{print $1}' SHA256SUMS)" >> "$GITHUB_OUTPUT"
+          hash=$(awk '{print $1}' SHA256SUMS)
+          echo "hash=$hash" >> "$GITHUB_OUTPUT"
+
+          stellar_ver=$(stellar --version | head -n1 | awk '{print $2}')
+          rustc_ver=$(rustc --version | head -n1 | awk '{print $2}')
+          rust_toolchain=$(grep -E '^\s*channel\s*=' rust-toolchain.toml | head -n1 | sed -E 's/.*"([^"]+)".*/\1/' || echo "stable")
+          build_date=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          cat <<EOF > release-metadata.json
+          {
+            "stellar_cli_version": "${stellar_ver}",
+            "rustc_version": "${rustc_ver}",
+            "rust_toolchain": "${rust_toolchain}",
+            "build_date": "${build_date}",
+            "wasm_sha256": "${hash}"
+          }
+          EOF
+          cat release-metadata.json
+
+      # SLSA provenance attestation:
+      # Note on what SLSA build provenance proves and what it does NOT prove:
+      # SLSA provenance attestation cryptographically proves that this specific
+      # artifact originated from this exact GitHub Actions workflow run, repository,
+      # and commit tag (authenticity and source provenance).
+      # It does NOT prove that the build is reproducible or that an external
+      # environment will produce a bit-for-bit identical binary.
+      # Bit-for-bit reproducibility must be verified independently by rebuilding
+      # from the tag using the verify-reproducible-build action.
+      - name: Attest Wasm build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            target/wasm32v1-none/release/streampay_contract.wasm
+            release-metadata.json
 
       - name: Create/edit release draft
         uses: softprops/action-gh-release@v3
@@ -52,6 +87,7 @@ jobs:
           files: |
             target/wasm32v1-none/release/streampay_contract.wasm
             SHA256SUMS
+            release-metadata.json
           body: |
             ## StreamPay contract `${{ github.ref_name }}`
 
@@ -62,4 +98,13 @@ jobs:
             stellar contract build   # in contracts/streaming-payments
             sha256sum target/wasm32v1-none/release/streampay_contract.wasm
             ```
+
+            Or verify with the reproducible build action:
+            ```yaml
+            - uses: Neziahtech/streampay/.github/actions/verify-reproducible-build@${{ github.ref_name }}
+              with:
+                tag: ${{ github.ref_name }}
+                expected_digest: ${{ steps.digest.outputs.hash }}
+            ```
+
             Verify the digest above matches before deploying.
