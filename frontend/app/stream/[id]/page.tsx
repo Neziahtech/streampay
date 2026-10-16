@@ -7,6 +7,7 @@ import { getAddress, isConnected } from "@stellar/freighter-api";
 import {
   cancelStream,
   describeError,
+  isNativeXlm,
   readAvailable,
   readStream,
   withdrawFromStream,
@@ -179,7 +180,11 @@ export default function StreamDetail() {
             </tr>
             <tr>
               <th>Token</th>
-              <td className="mono">{stream.token}</td>
+              <td className="mono" style={{ wordBreak: "break-all" }}>
+                {isNativeXlm(stream.token)
+                  ? `Native XLM — ${stream.token}`
+                  : stream.token}
+              </td>
             </tr>
             <tr>
               <th>Deposit</th>

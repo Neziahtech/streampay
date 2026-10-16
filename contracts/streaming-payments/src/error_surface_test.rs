@@ -20,7 +20,7 @@ use soroban_sdk::testutils::Address as _;
 
 use crate::stream::streamed_at;
 use crate::surface::{trace, Branch, Reachability, RETIRED_CODES};
-use crate::test::Fixture;
+use crate::test::{Fixture, RefusingFixture};
 use crate::{StreamError, MAX_DURATION_SECONDS, MAX_FEE_BPS};
 
 const DAY: u64 = 24 * 60 * 60;
@@ -228,79 +228,66 @@ fn probe(branch: Branch) -> Option<StreamError> {
                 &1,
             )))
         }
-        Branch::CommitmentNotFound => {
-            let f = Fixture::setup_quiet();
-            Some(rejected!(f.client.mock_all_auths().try_get_commitment(&999)))
-        }
-        Branch::CommitmentNotActive => {
-            let f = Fixture::setup_quiet();
-            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
-            let salt = soroban_sdk::BytesN::from_array(&f.env, &[1u8; 32]);
-            let hash = f.env.crypto().sha256(&(id, &f.recipient, 1000i128, &salt));
-            let comm_id = f.client.mock_all_auths().commit_claim(
-                &id,
+        // ---------------------------------------------- token interactions
+        //
+        // These branches fire when the *token* refuses a movement. The probes
+        // use [`RefusingFixture`]: a minimal SEP-41 contract whose error code
+        // deliberately equals 13 (`NothingToWithdraw`), so receiving StreamPay's
+        // own code proves the raw token error did not leak.
+        Branch::CreateDepositTransferFailed => {
+            let f = RefusingFixture::setup_quiet();
+            f.refuse(false, true); // refuses the incoming pull
+            let now = f.env.ledger().timestamp();
+            Some(rejected!(f.client.mock_all_auths().try_create_stream(
+                &f.sender,
                 &f.recipient,
-                &hash,
-                &500i128,
-                &DAY,
-            );
-            f.advance_time(DAY + 1);
-            f.client.mock_all_auths().expire_reveal(&comm_id);
-            // Calling expire_reveal again on an already expired commitment fails with CommitmentNotActive
-            Some(rejected!(f.client.mock_all_auths().try_expire_reveal(&comm_id)))
-        }
-        Branch::CommitmentExpired => {
-            let f = Fixture::setup_quiet();
-            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
-            let salt = soroban_sdk::BytesN::from_array(&f.env, &[1u8; 32]);
-            let hash = f.env.crypto().sha256(&(id, &f.recipient, 1000i128, &salt));
-            let comm_id = f.client.mock_all_auths().commit_claim(
-                &id,
-                &f.recipient,
-                &hash,
-                &500i128,
-                &DAY,
-            );
-            // Advance time past reveal_deadline
-            f.advance_time(DAY + 2);
-            Some(rejected!(f.client.mock_all_auths().try_reveal_claim(
-                &comm_id,
-                &1000i128,
-                &salt,
+                &f.token,
+                &DEPOSIT,
+                &now,
+                &(now + 2 * DAY),
+                &false,
             )))
         }
-        Branch::CommitmentNotExpired => {
-            let f = Fixture::setup_quiet();
-            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
-            let salt = soroban_sdk::BytesN::from_array(&f.env, &[1u8; 32]);
-            let hash = f.env.crypto().sha256(&(id, &f.recipient, 1000i128, &salt));
-            let comm_id = f.client.mock_all_auths().commit_claim(
-                &id,
-                &f.recipient,
-                &hash,
-                &500i128,
-                &DAY,
-            );
-            // Trying to expire immediately when not expired
-            Some(rejected!(f.client.mock_all_auths().try_expire_reveal(&comm_id)))
+        Branch::TopUpTransferFailed => {
+            let f = RefusingFixture::setup_quiet();
+            let id = f.create(DEPOSIT, 0, 10 * DAY);
+            f.refuse(false, true); // stops accepting incoming transfers
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_top_up(&id, &DEPOSIT)))
         }
-        Branch::InvalidCommitmentHash => {
-            let f = Fixture::setup_quiet();
-            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
-            let salt = soroban_sdk::BytesN::from_array(&f.env, &[1u8; 32]);
-            let wrong_salt = soroban_sdk::BytesN::from_array(&f.env, &[2u8; 32]);
-            let hash = f.env.crypto().sha256(&(id, &f.recipient, 1000i128, &salt));
-            let comm_id = f.client.mock_all_auths().commit_claim(
-                &id,
+        Branch::RecipientPayoutFailed => {
+            let f = RefusingFixture::setup_quiet();
+            let id = f.create(DEPOSIT, 0, 10 * DAY);
+            f.advance_time(DAY); // 1 of 10 days accrued
+            f.refuse(true, false); // asset stops paying out
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_withdraw(&id, &(DEPOSIT / 10))))
+        }
+        Branch::SenderRefundFailed => {
+            let f = RefusingFixture::setup_quiet();
+            // Not started: recipient_amount is 0, so only the refund leg runs.
+            let id = f.create(DEPOSIT, DAY, 10 * DAY);
+            f.refuse(true, false);
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_cancel_stream(&f.sender, &id)))
+        }
+        Branch::TreasuryPayoutFailed => {
+            let f = RefusingFixture::setup_quiet();
+            f.client.mock_all_auths().set_fee_bps(&f.governor, &100);
+            // Charges a fee into the treasury ledger (1 % of the deposit).
+            let _id = f.create(DEPOSIT, 0, 10 * DAY);
+            f.refuse(true, false);
+            Some(rejected!(f.client.mock_all_auths().try_withdraw_treasury(
+                &f.governor,
+                &f.token,
                 &f.recipient,
-                &hash,
-                &500i128,
-                &DAY,
-            );
-            Some(rejected!(f.client.mock_all_auths().try_reveal_claim(
-                &comm_id,
-                &1000i128,
-                &wrong_salt,
+                &1,
             )))
         }
         // Invariant-protected: a stored stream always satisfies
@@ -436,11 +423,11 @@ fn stream_error_variant_list_is_exhaustive() {
             | StreamError::NotGovernor
             | StreamError::NoPendingGovernor
             | StreamError::InsufficientTreasuryBalance
-            | StreamError::CommitmentNotFound
-            | StreamError::CommitmentNotActive
-            | StreamError::CommitmentExpired
-            | StreamError::CommitmentNotExpired
-            | StreamError::InvalidCommitmentHash => StreamError::ALL.contains(&e),
+            | StreamError::DepositTransferFailed
+            | StreamError::TopUpTransferFailed
+            | StreamError::RecipientPayoutFailed
+            | StreamError::SenderRefundFailed
+            | StreamError::TreasuryPayoutFailed => StreamError::ALL.contains(&e),
         }
     }
 

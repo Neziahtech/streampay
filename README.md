@@ -99,7 +99,11 @@ append-only, creation-ordered stream-id lists per address, paginated
 (`limit` clamped to `MAX_PAGE_SIZE = 50`). Terminal streams keep their ids —
 read each stream's `status` for lifecycle state.
 
-Creating a stream requires a prior token approval: `token.approve(sender, <contract id>, deposit, exp)`. All failures return typed `StreamError` codes (no panics) — see `contracts/streaming-payments/src/errors.rs`.
+Any SEP-41-compatible asset can fund a stream: an issued asset via its
+Stellar Asset Contract id (e.g. USDC on testnet) or **native XLM** via its
+own SAC — the frontend's asset selector resolves the choice for you.
+
+Creating a stream requires a prior token approval: `token.approve(sender, <contract id>, deposit, exp)` — the UI checks the allowance and signs the approval only when it is short. All failures return typed `StreamError` codes (no panics) — see `contracts/streaming-payments/src/errors.rs`. Token-transfer failures carry their own codes (`DepositTransferFailed` 18, `TopUpTransferFailed` 19, `RecipientPayoutFailed` 20, `SenderRefundFailed` 21, `TreasuryPayoutFailed` 22): a token's own error numbers live in the same `Error(Contract, #N)` namespace and are never allowed to masquerade as StreamPay's.
 
 ## Protocol fees (optional)
 

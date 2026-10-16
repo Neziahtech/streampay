@@ -34,6 +34,13 @@
 //!   token treasuries (funds are only ever moved by these entry points).
 //! - All state changes happen *before* token transfers (checks-effects-
 //!   interactions), so reentrant token callbacks cannot over-withdraw.
+//! - Every token call goes through the SDK's fallible (`try_`) client and a
+//!   failure is re-raised as a distinct `StreamError` transfer-failure code
+//!   (18–22). Token contract errors share the `Error(Contract, #N)` namespace
+//!   with this contract's codes, so propagating them raw would let a token's
+//!   own code masquerade as a StreamPay code in clients. Because the failure
+//!   is still returned as `Err`, the whole invocation — including any effects
+//!   written before the transfer — rolls back atomically.
 //! - `treasury.charged_total == sum of FeeCharged events == sum of stored
 //!   per-stream fees`, provable from public reads (see `treasury.rs`).
 
@@ -52,7 +59,10 @@ mod test;
 mod test_client;
 mod treasury;
 
-use soroban_sdk::{contract, contractimpl, contracttype, token::TokenClient, Address, Env, Vec};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, token::TokenClient, Address, ConversionError, Env,
+    Error as SorobanError, InvokeError, MuxedAddress, Vec,
+};
 
 use surface::Branch;
 
@@ -85,6 +95,70 @@ pub struct StreamInput {
 /// The StreamPay streaming-payments contract.
 #[contract]
 pub struct StreamingPayments;
+
+/// Outcome of an SDK fallible (`try_`) call on a token contract: an outer
+/// `Err` is a failed invocation (token contract error or host failure), an
+/// inner `Err` a return-value conversion failure (a non-SEP-41 return type).
+type TokenCall<T> = Result<Result<T, ConversionError>, Result<SorobanError, InvokeError>>;
+
+/// Unwraps a token call, mapping **every** failure mode to `on_failure`.
+///
+/// A token's own error code must never escape this contract: contract error
+/// numbers are per-contract and clients see them as `Error(Contract, #N)`, so
+/// a token's `#5` would otherwise be indistinguishable from
+/// [`StreamError::StreamNotActive`] (#5). Callers must always propagate the
+/// mapped error with `?`: returning `Err` aborts the top-level invocation, so
+/// effects already written in this call roll back together with the failed
+/// (and therefore fully rolled-back) token transfer — no partial state and no
+/// partial event log can survive a failed transfer.
+fn token_result<T>(res: TokenCall<T>, on_failure: Branch) -> Result<T, StreamError> {
+    match res {
+        Ok(Ok(value)) => Ok(value),
+        // Conversion failures mean the callee did not return a SEP-41 shaped
+        // value; treat a non-compliant token exactly like a failed transfer.
+        // Both failure modes are reported through the branch registry, so the
+        // error-surface matrix sees the exact `(entrypoint, condition)` that
+        // refused the call.
+        Ok(Err(_)) | Err(_) => Err(surface::reject(on_failure)),
+    }
+}
+
+/// Pulls `amount` of `token` from `payer` into this contract via
+/// `transfer_from`, mapping a token-side failure (insufficient balance or
+/// allowance, a non-transferable asset, a non-token contract) to the code
+/// `on_failure` declares.
+fn pull(
+    env: &Env,
+    token: &Address,
+    payer: &Address,
+    amount: i128,
+    on_failure: Branch,
+) -> Result<(), StreamError> {
+    let res = TokenClient::new(env, token).try_transfer_from(
+        &env.current_contract_address(),
+        payer,
+        &env.current_contract_address(),
+        &amount,
+    );
+    token_result(res, on_failure)
+}
+
+/// Sends `amount` of `token` held by this contract to `recipient` via
+/// `transfer`, mapping a token-side failure to the code `on_failure` declares.
+fn push(
+    env: &Env,
+    token: &Address,
+    recipient: &MuxedAddress,
+    amount: i128,
+    on_failure: Branch,
+) -> Result<(), StreamError> {
+    let res = TokenClient::new(env, token).try_transfer(
+        &env.current_contract_address(),
+        recipient,
+        &amount,
+    );
+    token_result(res, on_failure)
+}
 
 #[contractimpl]
 impl StreamingPayments {
@@ -124,6 +198,10 @@ impl StreamingPayments {
     ///   `cancel_stream` to reclaim their accrued balance.
     ///
     /// Returns the new stream id (monotonically increasing, starting at 1).
+    ///
+    /// The deposit pull is mapped to [`StreamError::DepositTransferFailed`]
+    /// (missing balance/allowance, or an asset that refuses the transfer);
+    /// nothing is persisted when it fails, so no stream id is consumed.
     pub fn create_stream(
         env: Env,
         sender: Address,
@@ -148,13 +226,16 @@ impl StreamingPayments {
             .ok_or(StreamError::MathOverflow)?;
 
         // Interaction: pull the deposit (plus fee, when configured) from
-        // the sender.
-        TokenClient::new(&env, &token).transfer_from(
-            &env.current_contract_address(),
+        // the sender. A token-side failure maps to a distinct code; returning
+        // `Err` aborts before anything is persisted (no id consumed, no fee
+        // recorded, no event emitted).
+        pull(
+            &env,
+            &token,
             &sender,
-            &env.current_contract_address(),
-            &pull_amount,
-        );
+            pull_amount,
+            Branch::CreateDepositTransferFailed,
+        )?;
 
         // Effects: persist the stream and announce it.
         let id = stream::next_stream_id(&env);
@@ -305,18 +386,21 @@ impl StreamingPayments {
             index += 1;
         }
 
-        let contract_address = env.current_contract_address();
         let mut token_index = 0;
         while token_index < pull_totals.len() {
             let (token, amount) = pull_totals
                 .get(token_index)
                 .ok_or(StreamError::MathOverflow)?;
-            TokenClient::new(&env, &token).transfer_from(
-                &contract_address,
+            // A token-side refusal maps to [`StreamError::DepositTransferFailed`]
+            // like the single-stream path: the whole batch aborts and every
+            // effect written so far (including the reserved ids) rolls back.
+            pull(
+                &env,
+                &token,
                 &sender,
-                &contract_address,
-                &amount,
-            );
+                amount,
+                Branch::CreateDepositTransferFailed,
+            )?;
             token_index += 1;
         }
 
@@ -369,6 +453,10 @@ impl StreamingPayments {
     /// Reverts with [`StreamError::AmountExceedsAvailable`] if `amount`
     /// exceeds what has accrued so far; before `start_time` nothing has
     /// accrued, at or after `end_time` the full remainder is available.
+    ///
+    /// A token-side failure to deliver the payout returns
+    /// [`StreamError::RecipientPayoutFailed`] and rolls the recorded
+    /// `withdrawn` update back with it.
     pub fn withdraw(env: Env, stream_id: u64, amount: i128) -> Result<(), StreamError> {
         if amount <= 0 {
             return Err(surface::reject(Branch::WithdrawAmountNonPositive));
@@ -390,8 +478,10 @@ impl StreamingPayments {
     /// This is the atomic form of "read `available`, then `withdraw` it":
     /// clients never risk a stale amount between the two calls. Reverts with
     /// [`StreamError::NothingToWithdraw`] when nothing has accrued yet (or
-    /// everything accrued has already been withdrawn), and with
-    /// [`StreamError::StreamNotActive`] on cancelled or depleted streams.
+    /// everything accrued has already been withdrawn), with
+    /// [`StreamError::StreamNotActive`] on cancelled or depleted streams, and
+    /// with [`StreamError::RecipientPayoutFailed`] if the token refuses the
+    /// payout (state rolls back unchanged).
     pub fn withdraw_max(env: Env, stream_id: u64) -> Result<i128, StreamError> {
         let mut s = Self::authorize_withdrawal(&env, stream_id)?;
 
@@ -436,13 +526,13 @@ impl StreamingPayments {
         }
         .publish(env);
 
-        TokenClient::new(env, &s.token).transfer(
-            &env.current_contract_address(),
-            stream::muxed(&s.recipient),
-            &amount,
-        );
-
-        Ok(())
+        push(
+            env,
+            &s.token,
+            &stream::muxed(&s.recipient),
+            amount,
+            Branch::RecipientPayoutFailed,
+        )
     }
 
     /// Cancels a stream: pays the recipient their accrued-but-unwithdrawn
@@ -451,6 +541,12 @@ impl StreamingPayments {
     /// Callable by the sender always, and by the recipient only if the stream
     /// was created with `cancelable = true`. Cancelling an already-cancelled
     /// or depleted stream reverts with [`StreamError::StreamNotActive`].
+    ///
+    /// Each payout leg maps a token-side failure to its own code —
+    /// [`StreamError::RecipientPayoutFailed`] for the recipient's accrued
+    /// share and [`StreamError::SenderRefundFailed`] for the sender's refund —
+    /// and any failure rolls the whole cancellation back: the stream stays
+    /// `Active`, `withdrawn` is restored, and no event survives.
     pub fn cancel_stream(env: Env, caller: Address, stream_id: u64) -> Result<(), StreamError> {
         caller.require_auth();
 
@@ -486,18 +582,19 @@ impl StreamingPayments {
         }
         .publish(&env);
 
-        let token = TokenClient::new(&env, &s.token);
         // MUTANT-SUPPRESS: replace > with >= is acceptable because recipient_amount
         // is only 0 when cancel_amounts computes 0 (cancel before start). The test
         // cancel_at_exact_start_pays_sender_everything verifies correct behavior
         // without the transfer. The >= mutation would only add a no-op transfer of
         // 0 tokens, which is functionally equivalent but unnecessary.
         if recipient_amount > 0 {
-            token.transfer(
-                &env.current_contract_address(),
-                stream::muxed(&s.recipient),
-                &recipient_amount,
-            );
+            push(
+                &env,
+                &s.token,
+                &stream::muxed(&s.recipient),
+                recipient_amount,
+                Branch::RecipientPayoutFailed,
+            )?;
         }
         // MUTANT-SUPPRESS: replace > with >= is acceptable because sender_amount
         // is only 0 when cancel_amounts computes 0 (cancel after end). The test
@@ -505,11 +602,13 @@ impl StreamingPayments {
         // without the transfer. The >= mutation would only add a no-op transfer of
         // 0 tokens, which is functionally equivalent but unnecessary.
         if sender_amount > 0 {
-            token.transfer(
-                &env.current_contract_address(),
-                stream::muxed(&s.sender),
-                &sender_amount,
-            );
+            push(
+                &env,
+                &s.token,
+                &stream::muxed(&s.sender),
+                sender_amount,
+                Branch::SenderRefundFailed,
+            )?;
         }
 
         Ok(())
@@ -523,6 +622,9 @@ impl StreamingPayments {
     /// Top-ups are rejected on cancelled or depleted streams. Topping up a
     /// stream that has already passed `end_time` adds fully-accrued funds the
     /// recipient can withdraw immediately.
+    ///
+    /// A token-side failure to pull the funds returns
+    /// [`StreamError::TopUpTransferFailed`] and leaves `deposit` unchanged.
     ///
     /// Note: extending `end_time` is intentionally not supported in v1 —
     /// retroactively re-baselining accrual is lossy for the recipient; see
@@ -543,13 +645,16 @@ impl StreamingPayments {
             .ok_or_else(|| surface::reject(Branch::TopUpDepositOverflow))?;
         stream::validate_capacity(new_deposit, s.duration())?;
 
-        // Interaction: pull the added funds from the sender.
-        TokenClient::new(&env, &s.token).transfer_from(
-            &env.current_contract_address(),
+        // Interaction: pull the added funds from the sender. A token-side
+        // failure maps to a distinct code; the effects below never run, and
+        // no partial state survives the `Err`.
+        pull(
+            &env,
+            &s.token,
             &s.sender,
-            &env.current_contract_address(),
-            &amount,
-        );
+            amount,
+            Branch::TopUpTransferFailed,
+        )?;
 
         // Effects: record the new deposit and announce it.
         s.deposit = new_deposit;
@@ -678,7 +783,9 @@ impl StreamingPayments {
     /// withdrawn ([`StreamError::InsufficientTreasuryBalance`]).
     ///
     /// Effects-interactions ordered: `FeeWithdrawn` is emitted and the
-    /// accounting persisted *before* the token transfer.
+    /// accounting persisted *before* the token transfer. A token-side failure
+    /// to pay out returns [`StreamError::TreasuryPayoutFailed`], rolling the
+    /// recorded withdrawal and the event back with it.
     pub fn withdraw_treasury(
         env: Env,
         caller: Address,
@@ -712,12 +819,15 @@ impl StreamingPayments {
         }
         .publish(&env);
 
-        // Interaction.
-        TokenClient::new(&env, &token).transfer(
-            &env.current_contract_address(),
-            stream::muxed(&recipient),
-            &amount,
-        );
+        // Interaction: a token-side failure maps to its own code and rolls
+        // the recorded withdrawal and the `FeeWithdrawn` event back with it.
+        push(
+            &env,
+            &token,
+            &stream::muxed(&recipient),
+            amount,
+            Branch::TreasuryPayoutFailed,
+        )?;
 
         Ok(())
     }
