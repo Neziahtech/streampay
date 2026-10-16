@@ -1,14 +1,17 @@
 # StreamPay frontend
 
 Minimal Next.js (App Router, TypeScript) UI for the StreamPay contract:
-connect Freighter, create streams, withdraw accrued funds (single amount or
-atomic **withdraw max**), top up, cancel — with on-chain discovery so the
-list survives reloads and shows streams you didn't create in this session.
+connect Freighter, create streams, withdraw accrued funds (single amount,
+atomic **withdraw max**, or **claim for free** through a sponsor relay),
+top up, cancel — with on-chain discovery so the list survives reloads and
+shows streams you didn't create in this session.
 
 ## Routes
 
 | Route | What it does |
 |---|---|
+| `/` | Connect, create form, stream list with per-row actions and a **Discover on-chain** button (scans the contract's `recipient_streams` / `sender_streams` indexes for your address) |
+| `/stream/[id]` | Stream detail: progress bar, live `available` poll (15 s), withdraw form with over-withdrawal guard, **Withdraw max** (`withdraw_max`), **Claim for free** (gas-sponsored relay when a sponsor covers the stream's token), cancel. Read-only-safe without a wallet; contract errors decode to `StreamError` names |
 | `/` | Connect, single and CSV batch creation forms (asset selector: **native XLM** or an entered token contract id), stream list with per-row actions and a **Discover on-chain** button (scans the contract's `recipient_streams` / `sender_streams` indexes for your address) |
 | `/stream/[id]` | Stream detail: progress bar, live `available` poll (15 s), withdraw form with over-withdrawal guard, **Withdraw max** (`withdraw_max`), cancel. Read-only-safe without a wallet; contract errors decode to `StreamError` names |
 
@@ -37,8 +40,9 @@ For a one-command deployed contract + demo stream, see
 
 ## Notes
 
-- `npm run lint` + `npm run typecheck` + `npm run build` + `npm audit` run in
-  CI.
+- `npm run lint` + `npm run typecheck` + `npm run build` + `npm audit` +
+  `npm test` run in CI. `npm test` includes the sponsorship wire-parity
+  vectors (frozen message XDR + digest shared with the Rust suite).
 - Every mutating call follows: build → simulate → Freighter sign → send → poll.
 - Create/top-up first read the token's `allowance` and ask Freighter to sign
   a `token.approve` **only when it is short** — so a first stream with a new

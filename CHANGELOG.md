@@ -102,6 +102,35 @@ interface: they are only ever appended to, never renumbered or reused.
   branches or any branch without a code.
 - Generated [`docs/ERRORS.md`](./docs/ERRORS.md) (entrypoint × branch → code
   table) with a CI step that regenerates it and diffs the committed artifact.
+- **Gas sponsorship** (`sponsor.rs`, issue #57): sponsors pay transaction
+  costs for recipients claiming accrued funds. Soroban has no mempool
+  relayer, so authorization is carried *inside* the call: any account
+  submits `sponsored_withdraw` and pays the network fee, while consent is
+  two ed25519 signatures (sponsor operator key + enrolled beneficiary key)
+  over the SHA-256 digest of a canonical XDR message (domain tag
+  `StreamPay/sponsored-withdraw/v1`, contract, sponsor, beneficiary, token,
+  stream id, amount, nonce, deadline). Per-sponsor period caps,
+  per-beneficiary caps with rolling windows, one-shot nonces, sponsor
+  pause/resume and instant operator-key rotation; an invalid signature
+  traps before any nonce or budget state is consumed.
+- Sponsor entrypoints: `register_sponsor`, `set_sponsor_active`,
+  `rotate_operator_key`, `enroll_beneficiary`, `sponsored_withdraw`, plus
+  open reads `get_sponsor`, `get_beneficiary_public_key`,
+  `sponsor_period_spend`, `beneficiary_spend`. New `StreamError` variants
+  (appended): `SponsorNotFound` (21), `SponsorInactive` (22),
+  `BeneficiaryNotEnrolled` (23), `ClaimExpired` (24), `ClaimNonceReplay`
+  (25), `SponsorBudgetExceeded` (26), `BeneficiaryBudgetExceeded` (27);
+  18–20 remain reserved for the dispute-flow PR.
+- Frontend "Claim for free" path (`frontend/lib/sponsor.ts` + stream detail
+  page): builds and signs the exact intent the contract verifies, posts it
+  to the sponsor relay, and discloses who pays and how much budget remains;
+  falls back to a self-paid claim when no sponsor covers the stream's
+  token. JS ↔ Rust wire parity is pinned by frozen vectors on both sides
+  (`canonical_relay_message_has_a_frozen_wire_form` / `lib/sponsor.test.ts`).
+- Sponsorship docs: [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) §13
+  (mechanism, message layout, check order, relay contract, rejected
+  alternatives) and [`docs/THREAT_MODEL.md`](./docs/THREAT_MODEL.md) §12
+  (budget-drain griefing, signature interception, replay).
 - Distinct `StreamError` codes for token-transfer failures, appended after
   the scheduled-intent codes (18–25): `DepositTransferFailed` (26),
   `TopUpTransferFailed` (27), `RecipientPayoutFailed` (28),

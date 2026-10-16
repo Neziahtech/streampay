@@ -626,6 +626,124 @@ and asserts the observed alert timing, plus a constants-sync test that fails
 if `TTL_THRESHOLD_LEDGERS` / `TTL_EXTEND_LEDGERS`, the extension call sites or
 the never-extended counter drift from what this section documents.
 
+## 13. Gas sponsorship: relayed claims without a mempool relayer
+
+Recipients who have never held XLM cannot pay a Soroban transaction fee, so a
+first payroll or subscription claim dead-ends at "insufficient funds to claim
+funds". Soroban offers no protocol-level relayer and a contract cannot meter
+another account's fee, so [`sponsor.rs`](../contracts/streaming-payments/src/sponsor.rs)
+implements sponsorship as **inner authorization by dual ed25519 signature**:
+the two parties who *would* have signed the transaction sign a canonical
+off-chain intent, and any operator may submit it.
+
+### 13.1 Roles
+
+| Role | Key | Signs | Pays |
+|---|---|---|---|
+| Sponsor | owner key (kept cold) | registration, pause/resume, rotation | budget in the funded token |
+| Operator (relayer) | one registered `OperatorKey` per sponsor | the claim intent | the Soroban transaction fee |
+| Beneficiary | one enrolled consent key per address | the claim intent | nothing (except the one-time enrollment) |
+
+The sponsor's owner key and the operator key are deliberately separate: the
+hot key that submits transactions is never the key that authorizes budget
+changes, so a compromised relayer can spend at most the configured cap and can
+be rotated out in one call (`rotate_operator_key`).
+
+### 13.2 The exact mechanism chosen
+
+`require_auth` on a plain account cannot be satisfied by a third party, and
+`authorize_as_current_contract` (Soroban account contracts) would require every
+beneficiary to deploy *and fund* a contract wallet — the opposite of claiming
+for free. Instead the contract rebuilds the signed payload itself:
+
+| # | Field | XDR form |
+|---:|---|---|
+| 1 | `"StreamPay/sponsored-withdraw/v1"` | `ScVal::String` (domain tag) |
+| 2–5 | contract id, sponsor, beneficiary, token strkeys | `ScVal::String` |
+| 6 | `stream_id` | `ScVal::U64` |
+| 7 | `amount` | `ScVal::I128` |
+| 8 | `nonce` | `ScVal::U64` |
+| 9 | `deadline` | `ScVal::U64` |
+
+`sponsor::message` assembles that `Vec<Val>`; `signature_digest` takes
+`Vec<Val>.to_xdr(env)` → `sha256` and both `ed25519_verify` calls run over the
+32-byte digest (hash-first, the SDK's recommended posture for auth payloads).
+Every field is inside the digest, so a signature cannot be replayed across
+streams, amounts, sponsors, tokens, contracts, networks, or time.
+
+The XDR form is pinned twice, once per language: the Rust test
+`canonical_relay_message_has_a_frozen_wire_form` (`sponsor_test.rs`) and
+`frontend/lib/sponsor.test.ts` assert the same 364-byte message and the same
+digest. Rewriting the message on one side alone fails that side's suite rather
+than silently invalidating sponsors' signatures.
+
+### 13.3 Check order in `sponsored_withdraw`
+
+`env.crypto().ed25519_verify` **traps** on a bad signature; it is not a
+`Result`. All code-returning checks therefore run first, so business failures
+stay explainable on the wire and a forged signature simply never lands:
+
+| Order | Check | Failure |
+|---:|---|---|
+| 1 | sponsor registered | `SponsorNotFound` (21) |
+| 2 | sponsor active | `SponsorInactive` (22) |
+| 3 | operator key present | `SponsorNotFound` (21) |
+| 4–5 | stream exists; token, recipient and status match the claim | `StreamNotFound` (1) / `StreamNotActive` (5) |
+| 6 | amount > 0 and ≤ available | `ZeroAmount` (9) / `AmountExceedsAvailable` (10) |
+| 7 | beneficiary enrolled | `BeneficiaryNotEnrolled` (23) |
+| 8 | `deadline` not passed | `ClaimExpired` (24) |
+| 9 | nonce unspent for `(sponsor, beneficiary)` | `ClaimNonceReplay` (25) |
+| 10 | sponsor period spend + amount ≤ `per_period_limit` | `SponsorBudgetExceeded` (26) |
+| 11 | beneficiary period spend + amount ≤ `per_beneficiary_limit` | `BeneficiaryBudgetExceeded` (27) |
+| 12 | both ed25519 signatures over the digest | host trap, all effects rolled back |
+| 13 | effects, then `transfer` (interaction last, per §5) | — |
+
+A trap at step 12 rolls back the nonce marker too, so a relayed-but-tampered
+payload does not burn the beneficiary's nonce.
+
+### 13.4 Budget accounting
+
+`SponsorConfig { token, per_period_limit, per_beneficiary_limit,
+window_seconds, active }` plus two `PeriodSpend { period_start, spend }`
+counters (sponsor-wide, per beneficiary). A counter whose window elapsed is
+treated as zero and re-bases on the next accepted claim, so caps are rolling
+windows rather than calendar buckets. Caps are per-token: a sponsor funds one
+token only, so a cheap-token cap cannot be drained on an expensive asset.
+
+Nonces are stored as `ClaimNonce(sponsor, beneficiary, nonce)` → `bool` and are
+never freed: replay protection survives window rollover, sponsor pauses, and
+key rotation.
+
+### 13.5 The relay endpoint (operator side)
+
+The frontend's "Claim for free" button POSTs
+`{ intent, beneficiarySig }` (JSON; `streamId`/`amount`/`nonce` as decimal
+strings) to `NEXT_PUBLIC_SPONSOR_RELAY_URL` and expects `{ txHash }`. The
+operator, for its part, must: verify `beneficiarySig` against the beneficiary's
+enrolled consent key (the contract checks it too, but a relay that skips it
+burns its own fee), confirm the deadline is still fresh, never reuse a nonce it
+has already relayed for that beneficiary, sign the same digest with its
+registered operator key, submit
+`sponsored_withdraw(sponsor, beneficiary, stream_id, amount, nonce, deadline,
+operator_sig, beneficiary_sig)` with its own account as the fee payer, and
+respond with the transaction hash.
+
+The contract assumes nothing about the operator's honesty: the caps, the nonce
+map and the deadline are the entire exposure envelope, which is why
+`per_period_limit` is the recommended blast-radius control (see
+[`THREAT_MODEL.md`](THREAT_MODEL.md) §11).
+
+### 13.6 Rejected alternatives
+
+- **Smart-account beneficiaries** (`authorize_as_current_contract`): needs a
+  deployed, funded wallet per recipient.
+- **Sponsor-owned stream balances / pull-payment sub-accounts**: duplicates the
+  stream ledger and breaks §1's per-stream rate conservation.
+- **Single signature from the sponsor only**: would let the relayer move any
+  accrued balance the sponsor registers, with no beneficiary consent.
+- **`require_auth`-style session authorization**: Soroban auth is per
+  transaction and per address; a relayer cannot carry a third party's
+  authorization without an on-chain account contract.
 ## 13. Append-only public interface: storage keys, event shapes, error codes
 
 Three wire surfaces are promises to already-deployed clients, indexers, and —

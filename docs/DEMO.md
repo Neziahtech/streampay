@@ -390,9 +390,76 @@ stellar contract invoke --id "$CONTRACT" --source sender --network testnet -- \
 
 StreamPay maintains on-chain append-only indexes for user streams without requiring an external indexer:
 
+### 10. (Optional) Gas sponsorship — claim for free
+
+Continue from the demo stream (`recipient` still holds no XLM for fees in a
+fresh wallet; that is exactly the case sponsorship solves).
+
+1. **Sponsor registers a budget** — the sponsor account funds its own gas
+   and bounds exposure (here: 500 M units per 1-hour window, 50 M per
+   beneficiary):
+
+   ```bash
+   stellar keys generate sponsor --network testnet
+   curl "https://friendbot.stellar.org?addr=$(stellar keys address sponsor)"
+   stellar contract invoke --id $CONTRACT --source sponsor --network testnet -- \
+     register_sponsor --sponsor $(stellar keys address sponsor) --token $TOKEN \
+     --per_period_limit 500000000 --per_beneficiary_limit 50000000 \
+     --window_seconds 3600 --operator_key <64-hex ed25519 pk>
+   ```
+
+2. **Beneficiary enrolls a consent key** (one-time, paid by the beneficiary;
+   the frontend does this via `enroll_beneficiary` with a generated
+   ed25519 keypair stored in `localStorage`):
+
+   ```bash
+   stellar contract invoke --id $CONTRACT --source recipient --network testnet -- \
+     enroll_beneficiary --beneficiary $(stellar keys address recipient) \
+     --public_key <32-hex ed25519 pk>
+   ```
+
+3. **Relay the claim.** Any funded account can submit; both signatures are
+   over the SHA-256 digest of the canonical message (see
+   `docs/ARCHITECTURE.md` §13.2 — the parity vectors in
+   `sponsor_test.rs` / `lib/sponsor.test.ts` pin the exact bytes):
+
+   ```bash
+   stellar contract invoke --id $CONTRACT --source anyone --network testnet -- \
+     sponsored_withdraw --sponsor $SPONSOR --beneficiary $RECIPIENT \
+     --stream_id 1 --amount 1000000 --nonce 1 --deadline <unix+300> \
+     --operator_sig <64-hex> --beneficiary_sig <64-hex>
+   ```
+
+   Expected: recipient is paid 1 000 000 units, the sponsor's window spend
+   grows by the same amount (`sponsor_period_spend`), and resubmitting the
+   identical call fails with `ClaimNonceReplay` (25). In the frontend this
+   whole step is the **Claim for free** button POSTing
+   `{ intent, beneficiarySig }` to the operator relay.
+
+> **Status:** steps 1–3 are the scripted runbook for this feature; the
+> signature generation was verified end-to-end against the frozen wire
+> vectors in both test suites, but a live testnet run with a screenshot was
+> **not** captured for this PR — it needs a deployed contract, a funded
+> sponsor and a running relay, which the CI environment does not have.
+> `scripts/deploy_testnet.sh` + `npm run dev` reproduce the self-paid demo
+> today; the sponsored path follows the steps above once deployed.
+
 ## Frontend
 
 ```bash
+cd frontend
+cp .env.example .env.local   # paste the contract id (+ sponsor/relay vars for §10)
+npm ci && npm run dev
+```
+
+Connect Freighter (testnet network), import the `sender` seed
+(`stellar keys show sender`) or use any funded testnet account, and create
+streams from the form. The stream list persists across reloads; each row
+links to `/stream/<id>` with a live `available` read and one-click
+**Withdraw max** — or, when a sponsor covers the stream's token
+(`NEXT_PUBLIC_SPONSOR_ADDRESS` + `NEXT_PUBLIC_SPONSOR_RELAY_URL`),
+**Claim for free**: the page shows who pays the network fee and how much of
+the sponsor budget remains before signing the claim intent.
 # Streams where an account is the recipient
 stellar contract invoke --id "$CONTRACT" --source anyone --network testnet -- \
   recipient_streams --recipient "$RECIPIENT" --offset 0 --limit 50

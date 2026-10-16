@@ -3,6 +3,7 @@
 //! Per-stream events are keyed by `stream_id`; `StreamsCreated` is keyed by
 //! sender and carries the batch ids. Non-topic fields are event data.
 
+use soroban_sdk::{contractevent, Address, BytesN};
 use soroban_sdk::{contractevent, Address, Vec};
 
 /// Emitted when a new stream is created and its deposit pulled in.
@@ -178,6 +179,72 @@ pub struct FeeWithdrawn {
     pub withdrawn_total: i128,
 }
 
+/// Emitted when a sponsor registers (or reconfigures) a gas-sponsorship
+/// budget. Keyed by the sponsor address; the `registered` symbol lets indexers
+/// separate budget setup from sponsored claims.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SponsorRegistered {
+    #[topic]
+    pub sponsor: Address,
+    #[topic]
+    pub kind: soroban_sdk::Symbol,
+    pub token: Address,
+    pub per_period_limit: i128,
+    pub per_beneficiary_limit: i128,
+    pub window_seconds: u64,
+}
+
+/// Emitted when a sponsor pauses or resumes its budget.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SponsorActiveSet {
+    #[topic]
+    pub sponsor: Address,
+    #[topic]
+    pub kind: soroban_sdk::Symbol,
+    pub active: bool,
+}
+
+/// Emitted when a beneficiary binds an ed25519 consent key, and again whenever
+/// they rotate it. Keyed by the beneficiary address.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BeneficiaryEnrolled {
+    #[topic]
+    pub beneficiary: Address,
+    #[topic]
+    pub kind: soroban_sdk::Symbol,
+    pub public_key: BytesN<32>,
+}
+
+/// Emitted when a sponsor rotates its authorized operator (relayer) key. The
+/// previous operator key stops validating relay signatures immediately.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OperatorKeyRotated {
+    #[topic]
+    pub sponsor: Address,
+    #[topic]
+    pub kind: soroban_sdk::Symbol,
+    pub new_operator_key: BytesN<32>,
+}
+
+/// Emitted when a claim is sponsored and paid out: the operator relayed the
+/// beneficiary's withdrawal and the sponsor's budget absorbed the gas. The
+/// payout still flows from the stream, exactly as in an unsponsored withdraw.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SponsorClaim {
+    #[topic]
+    pub sponsor: Address,
+    #[topic]
+    pub kind: soroban_sdk::Symbol,
+    #[topic]
+    pub stream_id: u64,
+    pub beneficiary: Address,
+    pub amount: i128,
+    pub nonce: u64,
 /// Emitted when the policy module is initialized with its initial admin.
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]

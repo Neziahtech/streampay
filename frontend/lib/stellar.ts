@@ -30,6 +30,9 @@ const NETWORK =
     : Networks.TESTNET;
 const CONTRACT_ID = process.env.NEXT_PUBLIC_STREAMING_CONTRACT_ID || "";
 
+/** Deployed contract id — sponsors' signed intents are bound to it. */
+export const STREAMING_CONTRACT_ID = CONTRACT_ID;
+
 function contract(): Contract {
   if (!CONTRACT_ID) {
     throw new Error(
@@ -156,6 +159,14 @@ const STREAM_ERRORS: Record<number, string> = {
   15: "NotGovernor",
   16: "NoPendingGovernor",
   17: "InsufficientTreasuryBalance",
+  // 18-20 are reserved for the dispute-flow codes; wire codes are append-only.
+  21: "SponsorNotFound",
+  22: "SponsorInactive",
+  23: "BeneficiaryNotEnrolled",
+  24: "ClaimExpired",
+  25: "ClaimNonceReplay",
+  26: "SponsorBudgetExceeded",
+  27: "BeneficiaryBudgetExceeded",
   18: "IntentNotFound",
   19: "IntentNotPending",
   20: "IntentNotYetExecutable",
@@ -485,6 +496,98 @@ export async function readAvailable(streamId: string): Promise<bigint> {
 }
 
 const MAX_PAGE_SIZE = 50; // mirrors the contract's MAX_PAGE_SIZE
+
+/**
+ * Optional sponsorship configuration (issue #57).
+ *
+ * `SPONSOR_ADDRESS` names the sponsor whose budget the UI offers to the
+ * recipient; `RELAY_URL` is the sponsor's operator endpoint that submits
+ * sponsored claims. With no relay configured the UI keeps the self-paid path.
+ */
+export const SPONSOR_ADDRESS = process.env.NEXT_PUBLIC_SPONSOR_ADDRESS || "";
+export const RELAY_URL = process.env.NEXT_PUBLIC_SPONSOR_RELAY_URL || "";
+
+/** A sponsor's on-chain budget policy plus current window spend. */
+export interface SponsorView {
+  token: string;
+  perPeriodLimit: string;
+  perBeneficiaryLimit: string;
+  windowSeconds: number;
+  active: boolean;
+  /** Spend window this counter covers. */
+  spend: string;
+  /** Units this sponsor can still absorb in the current window. */
+  remaining: string;
+}
+
+function bytesScVal(hex: string) {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  return nativeToScVal(bytes, { type: "bytes" });
+}
+
+function toHex(v: unknown): string {
+  if (typeof v === "string") return v;
+  const arr = v as ArrayLike<number>;
+  return Array.from(arr, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** Reads a sponsor's budget, or null when the address is not a sponsor. */
+export async function readSponsor(sponsor: string): Promise<SponsorView | null> {
+  const cfgVal = await simulateRead("get_sponsor", [scAddr(sponsor)]);
+  if (!cfgVal) return null;
+  const cfg = scValToNative(cfgVal) as Record<string, unknown> | null;
+  if (!cfg) return null; // Option::None
+
+  const spendVal = await simulateRead("sponsor_period_spend", [
+    scAddr(sponsor),
+  ]);
+  const spend = spendVal
+    ? String((scValToNative(spendVal) as { spend: bigint }).spend)
+    : "0";
+  const perPeriod = BigInt(String(cfg.per_period_limit));
+  const spent = BigInt(spend);
+  return {
+    token: String(cfg.token),
+    perPeriodLimit: String(perPeriod),
+    perBeneficiaryLimit: String(cfg.per_beneficiary_limit),
+    windowSeconds: Number(cfg.window_seconds),
+    active: Boolean(cfg.active),
+    spend,
+    remaining: (perPeriod - spent > 0n ? perPeriod - spent : 0n).toString(),
+  };
+}
+
+/** The consent key a beneficiary has enrolled, as 32-byte hex, or null. */
+export async function readBeneficiaryKey(
+  beneficiary: string
+): Promise<string | null> {
+  const retval = await simulateRead("get_beneficiary_public_key", [
+    scAddr(beneficiary),
+  ]);
+  if (!retval) return null;
+  const raw = scValToNative(retval) as unknown;
+  if (raw === null || raw === undefined) return null;
+  return toHex(raw);
+}
+
+/**
+ * Enrolls `publicKeyHex` (32 raw bytes) as `beneficiary`'s consent key so a
+ * sponsor can relay their claims. Requires the recipient's own signature, and
+ * the recipient pays the fee for this one-time setup call.
+ */
+export async function enrollBeneficiary(
+  beneficiary: string,
+  publicKeyHex: string
+): Promise<void> {
+  await send(
+    beneficiary,
+    contract().call("enroll_beneficiary", scAddr(beneficiary), bytesScVal(publicKeyHex)),
+    () => undefined
+  );
+}
 
 /** One page of stream ids from an address index view (read-only). */
 async function readStreamIdsPage(

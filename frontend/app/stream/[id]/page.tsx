@@ -7,14 +7,31 @@ import { getAddress, isConnected } from "@stellar/freighter-api";
 import {
   cancelStream,
   describeError,
+  enrollBeneficiary,
   isNativeXlm,
   readAvailable,
+  readBeneficiaryKey,
+  readSponsor,
   readStream,
+  RELAY_URL,
+  SPONSOR_ADDRESS,
+  STREAMING_CONTRACT_ID,
   withdrawFromStream,
   withdrawMaxFromStream,
+  type SponsorView,
   type StreamView,
 } from "@/lib/stellar";
 import { computeAvailable, StreamSnapshot } from "@/lib/accrual";
+import {
+  consentPublicKeyHex,
+  DEFAULT_INTENT_TTL_SECONDS,
+  intentDeadline,
+  loadOrCreateConsentKey,
+  nextNonce,
+  requestSponsoredClaim,
+  signClaim,
+  type ClaimIntent,
+} from "@/lib/sponsor";
 import { useToast } from "@/components/toast";
 
 function fmtUnits(v: bigint): string {
@@ -34,6 +51,12 @@ export default function StreamDetail() {
   const [snapshot, setSnapshot] = useState<StreamSnapshot | null>(null);
   const [amount, setAmount] = useState<string>("");
   const [address, setAddress] = useState<string | null>(null);
+  const [status, setStatus] = useState<string>("");
+  const [error, setError] = useState<string>("");
+  const [sponsor, setSponsor] = useState<SponsorView | null>(null);
+  const [consentPub, setConsentPub] = useState<string>("");
+  const [enrolledKey, setEnrolledKey] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const [loadError, setLoadError] = useState<string>("");
 
   const reload = useCallback(async () => {
@@ -95,6 +118,37 @@ export default function StreamDetail() {
     })();
   }, []);
 
+  const loadSponsorship = useCallback(async (beneficiary: string) => {
+    if (!SPONSOR_ADDRESS) return;
+    try {
+      const [cfg, enrolled] = await Promise.all([
+        readSponsor(SPONSOR_ADDRESS),
+        readBeneficiaryKey(beneficiary),
+      ]);
+      setSponsor(cfg);
+      setEnrolledKey(enrolled);
+    } catch {
+      // Sponsorship is an optional path; the self-paid claim still works.
+      setSponsor(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    void (async () => {
+      // The consent keypair lives in localStorage — an external system,
+      // loaded once on mount like the wallet address above.
+      setConsentPub(consentPublicKeyHex(loadOrCreateConsentKey()));
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!address) return;
+    void (async () => {
+      await loadSponsorship(address);
+    })();
+  }, [address, loadSponsorship]);
+
+  if (error && !stream) {
   if (loadError && !stream) {
     return (
       <main className="wrap">
@@ -121,6 +175,11 @@ export default function StreamDetail() {
   const isSender = address !== null && address === stream.sender;
   const overWithdrawal =
     available !== null && amount !== "" && BigInt(amount || "0") > available;
+  const consentEnrolled =
+    consentPub !== "" && enrolledKey !== null && enrolledKey === consentPub;
+  const sponsorFundsThisToken =
+    sponsor !== null && sponsor.active && sponsor.token === stream.token;
+  const sponsorBudgetLeft = sponsor !== null && BigInt(sponsor.remaining) > 0n;
 
   async function doWithdraw(max: boolean) {
     if (!address) return;
@@ -142,6 +201,68 @@ export default function StreamDetail() {
       await reload();
     } catch (e) {
       toast.error(describeError(e));
+    }
+  }
+
+  async function doEnableSponsorship() {
+    if (!address || consentPub === "") return;
+    setError("");
+    setStatus("");
+    setBusy(true);
+    try {
+      await enrollBeneficiary(address, consentPub);
+      setStatus("Consent key enrolled — you can now claim without paying gas.");
+      await loadSponsorship(address);
+    } catch (e) {
+      setError(describeError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /**
+   * Sponsored claim: sign the intent locally, hand it to the sponsor's
+   * relayer, and let the operator pay the transaction fee.
+   */
+  async function doClaimForFree() {
+    if (!address || !sponsor) return;
+    const claimAmount =
+      amount !== "" ? BigInt(amount) : (displayAvailable ?? available ?? 0n);
+    if (claimAmount <= 0n) {
+      setError("Nothing has accrued yet.");
+      return;
+    }
+    setError("");
+    setStatus("");
+    setBusy(true);
+    try {
+      const intent: ClaimIntent = {
+        contractId: STREAMING_CONTRACT_ID,
+        sponsor: SPONSOR_ADDRESS,
+        beneficiary: address,
+        token: stream!.token,
+        streamId: stream!.id,
+        amount: claimAmount.toString(),
+        nonce: nextNonce(`${SPONSOR_ADDRESS}:${address}`).toString(),
+        deadline: intentDeadline(),
+      };
+      const beneficiarySig = await signClaim(
+        loadOrCreateConsentKey(),
+        intent
+      );
+      const res = await requestSponsoredClaim(RELAY_URL, {
+        intent,
+        beneficiarySig,
+      });
+      setStatus(
+        `Claimed ${claimAmount.toString()} units — gas paid by the sponsor. tx ${res.txHash}`
+      );
+      setAmount("");
+      await Promise.all([reload(), loadSponsorship(address)]);
+    } catch (e) {
+      setError(describeError(e));
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -245,6 +366,78 @@ export default function StreamDetail() {
               That exceeds the currently accrued {available?.toString()} units —
               the contract would reject it with AmountExceedsAvailable.
             </p>
+          )}
+        </section>
+      )}
+
+      {isRecipient && stream.status === "Active" && SPONSOR_ADDRESS !== "" && (
+        <section className="card">
+          <h2>Claim for free</h2>
+          {sponsor === null && (
+            <p className="muted">
+              No sponsor is registered at{" "}
+              <span className="mono">{SPONSOR_ADDRESS}</span>, so claims pay
+              their own network fee.
+            </p>
+          )}
+          {sponsor !== null && !sponsorFundsThisToken && (
+            <p className="muted">
+              <span className="mono">{SPONSOR_ADDRESS}</span> does not fund this
+              stream&apos;s token (or is paused), so claims pay their own network fee.
+            </p>
+          )}
+          {sponsor !== null && sponsorFundsThisToken && !sponsorBudgetLeft && (
+            <p className="muted">
+              This sponsor has used its budget for the current window (
+              {sponsor.spend} of {sponsor.perPeriodLimit} units). It resets every{" "}
+              {sponsor.windowSeconds}s; until then claims pay their own fee.
+            </p>
+          )}
+          {sponsorFundsThisToken && sponsorBudgetLeft && (
+            <>
+              <p className="muted">
+                <strong>You pay nothing.</strong>{" "}
+                <span className="mono">{SPONSOR_ADDRESS}</span> is the sponsor:
+                its operator builds and submits the transaction and pays the
+                Soroban network fee out of this budget —{" "}
+                {sponsor?.remaining} of {sponsor?.perPeriodLimit} units still
+                available this window. You sign a single claim intent with your
+                consent key, bound to this stream, amount, a one-time nonce and
+                a {DEFAULT_INTENT_TTL_SECONDS}s expiry, so nobody else can spend
+                it or reuse it.
+              </p>
+              {!consentEnrolled && (
+                <>
+                  <button
+                    onClick={() => void doEnableSponsorship()}
+                    disabled={busy}
+                  >
+                    Enable sponsored claims
+                  </button>
+                  <p className="muted">
+                    One-time setup: registers your consent key on-chain. This
+                    setup call is signed and paid by you; the claims it unlocks
+                    are not.
+                  </p>
+                </>
+              )}
+              {consentEnrolled && RELAY_URL === "" && (
+                <p className="muted">
+                  Consent key is enrolled, but no sponsor relay is configured
+                  (NEXT_PUBLIC_SPONSOR_RELAY_URL), so there is no operator to
+                  submit the claim. Use the self-paid withdrawal above.
+                </p>
+              )}
+              {consentEnrolled && RELAY_URL !== "" && (
+                <button
+                  onClick={() => void doClaimForFree()}
+                  disabled={busy}
+                  title="sponsored_withdraw: the sponsor's operator pays the fee"
+                >
+                  {busy ? "Relaying…" : "Claim for free"}
+                </button>
+              )}
+            </>
           )}
         </section>
       )}

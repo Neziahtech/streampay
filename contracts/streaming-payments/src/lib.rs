@@ -17,6 +17,12 @@
 //! - [`StreamingPayments::cancel_stream`] — sender (or recipient, if the
 //!   stream is `cancelable`) closes the stream with a pro-rata split
 //! - [`StreamingPayments::top_up`] — add funds to a running stream
+//! - [`StreamingPayments::sponsored_withdraw`] — an operator relays a
+//!   recipient's claim and a sponsor absorbs the gas, guarded by a budget
+//!   ledger and nonce replay protection (see the `sponsor` module docs)
+//! - [`StreamingPayments::register_sponsor`] /
+//!   [`StreamingPayments::enroll_beneficiary`] /
+//!   [`StreamingPayments::rotate_operator_key`] — sponsorship setup
 //! - [`StreamingPayments::get_stream`] / [`StreamingPayments::available`] —
 //!   read-only views
 //! - [`StreamingPayments::recipient_streams`] /
@@ -55,6 +61,9 @@ mod differential_test;
 mod error_surface_test;
 mod errors;
 mod events;
+pub(crate) mod sponsor;
+#[cfg(test)]
+mod sponsor_test;
 mod policy;
 mod schedule;
 #[cfg(test)]
@@ -77,6 +86,13 @@ use surface::Branch;
 
 pub use errors::StreamError;
 pub use events::{
+    BeneficiaryEnrolled, FeeCharged, FeeWithdrawn, OperatorKeyRotated, SponsorActiveSet,
+    SponsorClaim, SponsorRegistered, StreamCancelled, StreamCreated, StreamToppedUp, Withdrawn,
+};
+pub use sponsor::{PeriodSpend, SponsorConfig};
+    FeeCharged, FeeWithdrawn, ScheduledIntentCancelled, ScheduledIntentExpired,
+    ScheduledStreamExecuted, StreamCancelled, StreamCreated, StreamScheduled, StreamToppedUp,
+    StreamsCreated, Withdrawn,
     FeeCharged, FeeWithdrawn, PolicyAssetExecuted, PolicyAssetQueued, PolicyHandoffAccepted,
     PolicyHandoffCancelled, PolicyHandoffProposed, PolicyInitialized, ScheduledIntentCancelled,
     ScheduledIntentExpired, ScheduledStreamExecuted, StreamCancelled, StreamCreated,
@@ -1306,6 +1322,111 @@ impl StreamingPayments {
         next.saturating_sub(1)
     }
 
+    // ------------------------------------------------------- sponsorship ------
+    // Thin delegators onto the `sponsor` module, which holds the budget ledger,
+    // the replay/nonce bookkeeping, and the ed25519 inner-authorization checks.
+
+    /// Registers (or reconfigures) a sponsor budget and its authorized operator
+    /// (relayer) key. See [`sponsor`].
+    #[allow(clippy::too_many_arguments)] // mirrors sponsor::register_sponsor's surface
+    pub fn register_sponsor(
+        env: Env,
+        sponsor: Address,
+        token: Address,
+        per_period_limit: i128,
+        per_beneficiary_limit: i128,
+        window_seconds: u64,
+        operator_key: soroban_sdk::BytesN<32>,
+    ) -> Result<(), StreamError> {
+        sponsor::register_sponsor(
+            env,
+            sponsor,
+            token,
+            per_period_limit,
+            per_beneficiary_limit,
+            window_seconds,
+            operator_key,
+        )
+    }
+
+    /// Pauses or resumes a sponsor's budget.
+    pub fn set_sponsor_active(env: Env, sponsor: Address, active: bool) -> Result<(), StreamError> {
+        sponsor::set_sponsor_active(env, sponsor, active)
+    }
+
+    /// Rotates a sponsor's authorized operator (relayer) key.
+    pub fn rotate_operator_key(
+        env: Env,
+        sponsor: Address,
+        new_operator_key: soroban_sdk::BytesN<32>,
+    ) -> Result<(), StreamError> {
+        sponsor::rotate_operator_key(env, sponsor, new_operator_key)
+    }
+
+    /// Binds (or rotates) a beneficiary's ed25519 consent key.
+    pub fn enroll_beneficiary(
+        env: Env,
+        beneficiary: Address,
+        public_key: soroban_sdk::BytesN<32>,
+    ) -> Result<(), StreamError> {
+        sponsor::enroll_beneficiary(env, beneficiary, public_key)
+    }
+
+    /// Relays a beneficiary's withdrawal with a sponsor absorbing the gas. See
+    /// [`sponsor`] for the inner-authorization and budget semantics.
+    #[allow(clippy::too_many_arguments)] // the full relay surface is the intended client API
+    pub fn sponsored_withdraw(
+        env: Env,
+        sponsor: Address,
+        beneficiary: Address,
+        stream_id: u64,
+        amount: i128,
+        nonce: u64,
+        deadline: u64,
+        operator_sig: soroban_sdk::BytesN<64>,
+        beneficiary_sig: soroban_sdk::BytesN<64>,
+    ) -> Result<(), StreamError> {
+        sponsor::sponsored_withdraw(
+            env,
+            sponsor,
+            beneficiary,
+            stream_id,
+            amount,
+            nonce,
+            deadline,
+            operator_sig,
+            beneficiary_sig,
+        )
+    }
+
+    /// Reads a sponsor's budget configuration, if any.
+    pub fn get_sponsor(env: Env, sponsor: Address) -> Option<sponsor::SponsorConfig> {
+        sponsor::get_config(&env, &sponsor)
+    }
+
+    /// Reads a beneficiary's enrolled consent key, if any.
+    pub fn get_beneficiary_public_key(
+        env: Env,
+        beneficiary: Address,
+    ) -> Option<soroban_sdk::BytesN<32>> {
+        sponsor::get_beneficiary_key(&env, &beneficiary)
+    }
+
+    /// The sponsor's current-window spend.
+    pub fn sponsor_period_spend(env: Env, sponsor: Address) -> sponsor::PeriodSpend {
+        sponsor::get_period(&env, &sponsor::SponsorKey::SponsorPeriod(sponsor))
+    }
+
+    /// A beneficiary's spend within a sponsor's current window.
+    pub fn beneficiary_spend(
+        env: Env,
+        sponsor: Address,
+        beneficiary: Address,
+    ) -> sponsor::PeriodSpend {
+        sponsor::get_period(
+            &env,
+            &sponsor::SponsorKey::BeneficiarySpend(sponsor, beneficiary),
+        )
     // ------------------------------------------------------------- policy --
     //
     // The optional asset allowlist and governance layer: restricts which assets
