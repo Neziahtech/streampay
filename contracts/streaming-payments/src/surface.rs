@@ -86,22 +86,46 @@ pub enum Branch {
     /// `withdraw_treasury`: amount exceeds fees collected minus fees already
     /// withdrawn.
     WithdrawTreasuryExceedsBalance,
-    // ------------------------------------------------------------- oracle
-    /// `set_oracle_config`: threshold is 0 or greater than publishers length.
-    InvalidOracleThreshold,
-    /// `submit_oracle_time`: oracle publishers are not configured.
-    OraclePublishersNotConfigured,
-    /// `submit_oracle_time`: caller is not an authorized oracle publisher.
-    NotOraclePublisher,
-    /// `submit_oracle_time`: reported timestamp is older than max staleness or in future.
-    OracleReportTooOld,
+    // --------------------------------------------------- scheduled intents
+    /// No stored intent exists for the supplied id.
+    IntentNotFound,
+    /// An operation requiring a pending intent found a terminal intent.
+    IntentNotPending,
+    /// `execute_scheduled`: the next occurrence is not due yet.
+    IntentNotYetExecutable,
+    /// `execute_scheduled` / `cancel_scheduled`: the intent expired.
+    IntentExpired,
+    /// `cancel_scheduled`: the execution window has opened.
+    IntentNotCancellable,
+    /// A schedule parameter is inconsistent or outside its supported bounds.
+    ScheduleInvalidParameters,
+    /// A stored intent no longer matches its authorization commitment.
+    IntentParamsMismatch,
+    /// `reclaim_expired`: the intent has not expired yet.
+    IntentNotExpired,
+    // --------------------------------------------------- token interactions
+    /// `create_stream`: the token refused the pull of `deposit_amount + fee`
+    /// (missing balance/allowance, a non-transferable asset, a non-SEP-41
+    /// callee). Nothing is persisted, so no stream id is consumed.
+    CreateDepositTransferFailed,
+    /// `top_up`: the token refused the pull of the added funds; `deposit` is
+    /// left unchanged.
+    TopUpTransferFailed,
+    /// `withdraw` / `withdraw_max` / the recipient leg of `cancel_stream`: the
+    /// token refused the payout to the stream recipient.
+    RecipientPayoutFailed,
+    /// `cancel_stream`: the token refused the refund of unaccrued funds to the
+    /// sender; the whole cancellation rolls back.
+    SenderRefundFailed,
+    /// `withdraw_treasury`: the token refused the payout of collected fees.
+    TreasuryPayoutFailed,
 }
 
 impl Branch {
     /// Every branch, in declaration order. The matrix test walks this list and
     /// the coverage test requires each [`StreamError`] variant to be produced by
     /// one of these (or retired).
-    pub const ALL: [Branch; 28] = [
+    pub const ALL: [Branch; 37] = [
         Branch::CreateDepositNonPositive,
         Branch::CreateStartTimeInPast,
         Branch::CreateInvalidTimeRange,
@@ -126,10 +150,19 @@ impl Branch {
         Branch::AcceptGovernorNotNominee,
         Branch::WithdrawTreasuryAmountNonPositive,
         Branch::WithdrawTreasuryExceedsBalance,
-        Branch::InvalidOracleThreshold,
-        Branch::OraclePublishersNotConfigured,
-        Branch::NotOraclePublisher,
-        Branch::OracleReportTooOld,
+        Branch::IntentNotFound,
+        Branch::IntentNotPending,
+        Branch::IntentNotYetExecutable,
+        Branch::IntentExpired,
+        Branch::IntentNotCancellable,
+        Branch::ScheduleInvalidParameters,
+        Branch::IntentParamsMismatch,
+        Branch::IntentNotExpired,
+        Branch::CreateDepositTransferFailed,
+        Branch::TopUpTransferFailed,
+        Branch::RecipientPayoutFailed,
+        Branch::SenderRefundFailed,
+        Branch::TreasuryPayoutFailed,
     ];
 
     /// The entrypoint(s) through which this branch can fire. Shared helpers
@@ -140,7 +173,7 @@ impl Branch {
             Branch::CreateDepositNonPositive
             | Branch::CreateStartTimeInPast
             | Branch::CreateInvalidTimeRange
-            | Branch::CreateDurationTooLong => &["create_stream"],
+            | Branch::CreateDurationTooLong => &["create_stream", "create_streams"],
             Branch::WithdrawAmountNonPositive | Branch::WithdrawAmountExceedsAvailable => {
                 &["withdraw"]
             }
@@ -158,7 +191,7 @@ impl Branch {
                 "top_up",
             ],
             Branch::StreamNotActive => &["withdraw", "withdraw_max", "cancel_stream", "top_up"],
-            Branch::CapacityOverflow => &["create_stream", "top_up"],
+            Branch::CapacityOverflow => &["create_stream", "create_streams", "top_up"],
             Branch::RateProductOverflow => &[
                 "streamed_at",
                 "available",
@@ -179,10 +212,26 @@ impl Branch {
             Branch::WithdrawTreasuryAmountNonPositive | Branch::WithdrawTreasuryExceedsBalance => {
                 &["withdraw_treasury"]
             }
-            Branch::InvalidOracleThreshold => &["set_oracle_config"],
-            Branch::OraclePublishersNotConfigured
-            | Branch::NotOraclePublisher
-            | Branch::OracleReportTooOld => &["submit_oracle_time"],
+            Branch::IntentNotFound => &[
+                "get_intent",
+                "execute_scheduled",
+                "cancel_scheduled",
+                "reclaim_expired",
+            ],
+            Branch::IntentNotPending => {
+                &["execute_scheduled", "cancel_scheduled", "reclaim_expired"]
+            }
+            Branch::IntentNotYetExecutable
+            | Branch::IntentExpired
+            | Branch::IntentParamsMismatch => &["execute_scheduled"],
+            Branch::IntentNotCancellable => &["cancel_scheduled"],
+            Branch::ScheduleInvalidParameters => &["schedule_stream"],
+            Branch::IntentNotExpired => &["reclaim_expired"],
+            Branch::CreateDepositTransferFailed => &["create_stream", "create_streams"],
+            Branch::TopUpTransferFailed => &["top_up"],
+            Branch::RecipientPayoutFailed => &["withdraw", "withdraw_max", "cancel_stream"],
+            Branch::SenderRefundFailed => &["cancel_stream"],
+            Branch::TreasuryPayoutFailed => &["withdraw_treasury"],
         }
     }
 
@@ -216,10 +265,19 @@ impl Branch {
             Branch::AcceptGovernorNoPending => StreamError::NoPendingGovernor,
             Branch::WithdrawTreasuryAmountNonPositive => StreamError::ZeroAmount,
             Branch::WithdrawTreasuryExceedsBalance => StreamError::InsufficientTreasuryBalance,
-            Branch::InvalidOracleThreshold => StreamError::InvalidOracleThreshold,
-            Branch::OraclePublishersNotConfigured => StreamError::OraclePublishersNotConfigured,
-            Branch::NotOraclePublisher => StreamError::NotOraclePublisher,
-            Branch::OracleReportTooOld => StreamError::OracleReportTooOld,
+            Branch::IntentNotFound => StreamError::IntentNotFound,
+            Branch::IntentNotPending => StreamError::IntentNotPending,
+            Branch::IntentNotYetExecutable => StreamError::IntentNotYetExecutable,
+            Branch::IntentExpired => StreamError::IntentExpired,
+            Branch::IntentNotCancellable => StreamError::IntentNotCancellable,
+            Branch::ScheduleInvalidParameters => StreamError::InvalidScheduleParameters,
+            Branch::IntentParamsMismatch => StreamError::IntentParamsMismatch,
+            Branch::IntentNotExpired => StreamError::IntentNotExpired,
+            Branch::CreateDepositTransferFailed => StreamError::DepositTransferFailed,
+            Branch::TopUpTransferFailed => StreamError::TopUpTransferFailed,
+            Branch::RecipientPayoutFailed => StreamError::RecipientPayoutFailed,
+            Branch::SenderRefundFailed => StreamError::SenderRefundFailed,
+            Branch::TreasuryPayoutFailed => StreamError::TreasuryPayoutFailed,
         }
     }
 
@@ -266,15 +324,30 @@ impl Branch {
             Branch::WithdrawTreasuryExceedsBalance => {
                 "amount exceeds fees collected minus fees already withdrawn"
             }
-            Branch::InvalidOracleThreshold => {
-                "oracle threshold is zero or exceeds the number of publishers"
+            Branch::IntentNotFound => "no scheduled intent is stored under the id",
+            Branch::IntentNotPending => "the intent is already executed, cancelled, or expired",
+            Branch::IntentNotYetExecutable => "the next occurrence has not reached execute_after",
+            Branch::IntentExpired => "the intent has reached expires_at",
+            Branch::IntentNotCancellable => "the execution window opened before cancellation",
+            Branch::ScheduleInvalidParameters => {
+                "schedule parameters are inconsistent or out of bounds"
             }
-            Branch::OraclePublishersNotConfigured => {
-                "oracle publishers have not been configured by the governor"
+            Branch::IntentParamsMismatch => {
+                "stored parameters do not match the authorization commitment"
             }
-            Branch::NotOraclePublisher => "the caller is not an authorized oracle publisher",
-            Branch::OracleReportTooOld => {
-                "reported oracle timestamp is older than max staleness or in the future"
+            Branch::IntentNotExpired => "the intent has not reached expires_at",
+            Branch::CreateDepositTransferFailed => {
+                "the token refuses the deposit (+fee) pull (allowance, balance, or a non-compliant token)"
+            }
+            Branch::TopUpTransferFailed => {
+                "the token refuses the pull of the added funds"
+            }
+            Branch::RecipientPayoutFailed => {
+                "the token refuses a payout to the recipient"
+            }
+            Branch::SenderRefundFailed => "the token refuses the refund to the sender",
+            Branch::TreasuryPayoutFailed => {
+                "the token refuses the payout of collected protocol fees"
             }
         }
     }

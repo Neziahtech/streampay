@@ -13,31 +13,40 @@ Every expected failure is a `StreamError` with a stable numeric code. This docum
 | 3 | `NotStreamRecipient` | **retired** (unreachable) | — | Reserved role check from the original draft. Recipient-only actions require the recipient's authorization (`require_auth`) and use `NotAuthorized` (#12) for business-rule rejections, so this variant is never returned. Retained for wire compatibility. |
 | 4 | `StreamNotCancellable` | reachable (1 branch(es)) | `cancel_stream` | the recipient calls cancel_stream on a stream created non-cancelable |
 | 5 | `StreamNotActive` | reachable (1 branch(es)) | `cancel_stream`, `top_up`, `withdraw`, `withdraw_max` | the stream status is Cancelled or Depleted |
-| 6 | `StartTimeInPast` | reachable (1 branch(es)) | `create_stream` | start_time is before the current ledger timestamp |
-| 7 | `InvalidTimeRange` | reachable (1 branch(es)) | `create_stream` | end_time is not strictly after start_time (zero or negative duration) |
-| 8 | `DurationTooLong` | reachable (1 branch(es)) | `create_stream` | duration exceeds MAX_DURATION_SECONDS (100 years) |
-| 9 | `ZeroAmount` | reachable (4 branch(es)) | `create_stream`, `top_up`, `withdraw`, `withdraw_treasury` | deposit_amount is zero or negative; withdraw amount is zero or negative; top-up amount is zero or negative; treasury withdrawal amount is zero or negative |
+| 6 | `StartTimeInPast` | reachable (1 branch(es)) | `create_stream`, `create_streams` | start_time is before the current ledger timestamp |
+| 7 | `InvalidTimeRange` | reachable (1 branch(es)) | `create_stream`, `create_streams` | end_time is not strictly after start_time (zero or negative duration) |
+| 8 | `DurationTooLong` | reachable (1 branch(es)) | `create_stream`, `create_streams` | duration exceeds MAX_DURATION_SECONDS (100 years) |
+| 9 | `ZeroAmount` | reachable (4 branch(es)) | `create_stream`, `create_streams`, `top_up`, `withdraw`, `withdraw_treasury` | deposit_amount is zero or negative; withdraw amount is zero or negative; top-up amount is zero or negative; treasury withdrawal amount is zero or negative |
 | 10 | `AmountExceedsAvailable` | reachable (1 branch(es)) | `withdraw` | amount exceeds the accrued-but-unwithdrawn balance |
-| 11 | `MathOverflow` | reachable (6 branch(es)) | `available`, `cancel_stream`, `create_stream`, `streamed_at`, `top_up`, `withdraw`, `withdraw_max` | deposit + amount would overflow i128; deposit * duration would overflow u128; deposit * elapsed would overflow u128; withdrawn exceeds streamed (an invariant-violating stored stream); the cancel pro-rata split would underflow; withdrawn + amount would overflow i128 |
+| 11 | `MathOverflow` | reachable (6 branch(es)) | `available`, `cancel_stream`, `create_stream`, `create_streams`, `streamed_at`, `top_up`, `withdraw`, `withdraw_max` | deposit + amount would overflow i128; deposit * duration would overflow u128; deposit * elapsed would overflow u128; withdrawn exceeds streamed (an invariant-violating stored stream); the cancel pro-rata split would underflow; withdrawn + amount would overflow i128 |
 | 12 | `NotAuthorized` | reachable (1 branch(es)) | `cancel_stream` | the caller is neither the sender nor the recipient |
 | 13 | `NothingToWithdraw` | reachable (1 branch(es)) | `withdraw_max` | nothing has accrued yet, or everything accrued was already withdrawn |
 | 14 | `FeeRateTooHigh` | reachable (1 branch(es)) | `set_fee_bps` | new_fee_bps exceeds MAX_FEE_BPS (the protocol cap) |
 | 15 | `NotGovernor` | reachable (2 branch(es)) | `accept_governor`, `nominate_governor`, `set_fee_bps`, `withdraw_treasury` | the caller is not the treasury governor; the caller is not the nominated governor |
 | 16 | `NoPendingGovernor` | reachable (1 branch(es)) | `accept_governor` | accept_governor with no nomination pending |
 | 17 | `InsufficientTreasuryBalance` | reachable (1 branch(es)) | `withdraw_treasury` | amount exceeds fees collected minus fees already withdrawn |
-| 18 | `InvalidOracleThreshold` | reachable (1 branch(es)) | `set_oracle_config` | oracle threshold is zero or exceeds the number of publishers |
-| 19 | `OraclePublishersNotConfigured` | reachable (1 branch(es)) | `submit_oracle_time` | oracle publishers have not been configured by the governor |
-| 20 | `OracleReportTooOld` | reachable (1 branch(es)) | `submit_oracle_time` | reported oracle timestamp is older than max staleness or in the future |
-| 21 | `NotOraclePublisher` | reachable (1 branch(es)) | `submit_oracle_time` | the caller is not an authorized oracle publisher |
+| 18 | `IntentNotFound` | reachable (1 branch(es)) | `cancel_scheduled`, `execute_scheduled`, `get_intent`, `reclaim_expired` | no scheduled intent is stored under the id |
+| 19 | `IntentNotPending` | reachable (1 branch(es)) | `cancel_scheduled`, `execute_scheduled`, `reclaim_expired` | the intent is already executed, cancelled, or expired |
+| 20 | `IntentNotYetExecutable` | reachable (1 branch(es)) | `execute_scheduled` | the next occurrence has not reached execute_after |
+| 21 | `IntentExpired` | reachable (1 branch(es)) | `execute_scheduled` | the intent has reached expires_at |
+| 22 | `IntentNotCancellable` | reachable (1 branch(es)) | `cancel_scheduled` | the execution window opened before cancellation |
+| 23 | `InvalidScheduleParameters` | reachable (1 branch(es)) | `schedule_stream` | schedule parameters are inconsistent or out of bounds |
+| 24 | `IntentParamsMismatch` | reachable (1 branch(es)) | `execute_scheduled` | stored parameters do not match the authorization commitment |
+| 25 | `IntentNotExpired` | reachable (1 branch(es)) | `reclaim_expired` | the intent has not reached expires_at |
+| 26 | `DepositTransferFailed` | reachable (1 branch(es)) | `create_stream`, `create_streams` | the token refuses the deposit (+fee) pull (allowance, balance, or a non-compliant token) |
+| 27 | `TopUpTransferFailed` | reachable (1 branch(es)) | `top_up` | the token refuses the pull of the added funds |
+| 28 | `RecipientPayoutFailed` | reachable (1 branch(es)) | `cancel_stream`, `withdraw`, `withdraw_max` | the token refuses a payout to the recipient |
+| 29 | `SenderRefundFailed` | reachable (1 branch(es)) | `cancel_stream` | the token refuses the refund to the sender |
+| 30 | `TreasuryPayoutFailed` | reachable (1 branch(es)) | `withdraw_treasury` | the token refuses the payout of collected protocol fees |
 
 ## Branch matrix (entrypoint × condition → error)
 
 | Branch | Entrypoint(s) | Error | Code | Condition | Reachability |
 | --- | --- | --- | ---: | --- | --- |
-| `CreateDepositNonPositive` | `create_stream` | `ZeroAmount` | 9 | deposit_amount is zero or negative | reachable |
-| `CreateStartTimeInPast` | `create_stream` | `StartTimeInPast` | 6 | start_time is before the current ledger timestamp | reachable |
-| `CreateInvalidTimeRange` | `create_stream` | `InvalidTimeRange` | 7 | end_time is not strictly after start_time (zero or negative duration) | reachable |
-| `CreateDurationTooLong` | `create_stream` | `DurationTooLong` | 8 | duration exceeds MAX_DURATION_SECONDS (100 years) | reachable |
+| `CreateDepositNonPositive` | `create_stream`, `create_streams` | `ZeroAmount` | 9 | deposit_amount is zero or negative | reachable |
+| `CreateStartTimeInPast` | `create_stream`, `create_streams` | `StartTimeInPast` | 6 | start_time is before the current ledger timestamp | reachable |
+| `CreateInvalidTimeRange` | `create_stream`, `create_streams` | `InvalidTimeRange` | 7 | end_time is not strictly after start_time (zero or negative duration) | reachable |
+| `CreateDurationTooLong` | `create_stream`, `create_streams` | `DurationTooLong` | 8 | duration exceeds MAX_DURATION_SECONDS (100 years) | reachable |
 | `WithdrawAmountNonPositive` | `withdraw` | `ZeroAmount` | 9 | withdraw amount is zero or negative | reachable |
 | `WithdrawAmountExceedsAvailable` | `withdraw` | `AmountExceedsAvailable` | 10 | amount exceeds the accrued-but-unwithdrawn balance | reachable |
 | `WithdrawMaxNothingToWithdraw` | `withdraw_max` | `NothingToWithdraw` | 13 | nothing has accrued yet, or everything accrued was already withdrawn | reachable |
@@ -47,7 +56,7 @@ Every expected failure is a `StreamError` with a stable numeric code. This docum
 | `TopUpDepositOverflow` | `top_up` | `MathOverflow` | 11 | deposit + amount would overflow i128 | reachable |
 | `StreamNotFound` | `get_stream`, `available`, `withdraw`, `withdraw_max`, `cancel_stream`, `top_up` | `StreamNotFound` | 1 | no stream is stored under the id | reachable |
 | `StreamNotActive` | `withdraw`, `withdraw_max`, `cancel_stream`, `top_up` | `StreamNotActive` | 5 | the stream status is Cancelled or Depleted | reachable |
-| `CapacityOverflow` | `create_stream`, `top_up` | `MathOverflow` | 11 | deposit * duration would overflow u128 | reachable |
+| `CapacityOverflow` | `create_stream`, `create_streams`, `top_up` | `MathOverflow` | 11 | deposit * duration would overflow u128 | reachable |
 | `RateProductOverflow` | `streamed_at`, `available`, `withdraw`, `withdraw_max`, `cancel_stream` | `MathOverflow` | 11 | deposit * elapsed would overflow u128 | reachable |
 | `AvailableBalanceOverflow` | `available`, `withdraw`, `withdraw_max` | `MathOverflow` | 11 | withdrawn exceeds streamed (an invariant-violating stored stream) | defensive (unreachable) |
 | `CancelSplitOverflow` | `cancel_stream` | `MathOverflow` | 11 | the cancel pro-rata split would underflow | defensive (unreachable) |
@@ -58,10 +67,19 @@ Every expected failure is a `StreamError` with a stable numeric code. This docum
 | `AcceptGovernorNotNominee` | `accept_governor` | `NotGovernor` | 15 | the caller is not the nominated governor | reachable |
 | `WithdrawTreasuryAmountNonPositive` | `withdraw_treasury` | `ZeroAmount` | 9 | treasury withdrawal amount is zero or negative | reachable |
 | `WithdrawTreasuryExceedsBalance` | `withdraw_treasury` | `InsufficientTreasuryBalance` | 17 | amount exceeds fees collected minus fees already withdrawn | reachable |
-| `InvalidOracleThreshold` | `set_oracle_config` | `InvalidOracleThreshold` | 18 | oracle threshold is zero or exceeds the number of publishers | reachable |
-| `OraclePublishersNotConfigured` | `submit_oracle_time` | `OraclePublishersNotConfigured` | 19 | oracle publishers have not been configured by the governor | reachable |
-| `NotOraclePublisher` | `submit_oracle_time` | `NotOraclePublisher` | 21 | the caller is not an authorized oracle publisher | reachable |
-| `OracleReportTooOld` | `submit_oracle_time` | `OracleReportTooOld` | 20 | reported oracle timestamp is older than max staleness or in the future | reachable |
+| `IntentNotFound` | `get_intent`, `execute_scheduled`, `cancel_scheduled`, `reclaim_expired` | `IntentNotFound` | 18 | no scheduled intent is stored under the id | reachable |
+| `IntentNotPending` | `execute_scheduled`, `cancel_scheduled`, `reclaim_expired` | `IntentNotPending` | 19 | the intent is already executed, cancelled, or expired | reachable |
+| `IntentNotYetExecutable` | `execute_scheduled` | `IntentNotYetExecutable` | 20 | the next occurrence has not reached execute_after | reachable |
+| `IntentExpired` | `execute_scheduled` | `IntentExpired` | 21 | the intent has reached expires_at | reachable |
+| `IntentNotCancellable` | `cancel_scheduled` | `IntentNotCancellable` | 22 | the execution window opened before cancellation | reachable |
+| `ScheduleInvalidParameters` | `schedule_stream` | `InvalidScheduleParameters` | 23 | schedule parameters are inconsistent or out of bounds | reachable |
+| `IntentParamsMismatch` | `execute_scheduled` | `IntentParamsMismatch` | 24 | stored parameters do not match the authorization commitment | reachable |
+| `IntentNotExpired` | `reclaim_expired` | `IntentNotExpired` | 25 | the intent has not reached expires_at | reachable |
+| `CreateDepositTransferFailed` | `create_stream`, `create_streams` | `DepositTransferFailed` | 26 | the token refuses the deposit (+fee) pull (allowance, balance, or a non-compliant token) | reachable |
+| `TopUpTransferFailed` | `top_up` | `TopUpTransferFailed` | 27 | the token refuses the pull of the added funds | reachable |
+| `RecipientPayoutFailed` | `withdraw`, `withdraw_max`, `cancel_stream` | `RecipientPayoutFailed` | 28 | the token refuses a payout to the recipient | reachable |
+| `SenderRefundFailed` | `cancel_stream` | `SenderRefundFailed` | 29 | the token refuses the refund to the sender | reachable |
+| `TreasuryPayoutFailed` | `withdraw_treasury` | `TreasuryPayoutFailed` | 30 | the token refuses the payout of collected protocol fees | reachable |
 
 ## Retired codes
 

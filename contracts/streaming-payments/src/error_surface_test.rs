@@ -18,13 +18,31 @@ use std::vec::Vec;
 
 use soroban_sdk::testutils::Address as _;
 
-use crate::stream::streamed_at;
+use crate::stream::{streamed_at, DataKey};
 use crate::surface::{trace, Branch, Reachability, RETIRED_CODES};
-use crate::test::Fixture;
+use crate::test::{Fixture, RefusingFixture};
 use crate::{StreamError, MAX_DURATION_SECONDS, MAX_FEE_BPS};
 
 const DAY: u64 = 24 * 60 * 60;
 const DEPOSIT: i128 = 10_000_000_000;
+
+fn schedule_intent(f: &Fixture, execute_after: u64, expires_at: u64) -> u64 {
+    let now = f.env.ledger().timestamp();
+    f.client.mock_all_auths().schedule_stream(
+        &f.sender,
+        &f.recipient,
+        &f.token,
+        &DEPOSIT,
+        &(now + 2 * DAY),
+        &(now + 3 * DAY),
+        &false,
+        &0,
+        &1,
+        &0,
+        &execute_after,
+        &expires_at,
+    )
+}
 
 /// Unwraps the contract's rejection into its `StreamError`.
 macro_rules! rejected {
@@ -228,55 +246,160 @@ fn probe(branch: Branch) -> Option<StreamError> {
                 &1,
             )))
         }
-        // ------------------------------------------------------------ oracle
-        Branch::InvalidOracleThreshold => {
+        // ------------------------------------------------ scheduled intents
+        Branch::IntentNotFound => {
             let f = Fixture::setup_quiet();
-            let publishers = soroban_sdk::Vec::new(&f.env);
-            Some(rejected!(f.client.mock_all_auths().try_set_oracle_config(
-                &f.governor,
-                &publishers,
-                &1, // threshold > publishers.len()
-                &3600,
+            Some(rejected!(f.client.try_get_intent(&999)))
+        }
+        Branch::IntentNotPending => {
+            let f = Fixture::setup_quiet();
+            let now = f.env.ledger().timestamp();
+            let id = schedule_intent(&f, now, now + DAY);
+            let _ = f
+                .client
+                .mock_all_auths()
+                .execute_scheduled(&id, &f.recipient);
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_execute_scheduled(&id, &f.recipient,)))
+        }
+        Branch::IntentNotYetExecutable => {
+            let f = Fixture::setup_quiet();
+            let now = f.env.ledger().timestamp();
+            let id = schedule_intent(&f, now + DAY, now + 3 * DAY);
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_execute_scheduled(&id, &f.recipient,)))
+        }
+        Branch::IntentExpired => {
+            let f = Fixture::setup_quiet();
+            let now = f.env.ledger().timestamp();
+            let id = schedule_intent(&f, now, now + DAY);
+            f.advance_time(DAY);
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_execute_scheduled(&id, &f.recipient,)))
+        }
+        Branch::IntentNotCancellable => {
+            let f = Fixture::setup_quiet();
+            let now = f.env.ledger().timestamp();
+            let id = schedule_intent(&f, now, now + DAY);
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_cancel_scheduled(&f.sender, &id,)))
+        }
+        Branch::ScheduleInvalidParameters => {
+            let f = Fixture::setup_quiet();
+            let now = f.env.ledger().timestamp();
+            Some(rejected!(f.client.mock_all_auths().try_schedule_stream(
+                &f.sender,
+                &f.recipient,
+                &f.token,
+                &DEPOSIT,
+                &(now + 2 * DAY),
+                &(now + 3 * DAY),
+                &false,
+                &0,
+                &0,
+                &0,
+                &now,
+                &(now + DAY),
             )))
         }
-        Branch::OraclePublishersNotConfigured => {
+        Branch::IntentParamsMismatch => {
             let f = Fixture::setup_quiet();
-            let publisher = soroban_sdk::Address::generate(&f.env);
             let now = f.env.ledger().timestamp();
+            let id = schedule_intent(&f, now, now + DAY);
+            let contract = f.client.address.clone();
+            f.env.as_contract(&contract, || {
+                let mut intent: crate::ScheduledIntent = f
+                    .env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::Intent(id))
+                    .unwrap();
+                intent.deposit += 1;
+                f.env
+                    .storage()
+                    .persistent()
+                    .set(&DataKey::Intent(id), &intent);
+            });
             Some(rejected!(f
                 .client
                 .mock_all_auths()
-                .try_submit_oracle_time(&publisher, &now,)))
+                .try_execute_scheduled(&id, &f.recipient,)))
         }
-        Branch::NotOraclePublisher => {
+        Branch::IntentNotExpired => {
             let f = Fixture::setup_quiet();
-            let mut publishers = soroban_sdk::Vec::new(&f.env);
-            let authorized_publisher = soroban_sdk::Address::generate(&f.env);
-            publishers.push_back(authorized_publisher);
-            f.client
-                .mock_all_auths()
-                .set_oracle_config(&f.governor, &publishers, &1, &3600);
-            let rogue = soroban_sdk::Address::generate(&f.env);
             let now = f.env.ledger().timestamp();
-            Some(rejected!(f
-                .client
-                .mock_all_auths()
-                .try_submit_oracle_time(&rogue, &now,)))
+            let id = schedule_intent(&f, now, now + DAY);
+            Some(rejected!(f.client.try_reclaim_expired(&id)))
         }
-        Branch::OracleReportTooOld => {
-            let f = Fixture::setup_quiet();
-            let mut publishers = soroban_sdk::Vec::new(&f.env);
-            let publisher = soroban_sdk::Address::generate(&f.env);
-            publishers.push_back(publisher.clone());
-            f.client
-                .mock_all_auths()
-                .set_oracle_config(&f.governor, &publishers, &1, &3600);
+        // ---------------------------------------------- token interactions
+        //
+        // These branches fire when the *token* refuses a movement. The probes
+        // use [`RefusingFixture`]: a minimal SEP-41 contract whose error code
+        // deliberately equals 13 (`NothingToWithdraw`), so receiving StreamPay's
+        // own code proves the raw token error did not leak.
+        Branch::CreateDepositTransferFailed => {
+            let f = RefusingFixture::setup_quiet();
+            f.refuse(false, true); // refuses the incoming pull
             let now = f.env.ledger().timestamp();
-            // Timestamp in the future beyond staleness bound (now + 3600 + 1)
+            Some(rejected!(f.client.mock_all_auths().try_create_stream(
+                &f.sender,
+                &f.recipient,
+                &f.token,
+                &DEPOSIT,
+                &now,
+                &(now + 2 * DAY),
+                &false,
+            )))
+        }
+        Branch::TopUpTransferFailed => {
+            let f = RefusingFixture::setup_quiet();
+            let id = f.create(DEPOSIT, 0, 10 * DAY);
+            f.refuse(false, true); // stops accepting incoming transfers
             Some(rejected!(f
                 .client
                 .mock_all_auths()
-                .try_submit_oracle_time(&publisher, &(now + 3600 + 2),)))
+                .try_top_up(&id, &DEPOSIT)))
+        }
+        Branch::RecipientPayoutFailed => {
+            let f = RefusingFixture::setup_quiet();
+            let id = f.create(DEPOSIT, 0, 10 * DAY);
+            f.advance_time(DAY); // 1 of 10 days accrued
+            f.refuse(true, false); // asset stops paying out
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_withdraw(&id, &(DEPOSIT / 10))))
+        }
+        Branch::SenderRefundFailed => {
+            let f = RefusingFixture::setup_quiet();
+            // Not started: recipient_amount is 0, so only the refund leg runs.
+            let id = f.create(DEPOSIT, DAY, 10 * DAY);
+            f.refuse(true, false);
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_cancel_stream(&f.sender, &id)))
+        }
+        Branch::TreasuryPayoutFailed => {
+            let f = RefusingFixture::setup_quiet();
+            f.client.mock_all_auths().set_fee_bps(&f.governor, &100);
+            // Charges a fee into the treasury ledger (1 % of the deposit).
+            let _id = f.create(DEPOSIT, 0, 10 * DAY);
+            f.refuse(true, false);
+            Some(rejected!(f.client.mock_all_auths().try_withdraw_treasury(
+                &f.governor,
+                &f.token,
+                &f.recipient,
+                &1,
+            )))
         }
         // Invariant-protected: a stored stream always satisfies
         // `0 <= withdrawn <= streamed <= deposit <= i128::MAX`, so these
@@ -410,10 +533,19 @@ fn stream_error_variant_list_is_exhaustive() {
             | StreamError::NotGovernor
             | StreamError::NoPendingGovernor
             | StreamError::InsufficientTreasuryBalance
-            | StreamError::InvalidOracleThreshold
-            | StreamError::OraclePublishersNotConfigured
-            | StreamError::OracleReportTooOld
-            | StreamError::NotOraclePublisher => StreamError::ALL.contains(&e),
+            | StreamError::IntentNotFound
+            | StreamError::IntentNotPending
+            | StreamError::IntentNotYetExecutable
+            | StreamError::IntentExpired
+            | StreamError::IntentNotCancellable
+            | StreamError::InvalidScheduleParameters
+            | StreamError::IntentParamsMismatch
+            | StreamError::IntentNotExpired
+            | StreamError::DepositTransferFailed
+            | StreamError::TopUpTransferFailed
+            | StreamError::RecipientPayoutFailed
+            | StreamError::SenderRefundFailed
+            | StreamError::TreasuryPayoutFailed => StreamError::ALL.contains(&e),
         }
     }
 
