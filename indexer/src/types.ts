@@ -9,6 +9,12 @@ export interface DecodedEvent {
   name: string;
   streamId: string;
   data: Record<string, EventValue>;
+  txHash?: string;
+  linkedSpanContext?: {
+    traceId: string;
+    spanId: string;
+    traceFlags: number;
+  };
 }
 
 export interface RpcEvent {
