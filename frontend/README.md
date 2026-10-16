@@ -20,6 +20,7 @@ budget they set, with a hard deadline fallback. See
 | `/stream/[id]` | Stream detail: progress bar, live `available` poll (15 s), withdraw form with over-withdrawal guard, **Withdraw max** (`withdraw_max`), **Claim for free** (gas-sponsored relay when a sponsor covers the stream's token), cancel. Read-only-safe without a wallet; contract errors decode to `StreamError` names |
 | `/stream/[id]` | Stream detail: progress bar, live `available` poll (15 s), withdraw form with over-withdrawal guard, **Withdraw max** (`withdraw_max`), cancel, and the fee-aware claim scheduler panel (recipients only). Read-only-safe without a wallet; contract errors decode to `StreamError` names |
 | `/` | Connect, single and CSV batch creation forms (asset selector: **native XLM** or an entered token contract id), stream list with per-row actions and a **Discover on-chain** button (scans the contract's `recipient_streams` / `sender_streams` indexes for your address) |
+<<<<<<< HEAD
 | `/stream/[id]` | Stream detail: progress bar, live `available` poll (15 s) with on-demand refetch, dedicated withdrawal panel with auto-prefilled accrued balance, client-side over-withdrawal guard, **Withdraw max** (`withdraw_max`), cancel. Read-only-safe without a wallet; contract errors decode to human-readable `StreamError` names |
 | `GET /accrual/[id]` | Computed accrual curve time-series API (`?from&to&step`) with ETag/304 caching, honest staleness headers, and shared RPC rate budgets |
 | `/docs` | Public interactive API documentation page (Swagger UI) rendering OpenAPI 3.1 spec |
@@ -32,6 +33,11 @@ The stream detail route provides a dedicated UX for inspecting stream accrual an
 - **Client-Side Over-Withdrawal Guard**: Validates amounts before transaction dispatch. If the specified amount exceeds the accrued `available` balance, submission is disabled with a visible warning banner, preventing failed transactions and saving gas fees.
 - **Withdraw Max**: Invokes `withdraw_max` for atomic on-chain settlement of all accrued balance without race conditions.
 - **Error Decoding**: Unpacks Soroban contract errors into descriptive names (e.g., `AmountExceedsAvailable (code 6)`, `WithdrawAmountNonPositive (code 4)`).
+=======
+| `/stream/[id]` | Stream detail: progress bar, live `available` poll (15 s), withdraw form with over-withdrawal guard, **Withdraw max** (`withdraw_max`), cancel. Read-only-safe without a wallet; contract errors decode to `StreamError` names |
+| `GET /accrual/[id]` | Computed accrual curve time-series API (`?from&to&step`) with ETag/304 caching, honest staleness headers, and shared RPC rate budgets |
+| `/docs` | Public interactive API documentation page (Swagger UI) rendering OpenAPI 3.1 spec |
+>>>>>>> 00b3634 (feat: computed accrual-curve API with etag caching and rate budgets)
 
 ## Setup
 

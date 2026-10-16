@@ -8,6 +8,7 @@ import {
   computeCurve,
   type StreamData,
   ValidationError,
+  MAX_POINTS_LIMIT,
 } from "./curve.ts";
 import { computeAccruedAt } from "./accrual.ts";
 
