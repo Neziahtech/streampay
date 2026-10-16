@@ -11,6 +11,16 @@ function fmtUnits(value: bigint): string {
   return value.toString();
 }
 
+function snapshotFromStream(stream: StreamView): StreamSnapshot {
+  return {
+    deposit: BigInt(stream.deposit),
+    startTime: stream.startTime,
+    endTime: stream.endTime,
+    withdrawn: BigInt(stream.withdrawn),
+    status: stream.status,
+  };
+}
+
 export default function StreamDetailClient({
   initialStream,
 }: {
@@ -20,7 +30,9 @@ export default function StreamDetailClient({
   const [stream, setStream] = useState<StreamView>(initialStream);
   const [available, setAvailable] = useState<bigint | null>(null);
   const [displayAvailable, setDisplayAvailable] = useState<bigint | null>(null);
-  const [snapshot, setSnapshot] = useState<StreamSnapshot | null>(null);
+  const [snapshot, setSnapshot] = useState<StreamSnapshot>(() =>
+    snapshotFromStream(initialStream)
+  );
   const [amount, setAmount] = useState("");
   const [address, setAddress] = useState<string | null>(null);
   const [status, setStatus] = useState("");
@@ -28,13 +40,7 @@ export default function StreamDetailClient({
 
   const applyStream = useCallback((next: StreamView) => {
     setStream(next);
-    setSnapshot({
-      deposit: BigInt(next.deposit),
-      startTime: next.startTime,
-      endTime: next.endTime,
-      withdrawn: BigInt(next.withdrawn),
-      status: next.status,
-    });
+    setSnapshot(snapshotFromStream(next));
   }, []);
 
   const reload = useCallback(async () => {
@@ -52,16 +58,14 @@ export default function StreamDetailClient({
   }, [applyStream, id]);
 
   useEffect(() => {
-    applyStream(initialStream);
     void readAvailableAction(id)
       .then((value) => setAvailable(BigInt(value)))
       .catch((e: unknown) => setError(describeError(e)));
     const timer = setInterval(() => void reload(), 15_000);
     return () => clearInterval(timer);
-  }, [applyStream, id, initialStream, reload]);
+  }, [id, reload]);
 
   useEffect(() => {
-    if (!snapshot) return;
     const timer = setInterval(() => {
       const now = BigInt(Math.floor(Date.now() / 1000));
       setDisplayAvailable(
