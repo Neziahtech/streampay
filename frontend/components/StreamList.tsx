@@ -4,21 +4,31 @@ import Link from "next/link";
 import { useState } from "react";
 import { isNativeXlm, type StreamView } from "@/lib/stellar";
 
-export default function StreamList({
-  streams,
-  onWithdraw,
-  onWithdrawMax,
-  onTopUp,
-  onCancel,
-  onRefresh,
-}: {
+export interface StreamListProps {
   streams: StreamView[];
+  selectedIds?: string[];
+  onToggleSelect?: (id: string) => void;
+  onSelectAll?: () => void;
+  onDeselectAll?: () => void;
   onWithdraw: (id: string, amount: string) => Promise<void>;
   onWithdrawMax: (id: string) => Promise<void>;
   onTopUp: (id: string, amount: string) => Promise<void>;
   onCancel: (id: string) => Promise<void>;
   onRefresh: (id: string) => void | Promise<void>;
-}) {
+}
+
+export default function StreamList({
+  streams,
+  selectedIds = [],
+  onToggleSelect,
+  onSelectAll,
+  onDeselectAll,
+  onWithdraw,
+  onWithdrawMax,
+  onTopUp,
+  onCancel,
+  onRefresh,
+}: StreamListProps) {
   const [amounts, setAmounts] = useState<Record<string, string>>({});
 
   if (streams.length === 0) {
@@ -30,10 +40,36 @@ export default function StreamList({
     );
   }
 
+  const allSelected =
+    streams.length > 0 && streams.every((s) => selectedIds.includes(s.id));
+  const someSelected =
+    streams.some((s) => selectedIds.includes(s.id)) && !allSelected;
+
+  function handleHeaderCheckboxChange() {
+    if (allSelected) {
+      onDeselectAll?.();
+    } else {
+      onSelectAll?.();
+    }
+  }
+
   return (
     <table>
       <thead>
         <tr>
+          {onToggleSelect && (
+            <th style={{ width: "40px", textAlign: "center" }}>
+              <input
+                type="checkbox"
+                aria-label="Select all streams"
+                checked={allSelected}
+                ref={(el) => {
+                  if (el) el.indeterminate = someSelected;
+                }}
+                onChange={handleHeaderCheckboxChange}
+              />
+            </th>
+          )}
           <th>#</th>
           <th>Token</th>
           <th>Recipient</th>
