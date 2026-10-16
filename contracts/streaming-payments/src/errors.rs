@@ -61,6 +61,10 @@ pub enum StreamError {
     /// A treasury withdrawal exceeds the fees collected minus fees already
     /// withdrawn for that token.
     InsufficientTreasuryBalance = 17,
+    /// The stream is already paused.
+    StreamAlreadyPaused = 18,
+    /// The stream is not paused.
+    StreamNotPaused = 19,
 }
 
 impl StreamError {
@@ -85,6 +89,8 @@ impl StreamError {
         StreamError::NotGovernor,
         StreamError::NoPendingGovernor,
         StreamError::InsufficientTreasuryBalance,
+        StreamError::StreamAlreadyPaused,
+        StreamError::StreamNotPaused,
     ];
 
     /// The stable numeric value carried across the contract boundary

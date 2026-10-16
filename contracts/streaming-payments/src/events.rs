@@ -96,3 +96,24 @@ pub struct FeeWithdrawn {
     /// Total fees withdrawn for this token after this withdrawal.
     pub withdrawn_total: i128,
 }
+
+/// Emitted when a stream is paused by its sender.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamPaused {
+    #[topic]
+    pub stream_id: u64,
+    pub sender: Address,
+    pub paused_at: u64,
+}
+
+/// Emitted when a paused stream is resumed by its sender.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamResumed {
+    #[topic]
+    pub stream_id: u64,
+    pub sender: Address,
+    pub resumed_at: u64,
+    pub paused_duration: u64,
+}

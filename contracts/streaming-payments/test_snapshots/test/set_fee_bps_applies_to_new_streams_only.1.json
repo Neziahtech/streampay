@@ -515,6 +515,30 @@
                   },
                   {
                     "key": {
+                      "symbol": "pause_offset"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "paused"
+                    },
+                    "val": {
+                      "bool": false
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "paused_at"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "recipient"
                     },
                     "val": {
@@ -623,6 +647,30 @@
                     },
                     "val": {
                       "u64": "2"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "pause_offset"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "paused"
+                    },
+                    "val": {
+                      "bool": false
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "paused_at"
+                    },
+                    "val": {
+                      "u64": "0"
                     }
                   },
                   {
