@@ -52,12 +52,35 @@ export default function StreamList({
             <td className="mono">{s.token.slice(0, 10)}…</td>
             <td className="mono">{s.recipient.slice(0, 8)}…</td>
             <td className="mono">{s.deposit}</td>
-            <td className="mono">{s.withdrawn}</td>
+            <td className="mono">
+              {s.pendingClaims && s.pendingClaims > 0 ? (
+                <span title="Claim amount hidden behind private commitment until revealed" className="muted">
+                  🔒 Hidden (Pending Reveal)
+                </span>
+              ) : (
+                s.withdrawn
+              )}
+            </td>
             <td>
               <span className={`status-badge status-${s.status.toLowerCase()}`}>
                 {s.status}
               </span>
+              {s.isPrivate && (
+                <span
+                  className="status-badge"
+                  style={{
+                    marginLeft: "4px",
+                    backgroundColor: "rgba(124, 58, 237, 0.15)",
+                    color: "#a78bfa",
+                    border: "1px solid rgba(167, 139, 250, 0.3)",
+                  }}
+                  title="Opt-in commit-reveal claim privacy active"
+                >
+                  🔒 Private
+                </span>
+              )}
             </td>
+
             <td>
               <div className="row">
                 <input

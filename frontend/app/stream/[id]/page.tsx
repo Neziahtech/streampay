@@ -187,7 +187,15 @@ export default function StreamDetail() {
             </tr>
             <tr>
               <th>Withdrawn</th>
-              <td className="mono">{stream.withdrawn}</td>
+              <td className="mono">
+                {stream.pendingClaims && stream.pendingClaims > 0 ? (
+                  <span className="muted" title="Claim commitment pending reveal">
+                    🔒 Hidden (Pending Reveal)
+                  </span>
+                ) : (
+                  stream.withdrawn
+                )}
+              </td>
             </tr>
             <tr>
               <th>Available now</th>
@@ -210,10 +218,27 @@ export default function StreamDetail() {
             </tr>
             <tr>
               <th>Status</th>
-              <td>{stream.status}</td>
+              <td>
+                {stream.status}
+                {stream.isPrivate && (
+                  <span
+                    className="status-badge"
+                    style={{
+                      marginLeft: "6px",
+                      backgroundColor: "rgba(124, 58, 237, 0.15)",
+                      color: "#a78bfa",
+                      border: "1px solid rgba(167, 139, 250, 0.3)",
+                    }}
+                    title="Opt-in commit-reveal claim privacy active"
+                  >
+                    🔒 Private Stream
+                  </span>
+                )}
+              </td>
             </tr>
           </tbody>
         </table>
+
       </section>
 
       {isRecipient && stream.status === "Active" && (

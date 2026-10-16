@@ -58,13 +58,17 @@ use surface::Branch;
 
 pub use errors::StreamError;
 pub use events::{
-    FeeCharged, FeeWithdrawn, StreamCancelled, StreamCreated, StreamToppedUp, StreamsCreated,
-    Withdrawn,
+    ClaimCommitted, ClaimExpired, ClaimRevealed, FeeCharged, FeeWithdrawn, StreamCancelled,
+    StreamCreated, StreamToppedUp, StreamsCreated, Withdrawn,
 };
 // `streamed_at` is re-exported for the fuzz target and downstream rate
 // calculators: it is a pure function requiring no `Env`.
-pub use stream::{streamed_at, Stream, StreamStatus, MAX_DURATION_SECONDS, MAX_PAGE_SIZE};
+pub use stream::{
+    streamed_at, ClaimCommitment, CommitmentStatus, Stream, StreamStatus, MAX_DURATION_SECONDS,
+    MAX_PAGE_SIZE,
+};
 pub use treasury::{fee_amount, FeeScan, Treasury, TreasuryStatus, BPS_DENOMINATOR, MAX_FEE_BPS};
+
 
 /// Parameters for one stream in a [`StreamingPayments::create_streams`] call.
 #[contracttype]
@@ -768,4 +772,188 @@ impl StreamingPayments {
             .unwrap_or(1);
         next.saturating_sub(1)
     }
+
+    // ------------------------------------------------ commit-reveal claims --
+
+    /// Commits to a private claim on an active stream with a reveal-incentive deposit.
+    ///
+    /// The recipient locks `deposit` into the contract to guarantee they will
+    /// reveal within `reveal_window_seconds`.
+    pub fn commit_claim(
+        env: Env,
+        stream_id: u64,
+        recipient: Address,
+        hash: soroban_sdk::BytesN<32>,
+        deposit: i128,
+        reveal_window_seconds: u64,
+    ) -> Result<u64, StreamError> {
+        if deposit <= 0 {
+            return Err(surface::reject(Branch::WithdrawAmountNonPositive));
+        }
+        recipient.require_auth();
+
+        let s = stream::get_stream(&env, stream_id)?;
+        if s.status != StreamStatus::Active {
+            return Err(surface::reject(Branch::StreamNotActive));
+        }
+        if s.recipient != recipient {
+            return Err(surface::reject(Branch::CancelStreamNotAuthorized));
+        }
+
+        // Pull deposit from recipient to the contract.
+        TokenClient::new(&env, &s.token).transfer_from(
+            &env.current_contract_address(),
+            &recipient,
+            &env.current_contract_address(),
+            &deposit,
+        );
+
+        let now = env.ledger().timestamp();
+        let reveal_deadline = now
+            .checked_add(reveal_window_seconds)
+            .ok_or(StreamError::MathOverflow)?;
+
+        let commitment_id = stream::next_commitment_id(&env);
+        let commitment = ClaimCommitment {
+            commitment_id,
+            stream_id,
+            recipient: recipient.clone(),
+            hash: hash.clone(),
+            deposit,
+            commit_time: now,
+            reveal_deadline,
+            status: CommitmentStatus::Committed,
+        };
+
+        stream::put_commitment(&env, &commitment);
+        stream::index_commitment(&env, stream_id, commitment_id);
+
+        ClaimCommitted {
+            stream_id,
+            commitment_id,
+            recipient,
+            hash,
+            deposit,
+            reveal_deadline,
+        }
+        .publish(&env);
+
+        Ok(commitment_id)
+    }
+
+    /// Reveals a previously committed claim within the reveal window, settling the funds.
+    pub fn reveal_claim(
+        env: Env,
+        commitment_id: u64,
+        claim_amount: i128,
+        salt: soroban_sdk::BytesN<32>,
+    ) -> Result<(), StreamError> {
+        if claim_amount <= 0 {
+            return Err(surface::reject(Branch::WithdrawAmountNonPositive));
+        }
+        let mut commitment = stream::get_commitment(&env, commitment_id)?;
+        if commitment.status != CommitmentStatus::Committed {
+            return Err(surface::reject(Branch::CommitmentNotActive));
+        }
+
+        commitment.recipient.require_auth();
+
+        let now = env.ledger().timestamp();
+        if now > commitment.reveal_deadline {
+            return Err(surface::reject(Branch::CommitmentExpired));
+        }
+
+        // Verify hash: sha256(stream_id, recipient, claim_amount, salt)
+        let computed_hash = env.crypto().sha256(&(
+            commitment.stream_id,
+            &commitment.recipient,
+            claim_amount,
+            &salt,
+        ));
+        if computed_hash != commitment.hash {
+            return Err(surface::reject(Branch::InvalidCommitmentHash));
+        }
+
+        let mut s = stream::get_stream(&env, commitment.stream_id)?;
+        if s.status != StreamStatus::Active {
+            return Err(surface::reject(Branch::StreamNotActive));
+        }
+
+        let available = stream::available_amount(&env, &s)?;
+        if claim_amount > available {
+            return Err(surface::reject(Branch::WithdrawAmountExceedsAvailable));
+        }
+
+        // Mark commitment revealed
+        commitment.status = CommitmentStatus::Revealed;
+        stream::put_commitment(&env, &commitment);
+
+        // Settle claim payout on stream (updates withdrawn & emits Withdrawn event)
+        Self::pay_out(&env, &mut s, claim_amount)?;
+
+        // Refund the reveal deposit back to recipient
+        TokenClient::new(&env, &s.token).transfer(
+            &env.current_contract_address(),
+            stream::muxed(&commitment.recipient),
+            &commitment.deposit,
+        );
+
+        ClaimRevealed {
+            stream_id: s.id,
+            commitment_id,
+            recipient: commitment.recipient,
+            amount: claim_amount,
+            deposit_refunded: commitment.deposit,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Expiration safety valve: if reveal deadline passes without reveal,
+    /// marks commitment expired and refunds deposit to the stream sender.
+    pub fn expire_reveal(env: Env, commitment_id: u64) -> Result<(), StreamError> {
+        let mut commitment = stream::get_commitment(&env, commitment_id)?;
+        if commitment.status != CommitmentStatus::Committed {
+            return Err(surface::reject(Branch::CommitmentNotActive));
+        }
+
+        let now = env.ledger().timestamp();
+        if now <= commitment.reveal_deadline {
+            return Err(surface::reject(Branch::CommitmentNotExpired));
+        }
+
+        let s = stream::get_stream(&env, commitment.stream_id)?;
+
+        commitment.status = CommitmentStatus::Expired;
+        stream::put_commitment(&env, &commitment);
+
+        // Refund deposit to stream sender as compensation/penalty
+        TokenClient::new(&env, &s.token).transfer(
+            &env.current_contract_address(),
+            stream::muxed(&s.sender),
+            &commitment.deposit,
+        );
+
+        ClaimExpired {
+            stream_id: s.id,
+            commitment_id,
+            sender: s.sender,
+            deposit_refunded: commitment.deposit,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Read-only view of a claim commitment by id.
+    pub fn get_commitment(env: Env, commitment_id: u64) -> Result<ClaimCommitment, StreamError> {
+        stream::get_commitment(&env, commitment_id)
+    }
+
+    /// Paginated discovery view of commitment ids for a stream.
+    pub fn stream_commitments(env: Env, stream_id: u64, offset: u32, limit: u32) -> Vec<u64> {
+        stream::page_commitment_ids(&env, stream_id, offset, limit)
+    }
 }
+

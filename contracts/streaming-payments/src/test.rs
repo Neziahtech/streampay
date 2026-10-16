@@ -3032,3 +3032,105 @@ fn run_fee_property(seed: u64, steps: usize) {
         }
     }
 }
+
+// ------------------------------------------------ commit-reveal claims tests --
+
+#[test]
+fn commit_reveal_happy_path() {
+    let f = Fixture::setup();
+    let stream_id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    f.advance_time(5 * DAY);
+
+    let token_client = TokenClient::new(&f.env, &f.token);
+    let recipient_bal_before = token_client.balance(&f.recipient);
+
+    let claim_amount = 2_000_000_000i128; // 200 tokens
+    let salt = soroban_sdk::BytesN::from_array(&f.env, &[42u8; 32]);
+    let hash = f.env.crypto().sha256(&(stream_id, &f.recipient, claim_amount, &salt));
+
+    let deposit = 100_000_000i128; // 10 tokens reveal-incentive deposit
+    let reveal_window = DAY;
+
+    let commitment_id = f.client.mock_all_auths().commit_claim(
+        &stream_id,
+        &f.recipient,
+        &hash,
+        &deposit,
+        &reveal_window,
+    );
+    assert_eq!(commitment_id, 1);
+
+    // Deposit was pulled from recipient
+    assert_eq!(token_client.balance(&f.recipient), recipient_bal_before - deposit);
+
+    let stored = f.client.get_commitment(&commitment_id);
+    assert_eq!(stored.commitment_id, 1);
+    assert_eq!(stored.stream_id, stream_id);
+    assert_eq!(stored.recipient, f.recipient);
+    assert_eq!(stored.hash, hash);
+    assert_eq!(stored.deposit, deposit);
+    assert_eq!(stored.status, crate::CommitmentStatus::Committed);
+
+    // Stream commitments index works
+    let stream_comms = f.client.stream_commitments(&stream_id, &0, &10);
+    assert_eq!(stream_comms.len(), 1);
+    assert_eq!(stream_comms.get(0).unwrap(), 1);
+
+    // Reveal claim
+    f.advance_time(100);
+    f.client.mock_all_auths().reveal_claim(&commitment_id, &claim_amount, &salt);
+
+    let revealed_stored = f.client.get_commitment(&commitment_id);
+    assert_eq!(revealed_stored.status, crate::CommitmentStatus::Revealed);
+
+    // Recipient received claim_amount + got deposit refunded
+    assert_eq!(token_client.balance(&f.recipient), recipient_bal_before + claim_amount);
+
+    let s = f.client.get_stream(&stream_id);
+    assert_eq!(s.withdrawn, claim_amount);
+}
+
+#[test]
+fn expire_reveal_safety_valve_refunds_sender() {
+    let f = Fixture::setup();
+    let stream_id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    f.advance_time(2 * DAY);
+
+    let token_client = TokenClient::new(&f.env, &f.token);
+    let sender_bal_before = token_client.balance(&f.sender);
+    let recipient_bal_before = token_client.balance(&f.recipient);
+
+    let claim_amount = 1_000_000_000i128;
+    let salt = soroban_sdk::BytesN::from_array(&f.env, &[7u8; 32]);
+    let hash = f.env.crypto().sha256(&(stream_id, &f.recipient, claim_amount, &salt));
+
+    let deposit = 50_000_000i128;
+    let reveal_window = DAY;
+
+    let commitment_id = f.client.mock_all_auths().commit_claim(
+        &stream_id,
+        &f.recipient,
+        &hash,
+        &deposit,
+        &reveal_window,
+    );
+
+    // Fast-forward past reveal deadline
+    f.advance_time(DAY + 10);
+
+    // Anyone can call expire_reveal
+    f.client.mock_all_auths().expire_reveal(&commitment_id);
+
+    let expired_stored = f.client.get_commitment(&commitment_id);
+    assert_eq!(expired_stored.status, crate::CommitmentStatus::Expired);
+
+    // Deposit was refunded to stream sender!
+    assert_eq!(token_client.balance(&f.sender), sender_bal_before + deposit);
+    // Recipient got neither claim nor deposit refund
+    assert_eq!(token_client.balance(&f.recipient), recipient_bal_before - deposit);
+
+    // Stream accrued balance remains intact and unwithdrawn
+    let s = f.client.get_stream(&stream_id);
+    assert_eq!(s.withdrawn, 0);
+}
+

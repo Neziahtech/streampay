@@ -105,3 +105,43 @@ pub struct FeeWithdrawn {
     /// Total fees withdrawn for this token after this withdrawal.
     pub withdrawn_total: i128,
 }
+
+/// Emitted when a recipient commits to a private claim.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaimCommitted {
+    #[topic]
+    pub stream_id: u64,
+    #[topic]
+    pub commitment_id: u64,
+    pub recipient: Address,
+    pub hash: soroban_sdk::BytesN<32>,
+    pub deposit: i128,
+    pub reveal_deadline: u64,
+}
+
+/// Emitted when a recipient reveals and settles a committed claim.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaimRevealed {
+    #[topic]
+    pub stream_id: u64,
+    #[topic]
+    pub commitment_id: u64,
+    pub recipient: Address,
+    pub amount: i128,
+    pub deposit_refunded: i128,
+}
+
+/// Emitted when an unrevealed commitment expires and safety valve is triggered.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaimExpired {
+    #[topic]
+    pub stream_id: u64,
+    #[topic]
+    pub commitment_id: u64,
+    pub sender: Address,
+    pub deposit_refunded: i128,
+}
+

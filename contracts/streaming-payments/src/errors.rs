@@ -61,6 +61,16 @@ pub enum StreamError {
     /// A treasury withdrawal exceeds the fees collected minus fees already
     /// withdrawn for that token.
     InsufficientTreasuryBalance = 17,
+    /// No claim commitment exists with the provided id.
+    CommitmentNotFound = 18,
+    /// The claim commitment is not active (already revealed or expired).
+    CommitmentNotActive = 19,
+    /// The commitment reveal deadline has passed.
+    CommitmentExpired = 20,
+    /// The commitment reveal deadline has not passed yet.
+    CommitmentNotExpired = 21,
+    /// The provided claim parameters and salt do not match the commitment hash.
+    InvalidCommitmentHash = 22,
 }
 
 impl StreamError {
@@ -85,6 +95,11 @@ impl StreamError {
         StreamError::NotGovernor,
         StreamError::NoPendingGovernor,
         StreamError::InsufficientTreasuryBalance,
+        StreamError::CommitmentNotFound,
+        StreamError::CommitmentNotActive,
+        StreamError::CommitmentExpired,
+        StreamError::CommitmentNotExpired,
+        StreamError::InvalidCommitmentHash,
     ];
 
     /// The stable numeric value carried across the contract boundary
@@ -93,3 +108,4 @@ impl StreamError {
         self as u32
     }
 }
+

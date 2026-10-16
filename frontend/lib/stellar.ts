@@ -92,7 +92,13 @@ const STREAM_ERRORS: Record<number, string> = {
   15: "NotGovernor",
   16: "NoPendingGovernor",
   17: "InsufficientTreasuryBalance",
+  18: "CommitmentNotFound",
+  19: "CommitmentNotActive",
+  20: "CommitmentExpired",
+  21: "CommitmentNotExpired",
+  22: "InvalidCommitmentHash",
 };
+
 
 /** Rewrites raw simulation/tx error text into a readable StreamError name. */
 export function describeError(err: unknown): string {
@@ -286,6 +292,57 @@ export async function cancelStream(
     () => undefined
   );
 }
+
+export async function commitClaim(
+  recipient: string,
+  streamId: string,
+  hashBytes32: Buffer | Uint8Array,
+  deposit: string,
+  revealWindowSeconds: number
+): Promise<bigint> {
+  return send(
+    recipient,
+    contract().call(
+      "commit_claim",
+      u64(streamId),
+      scAddr(recipient),
+      nativeToScVal(hashBytes32, { type: "bytes" }),
+      i128(deposit),
+      u64(revealWindowSeconds)
+    ),
+    (v) => BigInt(scValToNative(v) as bigint)
+  );
+}
+
+export async function revealClaim(
+  recipient: string,
+  commitmentId: string,
+  claimAmount: string,
+  saltBytes32: Buffer | Uint8Array
+): Promise<void> {
+  await send(
+    recipient,
+    contract().call(
+      "reveal_claim",
+      u64(commitmentId),
+      i128(claimAmount),
+      nativeToScVal(saltBytes32, { type: "bytes" })
+    ),
+    () => undefined
+  );
+}
+
+export async function expireReveal(
+  caller: string,
+  commitmentId: string
+): Promise<void> {
+  await send(
+    caller,
+    contract().call("expire_reveal", u64(commitmentId)),
+    () => undefined
+  );
+}
+
 
 /** Read-only contract call: simulated, never signed, return value decoded. */
 async function simulateRead(

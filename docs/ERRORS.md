@@ -25,6 +25,11 @@ Every expected failure is a `StreamError` with a stable numeric code. This docum
 | 15 | `NotGovernor` | reachable (2 branch(es)) | `accept_governor`, `nominate_governor`, `set_fee_bps`, `withdraw_treasury` | the caller is not the treasury governor; the caller is not the nominated governor |
 | 16 | `NoPendingGovernor` | reachable (1 branch(es)) | `accept_governor` | accept_governor with no nomination pending |
 | 17 | `InsufficientTreasuryBalance` | reachable (1 branch(es)) | `withdraw_treasury` | amount exceeds fees collected minus fees already withdrawn |
+| 18 | `CommitmentNotFound` | reachable (1 branch(es)) | `expire_reveal`, `get_commitment`, `reveal_claim` | no claim commitment is stored under the id |
+| 19 | `CommitmentNotActive` | reachable (1 branch(es)) | `expire_reveal`, `reveal_claim` | the claim commitment has already been revealed or expired |
+| 20 | `CommitmentExpired` | reachable (1 branch(es)) | `reveal_claim` | the commitment reveal window has expired |
+| 21 | `CommitmentNotExpired` | reachable (1 branch(es)) | `expire_reveal` | the commitment reveal window has not expired yet |
+| 22 | `InvalidCommitmentHash` | reachable (1 branch(es)) | `reveal_claim` | revealed parameters and salt do not match commitment hash |
 
 ## Branch matrix (entrypoint × condition → error)
 
@@ -54,6 +59,12 @@ Every expected failure is a `StreamError` with a stable numeric code. This docum
 | `AcceptGovernorNotNominee` | `accept_governor` | `NotGovernor` | 15 | the caller is not the nominated governor | reachable |
 | `WithdrawTreasuryAmountNonPositive` | `withdraw_treasury` | `ZeroAmount` | 9 | treasury withdrawal amount is zero or negative | reachable |
 | `WithdrawTreasuryExceedsBalance` | `withdraw_treasury` | `InsufficientTreasuryBalance` | 17 | amount exceeds fees collected minus fees already withdrawn | reachable |
+| `CommitmentNotFound` | `expire_reveal`, `get_commitment`, `reveal_claim` | `CommitmentNotFound` | 18 | no claim commitment is stored under the id | reachable |
+| `CommitmentNotActive` | `expire_reveal`, `reveal_claim` | `CommitmentNotActive` | 19 | the claim commitment has already been revealed or expired | reachable |
+| `CommitmentExpired` | `reveal_claim` | `CommitmentExpired` | 20 | the commitment reveal window has expired | reachable |
+| `CommitmentNotExpired` | `expire_reveal` | `CommitmentNotExpired` | 21 | the commitment reveal window has not expired yet | reachable |
+| `InvalidCommitmentHash` | `reveal_claim` | `InvalidCommitmentHash` | 22 | revealed parameters and salt do not match commitment hash | reachable |
+
 
 ## Retired codes
 

@@ -32,6 +32,9 @@ export interface Stream {
   endTime: string | null;
   cancelable: boolean | null;
   status: string;
+  isPrivate?: boolean;
+  pendingClaims?: number;
   lastLedger: number;
   updatedAt: string;
 }
+

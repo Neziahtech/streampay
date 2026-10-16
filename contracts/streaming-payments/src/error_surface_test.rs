@@ -228,6 +228,81 @@ fn probe(branch: Branch) -> Option<StreamError> {
                 &1,
             )))
         }
+        Branch::CommitmentNotFound => {
+            let f = Fixture::setup_quiet();
+            Some(rejected!(f.client.mock_all_auths().try_get_commitment(&999)))
+        }
+        Branch::CommitmentNotActive => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            let salt = soroban_sdk::BytesN::from_array(&f.env, &[1u8; 32]);
+            let hash = f.env.crypto().sha256(&(id, &f.recipient, 1000i128, &salt));
+            let comm_id = f.client.mock_all_auths().commit_claim(
+                &id,
+                &f.recipient,
+                &hash,
+                &500i128,
+                &DAY,
+            );
+            f.advance_time(DAY + 1);
+            f.client.mock_all_auths().expire_reveal(&comm_id);
+            // Calling expire_reveal again on an already expired commitment fails with CommitmentNotActive
+            Some(rejected!(f.client.mock_all_auths().try_expire_reveal(&comm_id)))
+        }
+        Branch::CommitmentExpired => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            let salt = soroban_sdk::BytesN::from_array(&f.env, &[1u8; 32]);
+            let hash = f.env.crypto().sha256(&(id, &f.recipient, 1000i128, &salt));
+            let comm_id = f.client.mock_all_auths().commit_claim(
+                &id,
+                &f.recipient,
+                &hash,
+                &500i128,
+                &DAY,
+            );
+            // Advance time past reveal_deadline
+            f.advance_time(DAY + 2);
+            Some(rejected!(f.client.mock_all_auths().try_reveal_claim(
+                &comm_id,
+                &1000i128,
+                &salt,
+            )))
+        }
+        Branch::CommitmentNotExpired => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            let salt = soroban_sdk::BytesN::from_array(&f.env, &[1u8; 32]);
+            let hash = f.env.crypto().sha256(&(id, &f.recipient, 1000i128, &salt));
+            let comm_id = f.client.mock_all_auths().commit_claim(
+                &id,
+                &f.recipient,
+                &hash,
+                &500i128,
+                &DAY,
+            );
+            // Trying to expire immediately when not expired
+            Some(rejected!(f.client.mock_all_auths().try_expire_reveal(&comm_id)))
+        }
+        Branch::InvalidCommitmentHash => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            let salt = soroban_sdk::BytesN::from_array(&f.env, &[1u8; 32]);
+            let wrong_salt = soroban_sdk::BytesN::from_array(&f.env, &[2u8; 32]);
+            let hash = f.env.crypto().sha256(&(id, &f.recipient, 1000i128, &salt));
+            let comm_id = f.client.mock_all_auths().commit_claim(
+                &id,
+                &f.recipient,
+                &hash,
+                &500i128,
+                &DAY,
+            );
+            Some(rejected!(f.client.mock_all_auths().try_reveal_claim(
+                &comm_id,
+                &1000i128,
+                &wrong_salt,
+            )))
+        }
         // Invariant-protected: a stored stream always satisfies
         // `0 <= withdrawn <= streamed <= deposit <= i128::MAX`, so these
         // checked subtractions/addition can never cross an i128 boundary —
@@ -238,6 +313,7 @@ fn probe(branch: Branch) -> Option<StreamError> {
         }
     }
 }
+
 
 /// The matrix: every reachable branch fires its declared code, and every
 /// defensive branch is never reached.
@@ -359,7 +435,12 @@ fn stream_error_variant_list_is_exhaustive() {
             | StreamError::FeeRateTooHigh
             | StreamError::NotGovernor
             | StreamError::NoPendingGovernor
-            | StreamError::InsufficientTreasuryBalance => StreamError::ALL.contains(&e),
+            | StreamError::InsufficientTreasuryBalance
+            | StreamError::CommitmentNotFound
+            | StreamError::CommitmentNotActive
+            | StreamError::CommitmentExpired
+            | StreamError::CommitmentNotExpired
+            | StreamError::InvalidCommitmentHash => StreamError::ALL.contains(&e),
         }
     }
 

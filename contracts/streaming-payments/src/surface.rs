@@ -86,13 +86,19 @@ pub enum Branch {
     /// `withdraw_treasury`: amount exceeds fees collected minus fees already
     /// withdrawn.
     WithdrawTreasuryExceedsBalance,
+    // ---------------------------------------------------- commit-reveal claims
+    CommitmentNotFound,
+    CommitmentNotActive,
+    CommitmentExpired,
+    CommitmentNotExpired,
+    InvalidCommitmentHash,
 }
 
 impl Branch {
     /// Every branch, in declaration order. The matrix test walks this list and
     /// the coverage test requires each [`StreamError`] variant to be produced by
     /// one of these (or retired).
-    pub const ALL: [Branch; 24] = [
+    pub const ALL: [Branch; 29] = [
         Branch::CreateDepositNonPositive,
         Branch::CreateStartTimeInPast,
         Branch::CreateInvalidTimeRange,
@@ -117,6 +123,11 @@ impl Branch {
         Branch::AcceptGovernorNotNominee,
         Branch::WithdrawTreasuryAmountNonPositive,
         Branch::WithdrawTreasuryExceedsBalance,
+        Branch::CommitmentNotFound,
+        Branch::CommitmentNotActive,
+        Branch::CommitmentExpired,
+        Branch::CommitmentNotExpired,
+        Branch::InvalidCommitmentHash,
     ];
 
     /// The entrypoint(s) through which this branch can fire. Shared helpers
@@ -166,6 +177,11 @@ impl Branch {
             Branch::WithdrawTreasuryAmountNonPositive | Branch::WithdrawTreasuryExceedsBalance => {
                 &["withdraw_treasury"]
             }
+            Branch::CommitmentNotFound => &["get_commitment", "reveal_claim", "expire_reveal"],
+            Branch::CommitmentNotActive => &["reveal_claim", "expire_reveal"],
+            Branch::CommitmentExpired => &["reveal_claim"],
+            Branch::CommitmentNotExpired => &["expire_reveal"],
+            Branch::InvalidCommitmentHash => &["reveal_claim"],
         }
     }
 
@@ -199,6 +215,11 @@ impl Branch {
             Branch::AcceptGovernorNoPending => StreamError::NoPendingGovernor,
             Branch::WithdrawTreasuryAmountNonPositive => StreamError::ZeroAmount,
             Branch::WithdrawTreasuryExceedsBalance => StreamError::InsufficientTreasuryBalance,
+            Branch::CommitmentNotFound => StreamError::CommitmentNotFound,
+            Branch::CommitmentNotActive => StreamError::CommitmentNotActive,
+            Branch::CommitmentExpired => StreamError::CommitmentExpired,
+            Branch::CommitmentNotExpired => StreamError::CommitmentNotExpired,
+            Branch::InvalidCommitmentHash => StreamError::InvalidCommitmentHash,
         }
     }
 
@@ -245,8 +266,14 @@ impl Branch {
             Branch::WithdrawTreasuryExceedsBalance => {
                 "amount exceeds fees collected minus fees already withdrawn"
             }
+            Branch::CommitmentNotFound => "no claim commitment is stored under the id",
+            Branch::CommitmentNotActive => "the claim commitment has already been revealed or expired",
+            Branch::CommitmentExpired => "the commitment reveal window has expired",
+            Branch::CommitmentNotExpired => "the commitment reveal window has not expired yet",
+            Branch::InvalidCommitmentHash => "revealed parameters and salt do not match commitment hash",
         }
     }
+
 
     /// Reachability classification; drives whether the matrix test probes it.
     pub const fn reachability(self) -> Reachability {
