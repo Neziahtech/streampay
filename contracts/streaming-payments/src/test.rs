@@ -36,7 +36,7 @@ use crate::{StreamError, StreamInput, StreamStatus, StreamingPayments, MAX_DURAT
 
 // ---------------------------------------------------------------- fixtures --
 
-const DAY: u64 = 24 * 60 * 60;
+pub(crate) const DAY: u64 = 24 * 60 * 60;
 /// 1000 tokens with 7 decimals (default for SAC-issued assets in tests).
 const DEPOSIT: i128 = 10_000_000_000;
 

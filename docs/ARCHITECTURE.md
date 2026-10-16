@@ -12,6 +12,18 @@ reentrancy, TTL strategy, and the design decisions behind the v1 API. Read the
 │                                                                    │
 │  lib.rs      entrypoints: create_stream(s) / withdraw / withdraw_max /│
 │              cancel_stream / top_up / get_stream / available /      │
+│              recipient_streams / sender_streams / attach_metadata / │
+│              stream_attestations / attestation_count /              │
+│              party_attestations                                   │
+│  stream.rs   Stream type, storage, checked accrual math            │
+│  metadata.rs hash-linked attestations (attach, read, party index)  │
+│  errors.rs   StreamError — stable numeric codes, append-only       │
+│  events.rs   StreamCreated / Withdrawn / StreamCancelled /         │
+│              StreamToppedUp / MetadataAttached (stream_id topic)   │
+│              recipient_streams / sender_streams / set_fee_bps /    │
+│              nominate_governor / accept_governor / withdraw_treasury│
+│              treasury_status / stream_fee / verify_treasury /       │
+│              total_streams                                         │
 │              recipient_streams / sender_streams / schedule_stream / │
 │              execute_scheduled / cancel_scheduled / reclaim_expired │
 │              set_fee_bps / nominate_governor / accept_governor /    │
@@ -41,6 +53,8 @@ reentrancy, TTL strategy, and the design decisions behind the v1 API. Read the
 | `DataKey::Stream(id)` | `Stream` | full per-stream state |
 | `DataKey::RecipientStreams(addr)` | `Vec<u64>` | append-only ids where `addr` receives |
 | `DataKey::SenderStreams(addr)` | `Vec<u64>` | append-only ids created by `addr` |
+| `DataKey::Attestations(stream_id)` | `Vec<Attestation>` | append-only metadata attestations for a stream |
+| `DataKey::PartyAttestations(addr)` | `Vec<AttestationRef>` | refs to attestations on streams where `addr` is a party |
 | `DataKey::NextIntentId` | `u64` | monotonic scheduled-intent id counter |
 | `DataKey::Intent(id)` | `ScheduledIntent` | full per-intent state (escrow, timing, `params_hash`) |
 | `DataKey::SenderIntents(addr)` | `Vec<u64>` | append-only intent ids scheduled by `addr` |
@@ -112,6 +126,19 @@ A gas optimization evaluation (`scripts/benchmark_storage.sh`, benchmark harness
 3. **Double-Read Elimination:** The contract avoids double reads in `withdraw`: `authorize_withdrawal` loads `s` once and passes `&mut s` directly to `pay_out`, preventing redundant re-reads.
 
 
+**Attestations** follow the same pattern. `attach_metadata` appends one
+`Attestation` (a 32-byte content hash, a byte length bounded `tag`, an attester,
+a timestamp, and the index in the list) to `DataKey::Attestations(stream_id)`
+and one `AttestationRef` to *both* parties' `PartyAttestations` index. The list
+is never rewritten in place — a second attach appends, it does not overwrite —
+and is capped at `MAX_ATTESTATIONS_PER_STREAM` (32) so per-stream storage cost
+is bounded (32-byte hash × the cap). The entrypoints move no tokens, so there
+is no CEI concern; the emitted `MetadataAttached` event is the durable record.
+This is *attestation*, not verification: the contract stores no document and
+cannot check that any document hashes to the value — see
+[`VERIFYING_ATTESTATIONS.md`](./VERIFYING_ATTESTATIONS.md) for what a verifier
+can and cannot conclude, and the runnable recipe.
+
 ## 3. Accrual math
 
 Everything reduces to one pure function (`stream.rs`):
@@ -156,6 +183,7 @@ nothing has accrued, at `now ≥ end_time` the full duration has elapsed.
 | `withdraw` | recipient only | recipient |
 | `cancel_stream` | sender always; recipient iff `cancelable` | caller |
 | `top_up` | sender only | sender |
+| `attach_metadata` | sender or recipient | attester |
 | `schedule_stream` | anyone; `sender` must authorize | sender |
 | `execute_scheduled` | anyone (keeper) | keeper (the caller) |
 | `cancel_scheduled` | intent sender, before the window opens | sender |
@@ -257,6 +285,9 @@ the public interface:
 | 11 | `MathOverflow` | a checked computation would overflow |
 | 12 | `NotAuthorized` | caller is neither sender nor (cancelable) recipient |
 | 13 | `NothingToWithdraw` | `withdraw_max` with an empty accrued balance |
+| 18 | `MetadataTagTooLong` | `attach_metadata` tag exceeds `MAX_TAG_LEN` (32 bytes) |
+| 19 | `MetadataLimitReached` | `attach_metadata` on a stream already holding `MAX_ATTESTATIONS_PER_STREAM` (32) |
+
 | 14 | `FeeRateTooHigh` | `set_fee_bps` above `MAX_FEE_BPS` |
 | 15 | `NotGovernor` | non-governor calls a governor-gated function (also: non-nominee `accept_governor`) |
 | 16 | `NoPendingGovernor` | `accept_governor` with no nomination pending |
@@ -352,6 +383,14 @@ griefing) is in [`SCHEDULED_INTENTS.md`](./SCHEDULED_INTENTS.md).
   deposit` exactly.
 - **Rate math is pure** (`streamed_at` takes no `Env`), so the `cargo-fuzz`
   target in [`fuzz/`](../fuzz/fuzz_targets/streamed_at.rs) hammers it without
+  a Soroban host: bounds, exact floor-ratio reference comparison,
+  monotonicity, and "errors are only ever genuine `MathOverflow`". CI runs a
+  scheduled session (`fuzz.yml`, non-blocking); any crash becomes a regression
+  unit test.
+- **Metadata attestations** (`metadata_test.rs`): both-party attribution,
+  append-not-overwrite on repeated attestation, oversized-tag and per-stream-cap
+  rejection, non-party / unknown-stream / missing-auth rejection, event payload,
+  and the paginated per-stream and per-party reads.
   a Soroban host: bounds (`0 <= result <= deposit`), exact floor-ratio
   reference comparison, monotonicity in elapsed time, full-duration exactness
   (`streamed_at(d, dur, dur) == d` for admissible pairs), and no panics for

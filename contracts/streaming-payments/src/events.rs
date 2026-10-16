@@ -3,7 +3,7 @@
 //! Per-stream events are keyed by `stream_id`; `StreamsCreated` is keyed by
 //! sender and carries the batch ids. Non-topic fields are event data.
 
-use soroban_sdk::{contractevent, Address, Vec};
+use soroban_sdk::{contractevent, Address, BytesN, String, Vec};
 
 /// Emitted when a new stream is created and its deposit pulled in.
 #[contractevent]
@@ -67,6 +67,20 @@ pub struct StreamToppedUp {
     pub new_deposit: i128,
 }
 
+/// Emitted when a party attaches a hash-linked metadata attestation to a
+/// stream. Append-only: this event is the durable record that
+/// `attester` claimed `content_hash` (tagged `tag`) at `timestamp`.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MetadataAttached {
+    #[topic]
+    pub stream_id: u64,
+    /// Position of the attestation in the stream's append-only list.
+    pub index: u32,
+    pub attester: Address,
+    pub content_hash: BytesN<32>,
+    pub tag: String,
+    pub timestamp: u64,
 /// Emitted when a sender pre-authorizes a future (optionally recurring)
 /// stream creation and escrows the deposit plus keeper fee budget.
 #[contractevent]
