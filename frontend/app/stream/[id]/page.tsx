@@ -7,27 +7,34 @@ import { getAddress, isConnected } from "@stellar/freighter-api";
 import {
   cancelStream,
   describeError,
+  isNativeXlm,
   readAvailable,
   readStream,
   withdrawFromStream,
   withdrawMaxFromStream,
   type StreamView,
 } from "@/lib/stellar";
+import { computeAvailable, StreamSnapshot } from "@/lib/accrual";
+import { useToast } from "@/components/toast";
 
 function fmtUnits(v: bigint): string {
   return v.toString();
 }
 
 export default function StreamDetail() {
+  const toast = useToast();
   const params = useParams<{ id: string }>();
   const id = params?.id ?? "";
 
   const [stream, setStream] = useState<StreamView | null>(null);
   const [available, setAvailable] = useState<bigint | null>(null);
+  const [displayAvailable, setDisplayAvailable] = useState<bigint | null>(
+    null
+  );
+  const [snapshot, setSnapshot] = useState<StreamSnapshot | null>(null);
   const [amount, setAmount] = useState<string>("");
   const [address, setAddress] = useState<string | null>(null);
-  const [status, setStatus] = useState<string>("");
-  const [error, setError] = useState<string>("");
+  const [loadError, setLoadError] = useState<string>("");
 
   const reload = useCallback(async () => {
     if (!id) return;
@@ -35,11 +42,20 @@ export default function StreamDetail() {
       const [s, a] = await Promise.all([readStream(id), readAvailable(id)]);
       setStream(s);
       setAvailable(a);
-      setError("");
+      setSnapshot({
+        deposit: BigInt(s.deposit),
+        startTime: s.startTime,
+        endTime: s.endTime,
+        withdrawn: BigInt(s.withdrawn),
+        status: s.status,
+      });
+      setLoadError("");
     } catch (e) {
-      setError(describeError(e));
+      const msg = describeError(e);
+      setLoadError(msg);
+      toast.error(msg);
     }
-  }, [id]);
+  }, [id, toast]);
 
   useEffect(() => {
     void (async () => {
@@ -48,6 +64,23 @@ export default function StreamDetail() {
     const t = setInterval(() => void reload(), 15_000); // live accrual
     return () => clearInterval(t);
   }, [reload]);
+
+  useEffect(() => {
+    if (!snapshot) return;
+    const timer = setInterval(() => {
+      const now = BigInt(Math.floor(Date.now() / 1000));
+      const next = computeAvailable(
+        snapshot.deposit,
+        snapshot.startTime,
+        snapshot.endTime,
+        snapshot.withdrawn,
+        snapshot.status,
+        now
+      );
+      setDisplayAvailable(next);
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [snapshot]);
 
   useEffect(() => {
     void (async () => {
@@ -62,11 +95,11 @@ export default function StreamDetail() {
     })();
   }, []);
 
-  if (error && !stream) {
+  if (loadError && !stream) {
     return (
       <main className="wrap">
         <h1>Stream #{id}</h1>
-        <p className="err">{error}</p>
+        <p className="err">{loadError}</p>
         <Link href="/">← All streams</Link>
       </main>
     );
@@ -91,38 +124,35 @@ export default function StreamDetail() {
 
   async function doWithdraw(max: boolean) {
     if (!address) return;
-    setError("");
-    setStatus("");
     try {
       if (max) {
         const paid = await withdrawMaxFromStream(address, stream!.id);
-        setStatus(`Claimed ${fmtUnits(paid)} units.`);
+        toast.success(`Claimed ${fmtUnits(paid)} units.`);
       } else {
         if (overWithdrawal) {
-          setError(
+          toast.error(
             `Amount exceeds the accrued balance (${available?.toString()} units). Try “Withdraw max”.`
           );
           return;
         }
         await withdrawFromStream(address, stream!.id, amount || "0");
-        setStatus("Withdrawal sent.");
+        toast.success("Withdrawal sent.");
       }
       setAmount("");
       await reload();
     } catch (e) {
-      setError(describeError(e));
+      toast.error(describeError(e));
     }
   }
 
   async function doCancel() {
     if (!address) return;
-    setError("");
     try {
       await cancelStream(address, stream!.id);
-      setStatus("Stream cancelled.");
+      toast.success("Stream cancelled.");
       await reload();
     } catch (e) {
-      setError(describeError(e));
+      toast.error(describeError(e));
     }
   }
 
@@ -132,8 +162,6 @@ export default function StreamDetail() {
       <h1>
         {stream.status === "Active" ? "⚡ Streaming" : `⏹ ${stream.status}`}
       </h1>
-      {status && <p className="ok">{status}</p>}
-      {error && <p className="err">{error}</p>}
 
       <section className="card">
         <div className="row">
@@ -152,7 +180,11 @@ export default function StreamDetail() {
             </tr>
             <tr>
               <th>Token</th>
-              <td className="mono">{stream.token}</td>
+              <td className="mono" style={{ wordBreak: "break-all" }}>
+                {isNativeXlm(stream.token)
+                  ? `Native XLM — ${stream.token}`
+                  : stream.token}
+              </td>
             </tr>
             <tr>
               <th>Deposit</th>
@@ -164,7 +196,11 @@ export default function StreamDetail() {
             </tr>
             <tr>
               <th>Available now</th>
-              <td className="mono">{available?.toString() ?? "…"}</td>
+              <td className="mono">
+                {snapshot?.status === "Active"
+                  ? (displayAvailable ?? available)?.toString() ?? "…"
+                  : available?.toString() ?? "…"}
+              </td>
             </tr>
             <tr>
               <th>Window</th>

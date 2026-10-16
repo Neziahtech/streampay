@@ -1,22 +1,15 @@
 //! Test-only client for the streaming payments contract.
-//!
-//! `#[contractimpl]` generates an exported client only when the impl lives
-//! outside the defining crate, so for in-crate unit tests we declare the
-//! contract's interface as a trait and generate a client from it with
-//! `#[contractclient]`. The client still targets the real contract address
-//! (`Client::new(&env, &streaming_contract_address)`), so it drives the actual
-//! implementation without building Wasm.
 #![cfg(test)]
 
 use soroban_sdk::{contractclient, Address, Env, Vec};
 
-use crate::{FeeScan, Stream, StreamError, TreasuryStatus};
+use crate::{FeeScan, Schedule, Stream, StreamError, StreamInput, TreasuryStatus};
 
 /// Interface of the StreamPay streaming-payments contract.
 #[contractclient(name = "StreamingPaymentsClient")]
-#[allow(dead_code)] // generated client methods are used selectively per test
+#[allow(dead_code)]
 pub trait StreamingPaymentsApi {
-    #[allow(clippy::too_many_arguments)] // mirrors the contract's 8-arg create_stream
+    #[allow(clippy::too_many_arguments)]
     fn create_stream(
         env: Env,
         sender: Address,
@@ -27,6 +20,11 @@ pub trait StreamingPaymentsApi {
         end_time: u64,
         cancelable: bool,
     ) -> Result<u64, StreamError>;
+    fn create_streams(
+        env: Env,
+        sender: Address,
+        inputs: Vec<StreamInput>,
+    ) -> Result<Vec<u64>, StreamError>;
     #[allow(clippy::too_many_arguments)]
     fn create_stream_vested(
         env: Env,
@@ -37,9 +35,9 @@ pub trait StreamingPaymentsApi {
         start_time: u64,
         end_time: u64,
         cancelable: bool,
-        schedule: crate::Schedule,
+        schedule: Schedule,
     ) -> Result<u64, StreamError>;
-    fn get_schedule(env: Env, stream_id: u64) -> Result<Option<crate::Schedule>, StreamError>;
+    fn get_schedule(env: Env, stream_id: u64) -> Result<Option<Schedule>, StreamError>;
     fn withdraw(env: Env, stream_id: u64, amount: i128) -> Result<(), StreamError>;
     fn withdraw_max(env: Env, stream_id: u64) -> Result<i128, StreamError>;
     fn cancel_stream(env: Env, caller: Address, stream_id: u64) -> Result<(), StreamError>;

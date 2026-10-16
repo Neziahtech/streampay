@@ -1,9 +1,9 @@
 //! Events emitted by StreamPay.
 //!
-//! Every event is keyed by `stream_id` as a topic, so indexers can filter per
-//! stream efficiently. Non-`#[topic]` fields are event data.
+//! Per-stream events are keyed by `stream_id`; `StreamsCreated` is keyed by
+//! sender and carries the batch ids. Non-topic fields are event data.
 
-use soroban_sdk::{contractevent, Address};
+use soroban_sdk::{contractevent, Address, Vec};
 
 /// Emitted when a new stream is created and its deposit pulled in.
 #[contractevent]
@@ -36,6 +36,15 @@ pub struct StreamCreatedVested {
     pub end_time: u64,
     pub cancelable: bool,
     pub cliff_time: u64,
+}
+
+/// Emitted once after an atomic batch creates its streams.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamsCreated {
+    #[topic]
+    pub sender: Address,
+    pub stream_ids: Vec<u64>,
 }
 
 /// Emitted when the recipient withdraws accrued funds.

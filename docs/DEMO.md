@@ -62,8 +62,10 @@ stellar contract invoke --id $TOKEN --source sender --network testnet -- \
   approve --spender $CONTRACT --amount 1000000000 --expiration_ledger +5000
 ```
 
-`create_stream` pulls the deposit through this allowance — without the
-approval it fails with a token-side error, not a StreamError.
+`create_stream` pulls the deposit through this allowance — without it the
+pull fails with `DepositTransferFailed` (#18): token-side failures are mapped
+to distinct StreamPay codes, so a token's own error number can never
+masquerade as one.
 
 ### 4. Create a stream
 
