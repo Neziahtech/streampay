@@ -40,6 +40,30 @@ jobs:
         working-directory: contracts/streaming-payments
         run: stellar contract build
 
+      - name: Fetch previous release tag
+        id: prev_tag
+        run: |
+          git fetch --tags --unshallow || git fetch --tags || true
+          prev=$(git tag -l "v*" --sort=-v:refname | sed -n '2p')
+          echo "prev_tag=$prev" >> "$GITHUB_OUTPUT"
+          echo "Previous release tag: $prev"
+
+      - name: Build and digest previous release Wasm
+        if: steps.prev_tag.outputs.prev_tag != ''
+        id: prev_digest
+        run: |
+          prev="${{ steps.prev_tag.outputs.prev_tag }}"
+          mkdir -p /tmp/prev-release
+          git archive "$prev" | tar -x -C /tmp/prev-release
+          (
+            cd /tmp/prev-release/contracts/streaming-payments
+            stellar contract build
+          )
+          prev_wasm=/tmp/prev-release/target/wasm32v1-none/release/streampay_contract.wasm
+          prev_hash=$(sha256sum "$prev_wasm" | awk '{print $1}')
+          echo "prev_hash=$prev_hash" >> "$GITHUB_OUTPUT"
+          echo "$prev_hash  streampay_contract_${prev}.wasm" > PREV_SHA256SUMS
+
       - name: Compute digest and emit toolchain release metadata
         id: digest
         run: |
@@ -64,6 +88,28 @@ jobs:
           EOF
           cat release-metadata.json
 
+          cat <<EOF > UPGRADE_DIGESTS.txt
+          ============================================================
+          StreamPay Contract Binary & Upgrade Digest Verification Matrix
+          ============================================================
+          Release Tag: ${{ github.ref_name }}
+          New Wasm SHA-256 (Bytecode Hash): $hash
+          EOF
+
+          if [ -n "${{ steps.prev_digest.outputs.prev_hash }}" ]; then
+            cat <<EOF >> UPGRADE_DIGESTS.txt
+          Previous Release Tag: ${{ steps.prev_tag.outputs.prev_tag }}
+          Old Wasm SHA-256 (Bytecode Hash): ${{ steps.prev_digest.outputs.prev_hash }}
+
+          Verification for Contract Upgrades:
+          1. Verify running instance against old release digest:
+             sha256sum of deployed bytecode matches ${{ steps.prev_digest.outputs.prev_hash }}
+          2. Verify new binary matches before calling execute_upgrade:
+             sha256sum target/wasm32v1-none/release/streampay_contract.wasm matches $hash
+          EOF
+          fi
+          cat UPGRADE_DIGESTS.txt
+
       # SLSA provenance attestation:
       # Note on what SLSA build provenance proves and what it does NOT prove:
       # SLSA provenance attestation cryptographically proves that this specific
@@ -79,6 +125,7 @@ jobs:
           subject-path: |
             target/wasm32v1-none/release/streampay_contract.wasm
             release-metadata.json
+            UPGRADE_DIGESTS.txt
 
       - name: Create/edit release draft
         uses: softprops/action-gh-release@v3
@@ -88,13 +135,17 @@ jobs:
             target/wasm32v1-none/release/streampay_contract.wasm
             SHA256SUMS
             release-metadata.json
+            UPGRADE_DIGESTS.txt
           body: |
             ## StreamPay contract `${{ github.ref_name }}`
 
-            Wasm SHA-256: `${{ steps.digest.outputs.hash }}`
+            ### Wasm Digests (Upgrade Verification Matrix)
+            * **New Wasm SHA-256**: `${{ steps.digest.outputs.hash }}`
+            ${{ steps.prev_digest.outputs.prev_hash && format('* **Previous Wasm SHA-256 ({0})**: `{1}`', steps.prev_tag.outputs.prev_tag, steps.prev_digest.outputs.prev_hash) || '' }}
 
-            Reproduce with:
+            ### Reproduce and Verify
             ```sh
+            # Build current version
             stellar contract build   # in contracts/streaming-payments
             sha256sum target/wasm32v1-none/release/streampay_contract.wasm
             ```
@@ -106,5 +157,9 @@ jobs:
                 tag: ${{ github.ref_name }}
                 expected_digest: ${{ steps.digest.outputs.hash }}
             ```
+
+            Before calling `execute_upgrade`, operators must verify that:
+            1. The active on-chain contract bytecode hash matches the old release.
+            2. The proposed new Wasm hash in `pending_upgrade` matches the new release digest `${{ steps.digest.outputs.hash }}`.
 
             Verify the digest above matches before deploying.

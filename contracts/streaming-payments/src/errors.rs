@@ -125,6 +125,18 @@ pub enum StreamError {
     PolicyNotInitialized = 34,
     /// No admin handoff proposal is pending.
     PolicyNoPendingHandoff = 35,
+    /// The contract is currently frozen for maintenance or upgrade.
+    ContractFrozen = 36,
+    /// The operation requires the contract to be frozen.
+    ContractNotFrozen = 37,
+    /// An upgrade operation was attempted but no upgrade is pending.
+    NoPendingUpgrade = 38,
+    /// The upgrade timelock delay has not yet expired.
+    TimelockNotExpired = 39,
+    /// The proposed upgrade delay is shorter than the minimum timelock.
+    UpgradeDelayTooShort = 40,
+    /// The storage migration has already been completed.
+    AlreadyMigrated = 41,
 }
 
 impl StreamError {
@@ -167,6 +179,12 @@ impl StreamError {
         StreamError::PolicyNoQueuedChange,
         StreamError::PolicyNotInitialized,
         StreamError::PolicyNoPendingHandoff,
+        StreamError::ContractFrozen,
+        StreamError::ContractNotFrozen,
+        StreamError::NoPendingUpgrade,
+        StreamError::TimelockNotExpired,
+        StreamError::UpgradeDelayTooShort,
+        StreamError::AlreadyMigrated,
     ];
 
     /// The stable numeric value carried across the contract boundary

@@ -459,6 +459,76 @@ fn probe(branch: Branch) -> Option<StreamError> {
                 .mock_all_auths()
                 .try_policy_accept_handoff()))
         }
+        Branch::ContractFrozen => {
+            let f = Fixture::setup_quiet();
+            let now = f.env.ledger().timestamp();
+            f.client.mock_all_auths().set_frozen(&f.governor, &true);
+            Some(rejected!(f.client.mock_all_auths().try_create_stream(
+                &f.sender,
+                &f.recipient,
+                &f.token,
+                &DEPOSIT,
+                &(now + DAY),
+                &(now + 2 * DAY),
+                &false,
+            )))
+        }
+        Branch::MigrationNotFrozen => {
+            let f = Fixture::setup_quiet();
+            Some(rejected!(f.client.mock_all_auths().try_migrate_storage(
+                &f.governor,
+                &0,
+                &50
+            )))
+        }
+        Branch::ExecuteUpgradeNoPending => {
+            let f = Fixture::setup_quiet();
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_execute_upgrade(&f.governor)))
+        }
+        Branch::CancelUpgradeNoPending => {
+            let f = Fixture::setup_quiet();
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_cancel_upgrade(&f.governor)))
+        }
+        Branch::TimelockNotExpired => {
+            let f = Fixture::setup_quiet();
+            let dummy_wasm_hash = soroban_sdk::BytesN::from_array(&f.env, &[0x42; 32]);
+            f.client.mock_all_auths().propose_upgrade(
+                &f.governor,
+                &dummy_wasm_hash,
+                &crate::MIN_UPGRADE_DELAY_SECONDS,
+            );
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_execute_upgrade(&f.governor)))
+        }
+        Branch::UpgradeDelayTooShort => {
+            let f = Fixture::setup_quiet();
+            let dummy_wasm_hash = soroban_sdk::BytesN::from_array(&f.env, &[0x42; 32]);
+            Some(rejected!(f.client.mock_all_auths().try_propose_upgrade(
+                &f.governor,
+                &dummy_wasm_hash,
+                &0,
+            )))
+        }
+        Branch::AlreadyMigrated => {
+            let f = Fixture::setup_quiet();
+            f.client.mock_all_auths().set_frozen(&f.governor, &true);
+            f.client
+                .mock_all_auths()
+                .migrate_storage(&f.governor, &0, &50);
+            Some(rejected!(f.client.mock_all_auths().try_migrate_storage(
+                &f.governor,
+                &0,
+                &50
+            )))
+        }
         // Invariant-protected: a stored stream always satisfies
         // `0 <= withdrawn <= streamed <= deposit <= i128::MAX`, so these
         // checked subtractions/addition can never cross an i128 boundary —
@@ -608,7 +678,13 @@ fn stream_error_variant_list_is_exhaustive() {
             | StreamError::PolicyTimelockNotElapsed
             | StreamError::PolicyNoQueuedChange
             | StreamError::PolicyNotInitialized
-            | StreamError::PolicyNoPendingHandoff => StreamError::ALL.contains(&e),
+            | StreamError::PolicyNoPendingHandoff
+            | StreamError::ContractFrozen
+            | StreamError::ContractNotFrozen
+            | StreamError::NoPendingUpgrade
+            | StreamError::TimelockNotExpired
+            | StreamError::UpgradeDelayTooShort
+            | StreamError::AlreadyMigrated => StreamError::ALL.contains(&e),
         }
     }
 
