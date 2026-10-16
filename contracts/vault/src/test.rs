@@ -9,7 +9,7 @@ use soroban_sdk::{
     Address, Env,
 };
 
-use crate::{math, Recipient, VaultConfig, VaultError, Vault};
+use crate::{math, Recipient, Vault, VaultConfig, VaultError};
 
 // ---------------------------------------------------------------- constants
 
@@ -81,7 +81,12 @@ impl F {
             .mock_all_auths()
             .initialize(&owner, &token, &now, &(now + duration_days * DAY));
 
-        F { env, token, client, owner }
+        F {
+            env,
+            token,
+            client,
+            owner,
+        }
     }
 
     fn now(&self) -> u64 {
@@ -264,12 +269,15 @@ fn two_equal_weight_recipients_split_evenly() {
     assert!(
         a1 + a2 <= TOKENS,
         "combined accrual exceeds deposit: {} + {} > {}",
-        a1, a2, TOKENS
+        a1,
+        a2,
+        TOKENS
     );
     assert!(
         (a1 - a2).abs() <= 2,
         "shares differ beyond rounding: {} vs {}",
-        a1, a2
+        a1,
+        a2
     );
 }
 
@@ -286,8 +294,18 @@ fn two_unequal_weights_split_proportionally() {
     let a1 = f.available(&r1);
     let a2 = f.available(&r2);
 
-    assert!((a1 - TOKENS / 4).abs() <= 2, "r1: {} expected ~{}", a1, TOKENS / 4);
-    assert!((a2 - TOKENS * 3 / 4).abs() <= 2, "r2: {} expected ~{}", a2, TOKENS * 3 / 4);
+    assert!(
+        (a1 - TOKENS / 4).abs() <= 2,
+        "r1: {} expected ~{}",
+        a1,
+        TOKENS / 4
+    );
+    assert!(
+        (a2 - TOKENS * 3 / 4).abs() <= 2,
+        "r2: {} expected ~{}",
+        a2,
+        TOKENS * 3 / 4
+    );
     assert!(a1 + a2 <= TOKENS);
 }
 
@@ -315,7 +333,9 @@ fn late_joiner_does_not_steal_from_earlier_recipient() {
     assert!(
         a1 + a2 <= TOKENS,
         "over-commitment: {} + {} > {}",
-        a1, a2, TOKENS
+        a1,
+        a2,
+        TOKENS
     );
     assert!(a1 > a2, "early recipient should earn more than late joiner");
 
@@ -343,7 +363,8 @@ fn remove_recipient_pays_out_accrued_amount() {
     assert!(
         (r1_balance - TOKENS / 4).abs() <= 2,
         "r1 paid {} expected ~{}",
-        r1_balance, TOKENS / 4
+        r1_balance,
+        TOKENS / 4
     );
 
     // r2 continues streaming over the second half.
@@ -355,9 +376,11 @@ fn remove_recipient_pays_out_accrued_amount() {
     let total_out = r1_balance + f.balance(&r2);
     let vault_remaining = f.vault_balance();
     assert_eq!(
-        total_out + vault_remaining, TOKENS,
+        total_out + vault_remaining,
+        TOKENS,
         "tokens not conserved: out={} vault={}",
-        total_out, vault_remaining
+        total_out,
+        vault_remaining
     );
 }
 
@@ -387,13 +410,20 @@ fn vault_never_over_commits() {
     f.withdraw_for(&r3);
 
     let total_paid = f.balance(&r1) + f.balance(&r2) + f.balance(&r3);
-    assert!(total_paid <= TOKENS, "over-paid: {} > {}", total_paid, TOKENS);
+    assert!(
+        total_paid <= TOKENS,
+        "over-paid: {} > {}",
+        total_paid,
+        TOKENS
+    );
 
     let remainder = f.vault_balance();
     assert_eq!(
-        total_paid + remainder, TOKENS,
+        total_paid + remainder,
+        TOKENS,
         "tokens not conserved: paid={} vault={}",
-        total_paid, remainder
+        total_paid,
+        remainder
     );
 }
 
@@ -529,9 +559,11 @@ fn full_lifecycle_conserves_tokens() {
     let total_out = f.balance(&r1) + f.balance(&r2) + f.balance(&r3);
     let vault_rem = f.vault_balance();
     assert_eq!(
-        total_out + vault_rem, 3 * TOKENS,
+        total_out + vault_rem,
+        3 * TOKENS,
         "tokens not conserved: out={} vault={}",
-        total_out, vault_rem
+        total_out,
+        vault_rem
     );
     assert!(total_out <= 3 * TOKENS);
 }

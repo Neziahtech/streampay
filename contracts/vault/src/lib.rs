@@ -113,7 +113,13 @@ impl Vault {
                 pool_balance: 0,
             },
         );
-        VaultInitialized { owner, token, start_time, end_time }.publish(&env);
+        VaultInitialized {
+            owner,
+            token,
+            start_time,
+            end_time,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -144,7 +150,12 @@ impl Vault {
             .ok_or(VaultError::MathOverflow)?;
         put_config(&env, &cfg);
 
-        PoolFunded { funder, amount, new_balance: cfg.pool_balance }.publish(&env);
+        PoolFunded {
+            funder,
+            amount,
+            new_balance: cfg.pool_balance,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -179,7 +190,13 @@ impl Vault {
         put_recipient(
             &env,
             &recipient,
-            &Recipient { weight, deposit: 0, settled: 0, withdrawn: 0, rebalance_time: now },
+            &Recipient {
+                weight,
+                deposit: 0,
+                settled: 0,
+                withdrawn: 0,
+                rebalance_time: now,
+            },
         );
         list.push_back(recipient.clone());
 
@@ -189,8 +206,7 @@ impl Vault {
             .ok_or(VaultError::MathOverflow)?;
 
         // 3. Allocate pool pro-rata among all recipients (including the new one).
-        let residual =
-            allocate_deposits(&env, &list, pool_for_allocation, new_total_weight, now)?;
+        let residual = allocate_deposits(&env, &list, pool_for_allocation, new_total_weight, now)?;
 
         cfg.total_weight = new_total_weight;
         cfg.recipient_count = list.len();
@@ -198,7 +214,12 @@ impl Vault {
         put_config(&env, &cfg);
         put_recipient_list(&env, &list);
 
-        RecipientAdded { recipient, weight, total_weight: new_total_weight }.publish(&env);
+        RecipientAdded {
+            recipient,
+            weight,
+            total_weight: new_total_weight,
+        }
+        .publish(&env);
         Rebalanced {
             pool_balance: pool_for_allocation,
             total_weight: new_total_weight,
