@@ -10,7 +10,11 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "node --test",
-    "generate:openapi": "npx tsx scripts/generate-openapi.ts"
+    "generate:openapi": "npx tsx scripts/generate-openapi.ts",
+    "storybook": "storybook dev -p 6006",
+    "build-storybook": "storybook build",
+    "test:visual": "playwright test -c playwright.visual.config.ts",
+    "test:visual:update": "playwright test -c playwright.visual.config.ts --update-snapshots"
   },
   "dependencies": {
     "@stellar/freighter-api": "^6.0.1",
@@ -20,11 +24,18 @@
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.1",
+    "@sinonjs/fake-timers": "^15.4.0",
+    "@storybook/nextjs": "^10.6.2",
+    "@storybook/react": "^10.6.2",
     "@types/node": "^26.6.5",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "@types/sinonjs__fake-timers": "^15.0.1",
     "eslint": "^10.12.0",
     "eslint-config-next": "^16.3.8",
+    "serve": "^14.2.6",
+    "storybook": "^10.6.2",
     "typescript": "^5.7.0"
   },
   "overrides": {

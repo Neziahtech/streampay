@@ -20,8 +20,11 @@
     "seed":        "bash scripts/seed-local.sh",
 
     "dev":         "cd frontend && npm run dev",
+    "storybook":   "cd frontend && npm run storybook",
+    "build:storybook": "cd frontend && npm run build-storybook",
 
     "typecheck":   "cd frontend && npm run typecheck",
+    "test:visual": "cd frontend && npm run test:visual",
     "audit":       "cd frontend && npm audit --omit=dev --audit-level=high",
 
     "errors:check": "cargo run -p streampay-contract --example error_surface_doc && git diff --exit-code docs/ERRORS.md",
