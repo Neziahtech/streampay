@@ -114,6 +114,18 @@ impl Fixture {
         )
     }
 
+    pub(crate) fn create_stream_at(&self, start: u64, end: u64) -> u64 {
+        self.client.mock_all_auths().create_stream(
+            &self.sender,
+            &self.recipient,
+            &self.token,
+            &DEPOSIT,
+            &start,
+            &end,
+            &true,
+        )
+    }
+
     pub(crate) fn advance_time(&self, seconds: u64) {
         self.env.ledger().with_mut(|li| li.timestamp += seconds);
     }
@@ -2496,3 +2508,293 @@ fn run_fee_property(seed: u64, steps: usize) {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Pause / resume stream tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pause_and_resume_happy_path_freezes_accrual_and_extends_end_time() {
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+    let id = f.create_stream_at(now, now + 10 * DAY);
+
+    // After 2 days, 2_000_000_000 should be available out of 10_000_000_000
+    f.advance_time(2 * DAY);
+    let expected_at_pause = DEPOSIT * 2 / 10;
+    assert_eq!(f.client.available(&id), expected_at_pause);
+
+    // Sender pauses the stream
+    f.client.mock_all_auths().pause_stream(&f.sender, &id);
+    let s = f.client.get_stream(&id);
+    assert!(s.paused);
+    assert_eq!(s.paused_at, now + 2 * DAY);
+    assert_eq!(s.pause_offset, 0);
+
+    // Advance 3 days while paused: accrual must remain completely frozen!
+    f.advance_time(3 * DAY);
+    assert_eq!(f.client.available(&id), expected_at_pause);
+
+    // Recipient can withdraw while paused
+    let withdraw_amount = 500_000_000;
+    f.client.mock_all_auths().withdraw(&id, &withdraw_amount);
+    assert_eq!(f.client.available(&id), expected_at_pause - withdraw_amount);
+
+    // Sender resumes the stream after 3 days of pause
+    f.client.mock_all_auths().resume_stream(&f.sender, &id);
+    let s = f.client.get_stream(&id);
+    assert!(!s.paused);
+    assert_eq!(s.paused_at, 0);
+    assert_eq!(s.pause_offset, 3 * DAY);
+    assert_eq!(s.end_time, now + 13 * DAY);
+
+    // Advance 1 day after resume: total active days = 3 (day 1, day 2, day 6)
+    f.advance_time(1 * DAY);
+    let expected_now = (DEPOSIT * 3 / 10) - withdraw_amount;
+    assert_eq!(f.client.available(&id), expected_now);
+
+    // Advance past the extended end_time (now + 13 * DAY)
+    f.advance_time(10 * DAY);
+    // Entire remaining balance is available
+    assert_eq!(f.client.available(&id), DEPOSIT - withdraw_amount);
+
+    // Recipient can withdraw the full remainder
+    f.client.mock_all_auths().withdraw(&id, &(DEPOSIT - withdraw_amount));
+    let s_final = f.client.get_stream(&id);
+    assert_eq!(s_final.status, StreamStatus::Depleted);
+    assert_eq!(s_final.withdrawn, DEPOSIT);
+}
+
+#[test]
+fn pause_stream_reverts_for_non_sender() {
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+    let id = f.create_stream_at(now, now + 10 * DAY);
+    let stranger = Address::generate(&f.env);
+
+    // Stranger cannot pause
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_pause_stream(&stranger, &id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::NotAuthorized);
+
+    // Recipient cannot pause
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_pause_stream(&f.recipient, &id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::NotAuthorized);
+}
+
+#[test]
+fn pause_stream_rejects_double_pause() {
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+    let id = f.create_stream_at(now, now + 10 * DAY);
+
+    f.client.mock_all_auths().pause_stream(&f.sender, &id);
+
+    // Calling pause again on an already paused stream must fail with StreamAlreadyPaused
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_pause_stream(&f.sender, &id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::StreamAlreadyPaused);
+}
+
+#[test]
+fn pause_stream_rejects_inactive_stream() {
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+    let id = f.create_stream_at(now, now + 10 * DAY);
+
+    // Cancel the stream
+    f.client.mock_all_auths().cancel_stream(&f.sender, &id);
+
+    // Pausing a cancelled stream reverts with StreamNotActive
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_pause_stream(&f.sender, &id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::StreamNotActive);
+}
+
+#[test]
+fn resume_stream_reverts_for_non_sender() {
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+    let id = f.create_stream_at(now, now + 10 * DAY);
+    let stranger = Address::generate(&f.env);
+
+    f.client.mock_all_auths().pause_stream(&f.sender, &id);
+
+    // Stranger cannot resume
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_resume_stream(&stranger, &id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::NotAuthorized);
+
+    // Recipient cannot resume
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_resume_stream(&f.recipient, &id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::NotAuthorized);
+}
+
+#[test]
+fn resume_stream_rejects_unpaused_stream() {
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+    let id = f.create_stream_at(now, now + 10 * DAY);
+
+    // Calling resume on a running (not paused) stream must fail with StreamNotPaused
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_resume_stream(&f.sender, &id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::StreamNotPaused);
+}
+
+#[test]
+fn cancel_while_paused_settles_at_frozen_accrual_point() {
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+    let id = f.create_stream_at(now, now + 10 * DAY);
+
+    // Advance 4 days
+    f.advance_time(4 * DAY);
+    let accrued_at_pause = DEPOSIT * 4 / 10;
+
+    // Pause stream
+    f.client.mock_all_auths().pause_stream(&f.sender, &id);
+
+    // Advance 3 more days while paused
+    f.advance_time(3 * DAY);
+
+    let token_client = TokenClient::new(&f.env, &f.token);
+    let sender_bal_before = token_client.balance(&f.sender);
+    let recipient_bal_before = token_client.balance(&f.recipient);
+
+    // Cancel while paused
+    f.client.mock_all_auths().cancel_stream(&f.sender, &id);
+
+    let s = f.client.get_stream(&id);
+    assert_eq!(s.status, StreamStatus::Cancelled);
+    assert_eq!(s.withdrawn, accrued_at_pause);
+
+    // Recipient receives exactly accrued_at_pause
+    assert_eq!(
+        token_client.balance(&f.recipient),
+        recipient_bal_before + accrued_at_pause
+    );
+    // Sender is refunded the unaccrued remainder
+    assert_eq!(
+        token_client.balance(&f.sender),
+        sender_bal_before + (DEPOSIT - accrued_at_pause)
+    );
+}
+
+#[test]
+fn top_up_while_paused_increases_accrual_pro_rata() {
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+    let id = f.create_stream_at(now, now + 10 * DAY);
+
+    // Advance 5 days (50% elapsed)
+    f.advance_time(5 * DAY);
+    assert_eq!(f.client.available(&id), DEPOSIT / 2);
+
+    // Pause stream
+    f.client.mock_all_auths().pause_stream(&f.sender, &id);
+
+    // Top up 10_000_000_000 while paused
+    let extra = 10_000_000_000;
+    f.client.mock_all_auths().top_up(&id, &extra);
+
+    // Available immediately jumps to 50% of the new deposit (20_000_000_000 * 50% = 10_000_000_000)
+    let s = f.client.get_stream(&id);
+    assert_eq!(s.deposit, DEPOSIT + extra);
+    assert_eq!(f.client.available(&id), (DEPOSIT + extra) / 2);
+}
+
+#[test]
+fn pause_and_resume_events_emitted() {
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+    let id = f.create_stream_at(now, now + 10 * DAY);
+
+    f.advance_time(2 * DAY);
+    let pause_time = f.env.ledger().timestamp();
+    let _ = f.env.events().all();
+    f.client.mock_all_auths().pause_stream(&f.sender, &id);
+
+    let paused = crate::events::StreamPaused {
+        stream_id: id,
+        sender: f.sender.clone(),
+        paused_at: pause_time,
+    };
+    assert_eq!(
+        f.env.events().all().filter_by_contract(&f.client.address),
+        [paused.to_xdr(&f.env, &f.client.address)],
+    );
+
+    f.advance_time(3 * DAY);
+    let resume_time = f.env.ledger().timestamp();
+    f.client.mock_all_auths().resume_stream(&f.sender, &id);
+
+    let resumed = crate::events::StreamResumed {
+        stream_id: id,
+        sender: f.sender.clone(),
+        resumed_at: resume_time,
+        paused_duration: 3 * DAY,
+    };
+    assert_eq!(
+        f.env.events().all().filter_by_contract(&f.client.address),
+        [resumed.to_xdr(&f.env, &f.client.address)],
+    );
+}
+
+#[test]
+fn multiple_pause_and_resume_intervals_accumulate_offsets() {
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+    let id = f.create_stream_at(now, now + 10 * DAY);
+
+    // 1st pause: at day 1 for 2 days
+    f.advance_time(1 * DAY);
+    f.client.mock_all_auths().pause_stream(&f.sender, &id);
+    f.advance_time(2 * DAY);
+    f.client.mock_all_auths().resume_stream(&f.sender, &id);
+
+    // 2nd pause: at day 4 (1 active + 2 paused + 1 active = timestamp now + 4 * DAY) for 3 days
+    f.advance_time(1 * DAY);
+    f.client.mock_all_auths().pause_stream(&f.sender, &id);
+    f.advance_time(3 * DAY);
+    f.client.mock_all_auths().resume_stream(&f.sender, &id);
+
+    let s = f.client.get_stream(&id);
+    assert!(!s.paused);
+    assert_eq!(s.pause_offset, 2 * DAY + 3 * DAY);
+    assert_eq!(s.end_time, now + 10 * DAY + 5 * DAY);
+
+    // Active time elapsed so far is exactly 2 days (1 before 1st pause, 1 between pauses)
+    assert_eq!(f.client.available(&id), DEPOSIT * 2 / 10);
+}
+

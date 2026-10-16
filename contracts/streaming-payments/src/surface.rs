@@ -86,13 +86,18 @@ pub enum Branch {
     /// `withdraw_treasury`: amount exceeds fees collected minus fees already
     /// withdrawn.
     WithdrawTreasuryExceedsBalance,
+    // ----------------------------------------------------------- pause / resume
+    PauseStreamNotAuthorized,
+    PauseStreamAlreadyPaused,
+    ResumeStreamNotAuthorized,
+    ResumeStreamNotPaused,
 }
 
 impl Branch {
     /// Every branch, in declaration order. The matrix test walks this list and
     /// the coverage test requires each [`StreamError`] variant to be produced by
     /// one of these (or retired).
-    pub const ALL: [Branch; 24] = [
+    pub const ALL: [Branch; 28] = [
         Branch::CreateDepositNonPositive,
         Branch::CreateStartTimeInPast,
         Branch::CreateInvalidTimeRange,
@@ -117,6 +122,10 @@ impl Branch {
         Branch::AcceptGovernorNotNominee,
         Branch::WithdrawTreasuryAmountNonPositive,
         Branch::WithdrawTreasuryExceedsBalance,
+        Branch::PauseStreamNotAuthorized,
+        Branch::PauseStreamAlreadyPaused,
+        Branch::ResumeStreamNotAuthorized,
+        Branch::ResumeStreamNotPaused,
     ];
 
     /// The entrypoint(s) through which this branch can fire. Shared helpers
@@ -143,8 +152,17 @@ impl Branch {
                 "withdraw_max",
                 "cancel_stream",
                 "top_up",
+                "pause_stream",
+                "resume_stream",
             ],
-            Branch::StreamNotActive => &["withdraw", "withdraw_max", "cancel_stream", "top_up"],
+            Branch::StreamNotActive => &[
+                "withdraw",
+                "withdraw_max",
+                "cancel_stream",
+                "top_up",
+                "pause_stream",
+                "resume_stream",
+            ],
             Branch::CapacityOverflow => &["create_stream", "top_up"],
             Branch::RateProductOverflow => &[
                 "streamed_at",
@@ -165,6 +183,12 @@ impl Branch {
             }
             Branch::WithdrawTreasuryAmountNonPositive | Branch::WithdrawTreasuryExceedsBalance => {
                 &["withdraw_treasury"]
+            }
+            Branch::PauseStreamNotAuthorized | Branch::PauseStreamAlreadyPaused => {
+                &["pause_stream"]
+            }
+            Branch::ResumeStreamNotAuthorized | Branch::ResumeStreamNotPaused => {
+                &["resume_stream"]
             }
         }
     }
@@ -199,6 +223,11 @@ impl Branch {
             Branch::AcceptGovernorNoPending => StreamError::NoPendingGovernor,
             Branch::WithdrawTreasuryAmountNonPositive => StreamError::ZeroAmount,
             Branch::WithdrawTreasuryExceedsBalance => StreamError::InsufficientTreasuryBalance,
+            Branch::PauseStreamNotAuthorized | Branch::ResumeStreamNotAuthorized => {
+                StreamError::NotAuthorized
+            }
+            Branch::PauseStreamAlreadyPaused => StreamError::StreamAlreadyPaused,
+            Branch::ResumeStreamNotPaused => StreamError::StreamNotPaused,
         }
     }
 
@@ -245,6 +274,10 @@ impl Branch {
             Branch::WithdrawTreasuryExceedsBalance => {
                 "amount exceeds fees collected minus fees already withdrawn"
             }
+            Branch::PauseStreamNotAuthorized => "the caller is not the stream sender",
+            Branch::PauseStreamAlreadyPaused => "the stream is already paused",
+            Branch::ResumeStreamNotAuthorized => "the caller is not the stream sender",
+            Branch::ResumeStreamNotPaused => "the stream is not currently paused",
         }
     }
 

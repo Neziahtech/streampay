@@ -57,7 +57,8 @@ use surface::Branch;
 
 pub use errors::StreamError;
 pub use events::{
-    FeeCharged, FeeWithdrawn, StreamCancelled, StreamCreated, StreamToppedUp, Withdrawn,
+    FeeCharged, FeeWithdrawn, StreamCancelled, StreamCreated, StreamPaused, StreamResumed,
+    StreamToppedUp, Withdrawn,
 };
 // `streamed_at` is re-exported for the fuzz target and downstream rate
 // calculators: it is a pure function requiring no `Env`.
@@ -169,6 +170,9 @@ impl StreamingPayments {
             end_time,
             cancelable,
             status: StreamStatus::Active,
+            paused: false,
+            paused_at: 0,
+            pause_offset: 0,
         };
         stream::put_stream(&env, &s);
         stream::index_stream(&env, &s);
@@ -353,6 +357,105 @@ impl StreamingPayments {
                 &sender_amount,
             );
         }
+
+        Ok(())
+    }
+
+    /// Freezes accrual for an active stream at the current ledger time.
+    ///
+    /// Callable only by the stream sender (`caller.require_auth()`).
+    /// While paused:
+    /// - Accrual is frozen at the moment of pausing (`stream.paused_at`).
+    /// - Withdrawals remain permitted against the accrued-but-unwithdrawn balance.
+    /// - Top-ups remain permitted.
+    /// - Cancellations remain permitted (settling the frozen accrued balance to recipient
+    ///   and refunding the unaccrued remainder to sender).
+    ///
+    /// # Pause math
+    ///
+    /// Active elapsed time is frozen at `s.paused_at - s.start_time - s.pause_offset`.
+    /// When read via [`StreamingPayments::available`], the stream reports exactly the
+    /// funds accrued up to `paused_at` minus any amounts already withdrawn.
+    ///
+    /// Reverts with [`StreamError::StreamNotFound`] if the stream does not exist,
+    /// [`StreamError::StreamNotActive`] if the stream is cancelled or depleted,
+    /// [`StreamError::NotAuthorized`] if the caller is not the sender, and
+    /// [`StreamError::StreamAlreadyPaused`] if the stream is already paused.
+    pub fn pause_stream(env: Env, caller: Address, stream_id: u64) -> Result<(), StreamError> {
+        caller.require_auth();
+
+        let mut s = stream::get_stream(&env, stream_id)?;
+        if s.status != StreamStatus::Active {
+            return Err(surface::reject(Branch::StreamNotActive));
+        }
+        if caller != s.sender {
+            return Err(surface::reject(Branch::PauseStreamNotAuthorized));
+        }
+        if s.paused {
+            return Err(surface::reject(Branch::PauseStreamAlreadyPaused));
+        }
+
+        let now = env.ledger().timestamp();
+        s.paused = true;
+        s.paused_at = now;
+        stream::put_stream(&env, &s);
+
+        StreamPaused {
+            stream_id,
+            sender: caller,
+            paused_at: now,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Resumes accrual for a paused stream, shifting `end_time` by the paused interval.
+    ///
+    /// Callable only by the stream sender (`caller.require_auth()`).
+    ///
+    /// # Resume math
+    ///
+    /// The paused duration `delta = now - s.paused_at` is added to `s.pause_offset` and
+    /// `s.end_time`. Because `(s.end_time - s.start_time) - s.pause_offset` remains
+    /// invariant, the original per-second streaming rate is perfectly preserved:
+    /// `rate = deposit / duration`. Active streaming continues from the exact accrual
+    /// level where it was paused, and full payout completes at the new extended `end_time`.
+    ///
+    /// Reverts with [`StreamError::StreamNotFound`] if the stream does not exist,
+    /// [`StreamError::StreamNotActive`] if the stream is cancelled or depleted,
+    /// [`StreamError::NotAuthorized`] if the caller is not the sender, and
+    /// [`StreamError::StreamNotPaused`] if the stream is not currently paused.
+    pub fn resume_stream(env: Env, caller: Address, stream_id: u64) -> Result<(), StreamError> {
+        caller.require_auth();
+
+        let mut s = stream::get_stream(&env, stream_id)?;
+        if s.status != StreamStatus::Active {
+            return Err(surface::reject(Branch::StreamNotActive));
+        }
+        if caller != s.sender {
+            return Err(surface::reject(Branch::ResumeStreamNotAuthorized));
+        }
+        if !s.paused {
+            return Err(surface::reject(Branch::ResumeStreamNotPaused));
+        }
+
+        let now = env.ledger().timestamp();
+        let paused_duration = now.saturating_sub(s.paused_at);
+
+        s.paused = false;
+        s.paused_at = 0;
+        s.pause_offset = s.pause_offset.saturating_add(paused_duration);
+        s.end_time = s.end_time.saturating_add(paused_duration);
+        stream::put_stream(&env, &s);
+
+        StreamResumed {
+            stream_id,
+            sender: caller,
+            resumed_at: now,
+            paused_duration,
+        }
+        .publish(&env);
 
         Ok(())
     }
