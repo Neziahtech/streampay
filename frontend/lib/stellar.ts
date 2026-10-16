@@ -13,11 +13,21 @@ import {
   Networks,
   rpc,
   scValToNative,
+  Transaction,
   TransactionBuilder,
   Contract,
   xdr,
 } from "@stellar/stellar-sdk";
-import { signTransaction } from "@stellar/freighter-api";
+import freighterPkg from "@stellar/freighter-api";
+
+// CJS / ESM interop for Node test runner and Next.js bundler
+const freighter = ((freighterPkg as unknown as { default?: typeof freighterPkg }).default ||
+  freighterPkg) as typeof freighterPkg;
+const { signTransaction } = freighter;
+
+export const DEFAULT_FEE = "100000";
+export const DEFAULT_TIMEOUT_SECONDS = 60;
+export const DEFAULT_CONTRACT_ID = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM";
 
 const RPC_URL =
   process.env.NEXT_PUBLIC_SOROBAN_RPC_URL ||
@@ -28,13 +38,18 @@ const NETWORK =
     : Networks.TESTNET;
 const CONTRACT_ID = process.env.NEXT_PUBLIC_STREAMING_CONTRACT_ID || "";
 
-function contract(): Contract {
-  if (!CONTRACT_ID) {
+export function getNetworkPassphrase(): string {
+  return NETWORK;
+}
+
+export function contract(overrideContractId?: string): Contract {
+  const targetId = overrideContractId || CONTRACT_ID || DEFAULT_CONTRACT_ID;
+  if (!targetId) {
     throw new Error(
       "NEXT_PUBLIC_STREAMING_CONTRACT_ID is not set — deploy the contract and put its id in frontend/.env.local"
     );
   }
-  return new Contract(CONTRACT_ID);
+  return new Contract(targetId);
 }
 
 export interface StreamArgs {
@@ -122,6 +137,87 @@ const DUMMY_SOURCE = new Account(
   "0"
 );
 
+export function buildStreamTransaction(
+  sourceAccount: Account,
+  operation: xdr.Operation,
+  options?: {
+    fee?: string;
+    networkPassphrase?: string;
+    timeout?: number;
+  }
+): Transaction {
+  return new TransactionBuilder(sourceAccount, {
+    fee: options?.fee || DEFAULT_FEE,
+    networkPassphrase: options?.networkPassphrase || NETWORK,
+  })
+    .addOperation(operation)
+    .setTimeout(options?.timeout ?? DEFAULT_TIMEOUT_SECONDS)
+    .build();
+}
+
+export function buildCreateStreamOp(
+  sender: string,
+  args: StreamArgs,
+  overrideContractId?: string
+): { operation: xdr.Operation; start: number; end: number } {
+  const start = Math.floor(Date.now() / 1000) + 1;
+  const end = start + Math.ceil(Number(args.days) * 86_400);
+  const operation = contract(overrideContractId).call(
+    "create_stream",
+    scAddr(sender),
+    scAddr(args.recipient),
+    scAddr(args.token),
+    i128(args.deposit),
+    u64(start),
+    u64(end),
+    nativeToScVal(args.cancelable)
+  );
+  return { operation, start, end };
+}
+
+export function buildWithdrawOp(
+  streamId: string,
+  amount: string,
+  overrideContractId?: string
+): xdr.Operation {
+  return contract(overrideContractId).call(
+    "withdraw",
+    u64(streamId),
+    i128(amount)
+  );
+}
+
+export function buildWithdrawMaxOp(
+  streamId: string,
+  overrideContractId?: string
+): xdr.Operation {
+  return contract(overrideContractId).call("withdraw_max", u64(streamId));
+}
+
+export function buildTopUpOp(
+  streamId: string,
+  amount: string,
+  overrideContractId?: string
+): xdr.Operation {
+  return contract(overrideContractId).call(
+    "top_up",
+    u64(streamId),
+    i128(amount)
+  );
+}
+
+export function buildCancelStreamOp(
+  caller: string,
+  streamId: string,
+  overrideContractId?: string
+): xdr.Operation {
+  return contract(overrideContractId).call(
+    "cancel_stream",
+    scAddr(caller),
+    u64(streamId)
+  );
+}
+
 /**
  * Builds, simulates, Freighter-signs, sends and polls a mutating contract
  * operation. Resolves with the contract method's decoded return value.
@@ -133,13 +229,7 @@ async function send<T>(
 ): Promise<T> {
   const server = new rpc.Server(RPC_URL);
   const account = await server.getAccount(source);
-  const tx = new TransactionBuilder(account, {
-    fee: "100000",
-    networkPassphrase: NETWORK,
-  })
-    .addOperation(operation)
-    .setTimeout(60)
-    .build();
+  const tx = buildStreamTransaction(account, operation);
 
   // 1. Simulate: catches contract errors early and assembles Soroban tx data.
   const simulated = await server.simulateTransaction(tx);
@@ -179,20 +269,9 @@ export async function createStream(
   sender: string,
   args: StreamArgs
 ): Promise<bigint> {
-  const start = Math.floor(Date.now() / 1000) + 1;
-  const end = start + Math.ceil(Number(args.days) * 86_400);
-  const op = contract().call(
-    "create_stream",
-    scAddr(sender),
-    scAddr(args.recipient),
-    scAddr(args.token),
-    i128(args.deposit),
-    u64(start),
-    u64(end),
-    nativeToScVal(args.cancelable)
-  );
+  const { operation } = buildCreateStreamOp(sender, args);
   // create_stream returns the new stream id (u64).
-  return send(sender, op, (v) => BigInt(scValToNative(v) as bigint));
+  return send(sender, operation, (v) => BigInt(scValToNative(v) as bigint));
 }
 
 export async function withdrawFromStream(
@@ -202,7 +281,7 @@ export async function withdrawFromStream(
 ): Promise<void> {
   await send(
     recipient,
-    contract().call("withdraw", u64(streamId), i128(amount)),
+    buildWithdrawOp(streamId, amount),
     () => undefined
   );
 }
@@ -217,7 +296,7 @@ export async function withdrawMaxFromStream(
 ): Promise<bigint> {
   return send(
     recipient,
-    contract().call("withdraw_max", u64(streamId)),
+    buildWithdrawMaxOp(streamId),
     (v) => BigInt(scValToNative(v) as bigint)
   );
 }
@@ -229,7 +308,7 @@ export async function topUpStream(
 ): Promise<void> {
   await send(
     sender,
-    contract().call("top_up", u64(streamId), i128(amount)),
+    buildTopUpOp(streamId, amount),
     () => undefined
   );
 }
@@ -240,7 +319,7 @@ export async function cancelStream(
 ): Promise<void> {
   await send(
     caller,
-    contract().call("cancel_stream", scAddr(caller), u64(streamId)),
+    buildCancelStreamOp(caller, streamId),
     () => undefined
   );
 }
