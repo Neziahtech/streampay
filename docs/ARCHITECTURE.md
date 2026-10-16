@@ -406,6 +406,29 @@ an abandoned stream (restore via RPC before re-verifying that range).
   scans" rule (instruction budget); the bounded paged scan composes to a
   full verification at the client layer instead.
 
+## 11.1. Oracle time source (reference clock settlement)
+
+Streams can optionally settle against an external reference clock (such as
+cross-ledger header timestamps or a signed reference time feed) rather than
+the Stellar ledger timestamp.
+
+### Design and Trust Model
+- **Per-stream opt-in:** The default remains the native ledger timestamp (`use_oracle = false`).
+  Only streams created via `create_stream_with_oracle(..., use_oracle: true)` utilize the oracle registry.
+- **M-of-N publisher quorum:** The treasury governor registers authorized publishers
+  `Vec<Address>` and specifies a quorum threshold `threshold <= publishers.len()`.
+- **Staleness bound (`max_stale_seconds`):** Each publisher submits timestamp reports
+  storing `(reported_time, ledger_time)`. Reports older than `max_stale_seconds` relative to the
+  current ledger time are filtered out.
+- **Outlier elimination:** Valid fresh reports are sorted and aggregated via the median timestamp.
+  A rogue publisher under an M-of-N threshold cannot skew the reference time beyond the honest median.
+- **Safe fallback to ledger time:** If fewer than `threshold` valid reports exist within
+  `max_stale_seconds`, the resolver safely falls back to `env.ledger().timestamp()` and emits
+  an `OracleStaleFallback` event. Streams never lock or freeze when external feeds experience downtime.
+- **Checks-Effects-Interactions (CEI):** Oracle time resolution is an effect step executed
+  strictly *before* any state mutation or token transfers. The accrual math itself
+  (`streamed_at`) remains a pure function taking `now: u64`.
+
 ## 12. TTL and rent operations
 
 §2 describes what the contract extends. This section is the other half: what

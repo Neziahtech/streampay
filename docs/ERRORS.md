@@ -25,6 +25,10 @@ Every expected failure is a `StreamError` with a stable numeric code. This docum
 | 15 | `NotGovernor` | reachable (2 branch(es)) | `accept_governor`, `nominate_governor`, `set_fee_bps`, `withdraw_treasury` | the caller is not the treasury governor; the caller is not the nominated governor |
 | 16 | `NoPendingGovernor` | reachable (1 branch(es)) | `accept_governor` | accept_governor with no nomination pending |
 | 17 | `InsufficientTreasuryBalance` | reachable (1 branch(es)) | `withdraw_treasury` | amount exceeds fees collected minus fees already withdrawn |
+| 18 | `InvalidOracleThreshold` | reachable (1 branch(es)) | `set_oracle_config` | oracle threshold is zero or exceeds the number of publishers |
+| 19 | `OraclePublishersNotConfigured` | reachable (1 branch(es)) | `submit_oracle_time` | oracle publishers have not been configured by the governor |
+| 20 | `OracleReportTooOld` | reachable (1 branch(es)) | `submit_oracle_time` | reported oracle timestamp is older than max staleness or in the future |
+| 21 | `NotOraclePublisher` | reachable (1 branch(es)) | `submit_oracle_time` | the caller is not an authorized oracle publisher |
 
 ## Branch matrix (entrypoint × condition → error)
 
@@ -54,6 +58,10 @@ Every expected failure is a `StreamError` with a stable numeric code. This docum
 | `AcceptGovernorNotNominee` | `accept_governor` | `NotGovernor` | 15 | the caller is not the nominated governor | reachable |
 | `WithdrawTreasuryAmountNonPositive` | `withdraw_treasury` | `ZeroAmount` | 9 | treasury withdrawal amount is zero or negative | reachable |
 | `WithdrawTreasuryExceedsBalance` | `withdraw_treasury` | `InsufficientTreasuryBalance` | 17 | amount exceeds fees collected minus fees already withdrawn | reachable |
+| `InvalidOracleThreshold` | `set_oracle_config` | `InvalidOracleThreshold` | 18 | oracle threshold is zero or exceeds the number of publishers | reachable |
+| `OraclePublishersNotConfigured` | `submit_oracle_time` | `OraclePublishersNotConfigured` | 19 | oracle publishers have not been configured by the governor | reachable |
+| `NotOraclePublisher` | `submit_oracle_time` | `NotOraclePublisher` | 21 | the caller is not an authorized oracle publisher | reachable |
+| `OracleReportTooOld` | `submit_oracle_time` | `OracleReportTooOld` | 20 | reported oracle timestamp is older than max staleness or in the future | reachable |
 
 ## Retired codes
 

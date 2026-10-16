@@ -114,6 +114,27 @@ impl Fixture {
         )
     }
 
+    pub(crate) fn create_stream_with_oracle(
+        &self,
+        deposit: i128,
+        start_in: u64,
+        duration: u64,
+        cancelable: bool,
+        use_oracle: bool,
+    ) -> u64 {
+        let now = self.env.ledger().timestamp();
+        self.client.mock_all_auths().create_stream_with_oracle(
+            &self.sender,
+            &self.recipient,
+            &self.token,
+            &deposit,
+            &(now + start_in),
+            &(now + start_in + duration),
+            &cancelable,
+            &use_oracle,
+        )
+    }
+
     pub(crate) fn advance_time(&self, seconds: u64) {
         self.env.ledger().with_mut(|li| li.timestamp += seconds);
     }
@@ -2494,5 +2515,229 @@ fn run_fee_property(seed: u64, steps: usize) {
                 "{ctx}: balance conservation for token {ti}"
             );
         }
+    }
+}
+
+// ------------------------------------------------------------- oracle tests --
+
+#[test]
+fn oracle_default_mode_remains_ledger_timestamp() {
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+    // Default create_stream sets use_oracle = false
+    let id = f.create_stream(DEPOSIT, 0, 10 * DAY, false);
+    let s = f.client.mock_all_auths().get_stream(&id);
+    assert!(!s.use_oracle);
+
+    let (res_time, is_oracle) = f.client.mock_all_auths().resolve_time(&id);
+    assert_eq!(res_time, now);
+    assert!(!is_oracle);
+}
+
+#[test]
+fn oracle_stale_feed_falls_back_to_ledger_time() {
+    let f = Fixture::setup();
+    let mut publishers = soroban_sdk::Vec::new(&f.env);
+    let p1 = soroban_sdk::Address::generate(&f.env);
+    let p2 = soroban_sdk::Address::generate(&f.env);
+    let p3 = soroban_sdk::Address::generate(&f.env);
+    publishers.push_back(p1.clone());
+    publishers.push_back(p2.clone());
+    publishers.push_back(p3.clone());
+
+    let max_stale = 3600; // 1 hour
+    f.client.mock_all_auths().set_oracle_config(
+        &f.governor,
+        &publishers,
+        &2, // 2-of-3 threshold
+        &max_stale,
+    );
+
+    let now = f.env.ledger().timestamp();
+    let id = f.create_stream_with_oracle(DEPOSIT, 0, 10 * DAY, false, true);
+
+    // Initial state: no reports yet -> fallback to ledger time
+    let (t0, is_oracle0) = f.client.mock_all_auths().resolve_time(&id);
+    assert_eq!(t0, now);
+    assert!(!is_oracle0);
+
+    // Publishers 1 & 2 submit reports at ledger time `now`
+    f.client
+        .mock_all_auths()
+        .submit_oracle_time(&p1, &(now + 100));
+    f.client
+        .mock_all_auths()
+        .submit_oracle_time(&p2, &(now + 105));
+
+    // Valid quorum reached -> median resolved
+    let (t1, is_oracle1) = f.client.mock_all_auths().resolve_time(&id);
+    assert!(is_oracle1);
+    assert_eq!(t1, now + 105); // median of [now+100, now+105] is now+105
+
+    // Advance time past max_stale (e.g. 3601 seconds) without new reports
+    f.advance_time(max_stale + 1);
+    let new_ledger_time = f.env.ledger().timestamp();
+
+    // Now reports are stale -> fallback to new ledger time!
+    let (t2, is_oracle2) = f.client.mock_all_auths().resolve_time(&id);
+    assert_eq!(t2, new_ledger_time);
+    assert!(!is_oracle2);
+
+    // Recipient can still withdraw smoothly using fallback ledger time
+    let avail = f.client.mock_all_auths().available(&id);
+    assert!(avail > 0);
+    f.client.mock_all_auths().withdraw(&id, &avail);
+}
+
+#[test]
+fn oracle_publisher_rotation() {
+    let f = Fixture::setup();
+    let mut pub_v1 = soroban_sdk::Vec::new(&f.env);
+    let p1 = soroban_sdk::Address::generate(&f.env);
+    pub_v1.push_back(p1.clone());
+
+    f.client
+        .mock_all_auths()
+        .set_oracle_config(&f.governor, &pub_v1, &1, &3600);
+
+    let now = f.env.ledger().timestamp();
+    f.client
+        .mock_all_auths()
+        .submit_oracle_time(&p1, &(now + 50));
+
+    // Rotate publishers to set v2 (p2, p3 with threshold 2)
+    let mut pub_v2 = soroban_sdk::Vec::new(&f.env);
+    let p2 = soroban_sdk::Address::generate(&f.env);
+    let p3 = soroban_sdk::Address::generate(&f.env);
+    pub_v2.push_back(p2.clone());
+    pub_v2.push_back(p3.clone());
+
+    f.client
+        .mock_all_auths()
+        .set_oracle_config(&f.governor, &pub_v2, &2, &3600);
+
+    // Old publisher p1 can no longer submit
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_submit_oracle_time(&p1, &(now + 60))
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::NotOraclePublisher);
+
+    // New publishers submit
+    f.client
+        .mock_all_auths()
+        .submit_oracle_time(&p2, &(now + 200));
+    f.client
+        .mock_all_auths()
+        .submit_oracle_time(&p3, &(now + 210));
+
+    let cfg = f.client.mock_all_auths().oracle_config().unwrap();
+    assert_eq!(cfg.publishers.len(), 2);
+    assert_eq!(cfg.threshold, 2);
+}
+
+#[test]
+fn oracle_manipulation_attempt_by_single_rogue_publisher_under_2_of_3() {
+    let f = Fixture::setup();
+    let mut publishers = soroban_sdk::Vec::new(&f.env);
+    let honest1 = soroban_sdk::Address::generate(&f.env);
+    let honest2 = soroban_sdk::Address::generate(&f.env);
+    let rogue = soroban_sdk::Address::generate(&f.env);
+    publishers.push_back(honest1.clone());
+    publishers.push_back(honest2.clone());
+    publishers.push_back(rogue.clone());
+
+    let max_stale = 3600;
+    f.client.mock_all_auths().set_oracle_config(
+        &f.governor,
+        &publishers,
+        &2, // 2-of-3 threshold
+        &max_stale,
+    );
+
+    let now = f.env.ledger().timestamp();
+    let id = f.create_stream_with_oracle(DEPOSIT, 0, 10 * DAY, false, true);
+
+    // 1. Rogue publisher submits first, attempting to report a fraudulent high timestamp
+    f.client
+        .mock_all_auths()
+        .submit_oracle_time(&rogue, &(now + max_stale));
+
+    // Under 2-of-3, rogue's lone submission does NOT reach threshold (1 < 2)
+    // Resolution must safely fallback to ledger time
+    let (res1, is_oracle1) = f.client.mock_all_auths().resolve_time(&id);
+    assert_eq!(res1, now);
+    assert!(!is_oracle1);
+
+    // 2. Honest publisher 1 reports accurate reference time (e.g. now + 10)
+    f.client
+        .mock_all_auths()
+        .submit_oracle_time(&honest1, &(now + 10));
+
+    // With honest1 (now + 10) and rogue (now + 3600), sorted: [now + 10, now + 3600]
+    // Median (index 2/2 = 1) is now + 3600
+    // 3. Honest publisher 2 reports accurate reference time (now + 12)
+    f.client
+        .mock_all_auths()
+        .submit_oracle_time(&honest2, &(now + 12));
+
+    // Now all 3 reported:
+    // Sorted times: [now + 10, now + 12, now + 3600]
+    // Median (index 3/2 = 1) is now + 12! The rogue outlier is completely eliminated by the quorum median!
+    let (res2, is_oracle2) = f.client.mock_all_auths().resolve_time(&id);
+    assert!(is_oracle2);
+    assert_eq!(res2, now + 12);
+}
+
+#[test]
+fn oracle_mode_accrual_property_bounded_by_staleness() {
+    // Property test:
+    // Accrual under oracle mode never exceeds ledger-mode accrual by more than
+    // (max_stale_seconds * rate), where rate = deposit / duration.
+    let f = Fixture::setup();
+    let mut publishers = soroban_sdk::Vec::new(&f.env);
+    let p1 = soroban_sdk::Address::generate(&f.env);
+    let p2 = soroban_sdk::Address::generate(&f.env);
+    publishers.push_back(p1.clone());
+    publishers.push_back(p2.clone());
+
+    let max_stale = 1800; // 30 minutes
+    f.client
+        .mock_all_auths()
+        .set_oracle_config(&f.governor, &publishers, &2, &max_stale);
+
+    let duration = 10 * DAY;
+    let id_ledger = f.create_stream_with_oracle(DEPOSIT, 0, duration, false, false);
+    let id_oracle = f.create_stream_with_oracle(DEPOSIT, 0, duration, false, true);
+
+    // Advance time in steps and verify property
+    for step in [100, 500, 1000, 2000, 5000, 50000] {
+        f.advance_time(step);
+        let current_ledger = f.env.ledger().timestamp();
+
+        // Feed can report any timestamp bounded by [current_ledger - max_stale, current_ledger + max_stale]
+        // Test an aggressive time: current_ledger + max_stale
+        let reported = current_ledger + max_stale;
+        f.client.mock_all_auths().submit_oracle_time(&p1, &reported);
+        f.client.mock_all_auths().submit_oracle_time(&p2, &reported);
+
+        let ledger_avail = f.client.mock_all_auths().available(&id_ledger);
+        let oracle_avail = f.client.mock_all_auths().available(&id_oracle);
+
+        // Maximum allowed difference is bounded by (max_stale + 1) * deposit / duration + 1
+        let max_accrual_diff =
+            ((DEPOSIT as u128) * ((max_stale + 1) as u128) / (duration as u128) + 1) as i128;
+
+        assert!(
+            oracle_avail >= ledger_avail,
+            "oracle accrual should be >= ledger accrual when clock is ahead"
+        );
+        let diff = oracle_avail - ledger_avail;
+        assert!(
+            diff <= max_accrual_diff,
+            "oracle accrual diff {diff} exceeded maximum staleness bound {max_accrual_diff}"
+        );
     }
 }

@@ -228,6 +228,56 @@ fn probe(branch: Branch) -> Option<StreamError> {
                 &1,
             )))
         }
+        // ------------------------------------------------------------ oracle
+        Branch::InvalidOracleThreshold => {
+            let f = Fixture::setup_quiet();
+            let publishers = soroban_sdk::Vec::new(&f.env);
+            Some(rejected!(f.client.mock_all_auths().try_set_oracle_config(
+                &f.governor,
+                &publishers,
+                &1, // threshold > publishers.len()
+                &3600,
+            )))
+        }
+        Branch::OraclePublishersNotConfigured => {
+            let f = Fixture::setup_quiet();
+            let publisher = soroban_sdk::Address::generate(&f.env);
+            let now = f.env.ledger().timestamp();
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_submit_oracle_time(&publisher, &now,)))
+        }
+        Branch::NotOraclePublisher => {
+            let f = Fixture::setup_quiet();
+            let mut publishers = soroban_sdk::Vec::new(&f.env);
+            let authorized_publisher = soroban_sdk::Address::generate(&f.env);
+            publishers.push_back(authorized_publisher);
+            f.client
+                .mock_all_auths()
+                .set_oracle_config(&f.governor, &publishers, &1, &3600);
+            let rogue = soroban_sdk::Address::generate(&f.env);
+            let now = f.env.ledger().timestamp();
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_submit_oracle_time(&rogue, &now,)))
+        }
+        Branch::OracleReportTooOld => {
+            let f = Fixture::setup_quiet();
+            let mut publishers = soroban_sdk::Vec::new(&f.env);
+            let publisher = soroban_sdk::Address::generate(&f.env);
+            publishers.push_back(publisher.clone());
+            f.client
+                .mock_all_auths()
+                .set_oracle_config(&f.governor, &publishers, &1, &3600);
+            let now = f.env.ledger().timestamp();
+            // Timestamp in the future beyond staleness bound (now + 3600 + 1)
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_submit_oracle_time(&publisher, &(now + 3600 + 2),)))
+        }
         // Invariant-protected: a stored stream always satisfies
         // `0 <= withdrawn <= streamed <= deposit <= i128::MAX`, so these
         // checked subtractions/addition can never cross an i128 boundary —
@@ -359,7 +409,11 @@ fn stream_error_variant_list_is_exhaustive() {
             | StreamError::FeeRateTooHigh
             | StreamError::NotGovernor
             | StreamError::NoPendingGovernor
-            | StreamError::InsufficientTreasuryBalance => StreamError::ALL.contains(&e),
+            | StreamError::InsufficientTreasuryBalance
+            | StreamError::InvalidOracleThreshold
+            | StreamError::OraclePublishersNotConfigured
+            | StreamError::OracleReportTooOld
+            | StreamError::NotOraclePublisher => StreamError::ALL.contains(&e),
         }
     }
 

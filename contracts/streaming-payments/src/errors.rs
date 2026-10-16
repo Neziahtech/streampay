@@ -61,6 +61,14 @@ pub enum StreamError {
     /// A treasury withdrawal exceeds the fees collected minus fees already
     /// withdrawn for that token.
     InsufficientTreasuryBalance = 17,
+    /// Oracle threshold is zero or exceeds the number of publishers.
+    InvalidOracleThreshold = 18,
+    /// Oracle publishers are not configured.
+    OraclePublishersNotConfigured = 19,
+    /// Submitted oracle report has a timestamp in the future or older than staleness window.
+    OracleReportTooOld = 20,
+    /// Caller is not an authorized oracle publisher.
+    NotOraclePublisher = 21,
 }
 
 impl StreamError {
@@ -85,6 +93,10 @@ impl StreamError {
         StreamError::NotGovernor,
         StreamError::NoPendingGovernor,
         StreamError::InsufficientTreasuryBalance,
+        StreamError::InvalidOracleThreshold,
+        StreamError::OraclePublishersNotConfigured,
+        StreamError::OracleReportTooOld,
+        StreamError::NotOraclePublisher,
     ];
 
     /// The stable numeric value carried across the contract boundary

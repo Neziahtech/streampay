@@ -96,3 +96,32 @@ pub struct FeeWithdrawn {
     /// Total fees withdrawn for this token after this withdrawal.
     pub withdrawn_total: i128,
 }
+
+/// Emitted when the oracle publisher set, threshold, or max staleness is updated.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OracleConfigUpdated {
+    #[topic]
+    pub governor: Address,
+    pub threshold: u32,
+    pub max_stale_seconds: u64,
+}
+
+/// Emitted when an authorized publisher submits an external timestamp report.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OracleTimeReported {
+    #[topic]
+    pub publisher: Address,
+    pub reported_time: u64,
+    pub ledger_time: u64,
+}
+
+/// Emitted when an oracle-enabled stream falls back to ledger time due to insufficient fresh reports.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OracleStaleFallback {
+    #[topic]
+    pub stream_id: u64,
+    pub ledger_time: u64,
+}

@@ -10,7 +10,7 @@
 
 use soroban_sdk::{contractclient, Address, Env, Vec};
 
-use crate::{FeeScan, Stream, StreamError, TreasuryStatus};
+use crate::{FeeScan, OracleConfig, OracleReport, Stream, StreamError, TreasuryStatus};
 
 /// Interface of the StreamPay streaming-payments contract.
 #[contractclient(name = "StreamingPaymentsClient")]
@@ -26,6 +26,18 @@ pub trait StreamingPaymentsApi {
         start_time: u64,
         end_time: u64,
         cancelable: bool,
+    ) -> Result<u64, StreamError>;
+    #[allow(clippy::too_many_arguments)]
+    fn create_stream_with_oracle(
+        env: Env,
+        sender: Address,
+        recipient: Address,
+        token: Address,
+        deposit_amount: i128,
+        start_time: u64,
+        end_time: u64,
+        cancelable: bool,
+        use_oracle: bool,
     ) -> Result<u64, StreamError>;
     fn withdraw(env: Env, stream_id: u64, amount: i128) -> Result<(), StreamError>;
     fn withdraw_max(env: Env, stream_id: u64) -> Result<i128, StreamError>;
@@ -53,4 +65,15 @@ pub trait StreamingPaymentsApi {
     fn stream_fee(env: Env, stream_id: u64) -> Result<i128, StreamError>;
     fn verify_treasury(env: Env, token: Address, start_id: u64, count: u32) -> FeeScan;
     fn total_streams(env: Env) -> u64;
+    fn set_oracle_config(
+        env: Env,
+        caller: Address,
+        publishers: Vec<Address>,
+        threshold: u32,
+        max_stale_seconds: u64,
+    ) -> Result<(), StreamError>;
+    fn submit_oracle_time(env: Env, publisher: Address, timestamp: u64) -> Result<(), StreamError>;
+    fn resolve_time(env: Env, stream_id: u64) -> Result<(u64, bool), StreamError>;
+    fn oracle_config(env: Env) -> Option<OracleConfig>;
+    fn oracle_report(env: Env, publisher: Address) -> Option<OracleReport>;
 }

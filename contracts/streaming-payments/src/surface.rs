@@ -86,13 +86,22 @@ pub enum Branch {
     /// `withdraw_treasury`: amount exceeds fees collected minus fees already
     /// withdrawn.
     WithdrawTreasuryExceedsBalance,
+    // ------------------------------------------------------------- oracle
+    /// `set_oracle_config`: threshold is 0 or greater than publishers length.
+    InvalidOracleThreshold,
+    /// `submit_oracle_time`: oracle publishers are not configured.
+    OraclePublishersNotConfigured,
+    /// `submit_oracle_time`: caller is not an authorized oracle publisher.
+    NotOraclePublisher,
+    /// `submit_oracle_time`: reported timestamp is older than max staleness or in future.
+    OracleReportTooOld,
 }
 
 impl Branch {
     /// Every branch, in declaration order. The matrix test walks this list and
     /// the coverage test requires each [`StreamError`] variant to be produced by
     /// one of these (or retired).
-    pub const ALL: [Branch; 24] = [
+    pub const ALL: [Branch; 28] = [
         Branch::CreateDepositNonPositive,
         Branch::CreateStartTimeInPast,
         Branch::CreateInvalidTimeRange,
@@ -117,6 +126,10 @@ impl Branch {
         Branch::AcceptGovernorNotNominee,
         Branch::WithdrawTreasuryAmountNonPositive,
         Branch::WithdrawTreasuryExceedsBalance,
+        Branch::InvalidOracleThreshold,
+        Branch::OraclePublishersNotConfigured,
+        Branch::NotOraclePublisher,
+        Branch::OracleReportTooOld,
     ];
 
     /// The entrypoint(s) through which this branch can fire. Shared helpers
@@ -166,6 +179,10 @@ impl Branch {
             Branch::WithdrawTreasuryAmountNonPositive | Branch::WithdrawTreasuryExceedsBalance => {
                 &["withdraw_treasury"]
             }
+            Branch::InvalidOracleThreshold => &["set_oracle_config"],
+            Branch::OraclePublishersNotConfigured
+            | Branch::NotOraclePublisher
+            | Branch::OracleReportTooOld => &["submit_oracle_time"],
         }
     }
 
@@ -199,6 +216,10 @@ impl Branch {
             Branch::AcceptGovernorNoPending => StreamError::NoPendingGovernor,
             Branch::WithdrawTreasuryAmountNonPositive => StreamError::ZeroAmount,
             Branch::WithdrawTreasuryExceedsBalance => StreamError::InsufficientTreasuryBalance,
+            Branch::InvalidOracleThreshold => StreamError::InvalidOracleThreshold,
+            Branch::OraclePublishersNotConfigured => StreamError::OraclePublishersNotConfigured,
+            Branch::NotOraclePublisher => StreamError::NotOraclePublisher,
+            Branch::OracleReportTooOld => StreamError::OracleReportTooOld,
         }
     }
 
@@ -244,6 +265,16 @@ impl Branch {
             }
             Branch::WithdrawTreasuryExceedsBalance => {
                 "amount exceeds fees collected minus fees already withdrawn"
+            }
+            Branch::InvalidOracleThreshold => {
+                "oracle threshold is zero or exceeds the number of publishers"
+            }
+            Branch::OraclePublishersNotConfigured => {
+                "oracle publishers have not been configured by the governor"
+            }
+            Branch::NotOraclePublisher => "the caller is not an authorized oracle publisher",
+            Branch::OracleReportTooOld => {
+                "reported oracle timestamp is older than max staleness or in the future"
             }
         }
     }
