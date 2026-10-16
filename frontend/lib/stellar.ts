@@ -56,6 +56,11 @@ export interface StreamArgs {
 import type { StreamView } from "./pagination";
 export type { StreamView };
 
+export interface PayoutProposalView {
+  payoutAddress: string;
+  activatesAt: number;
+}
+
 function scAddr(s: string) {
   return nativeToScVal(new Address(s), { type: "address" });
 }
@@ -169,6 +174,19 @@ const STREAM_ERRORS: Record<number, string> = {
   28: "RecipientPayoutFailed",
   29: "SenderRefundFailed",
   30: "TreasuryPayoutFailed",
+  31: "PolicyAssetNotAllowed",
+  32: "PolicyTimelockNotElapsed",
+  33: "PolicyNoQueuedChange",
+  34: "PolicyNotInitialized",
+  35: "PolicyNoPendingHandoff",
+  36: "ContractFrozen",
+  37: "ContractNotFrozen",
+  38: "NoPendingUpgrade",
+  39: "TimelockNotExpired",
+  40: "UpgradeDelayTooShort",
+  41: "AlreadyMigrated",
+  42: "NoPendingPayoutBinding",
+  43: "PayoutBindingNotReady",
 };
 
 /** Rewrites raw simulation/tx error text into a readable StreamError name. */
@@ -400,6 +418,36 @@ export async function withdrawMaxFromStream(
   );
 }
 
+/** Proposes a recipient payout destination and returns its activation time. */
+export async function bindPayout(
+  recipient: string,
+  payoutAddress: string
+): Promise<bigint> {
+  return send(
+    recipient,
+    contract().call("bind_payout", scAddr(recipient), scAddr(payoutAddress)),
+    (v) => BigInt(scValToNative(v) as bigint)
+  );
+}
+
+/** Confirms a payout destination after the contract-enforced delay. */
+export async function confirmPayout(recipient: string): Promise<void> {
+  await send(
+    recipient,
+    contract().call("confirm_payout", scAddr(recipient)),
+    () => undefined
+  );
+}
+
+/** Cancels a pending payout destination without affecting the active one. */
+export async function cancelPayout(recipient: string): Promise<void> {
+  await send(
+    recipient,
+    contract().call("cancel_payout", scAddr(recipient)),
+    () => undefined
+  );
+}
+
 export async function topUpStream(
   sender: string,
   streamId: string,
@@ -482,6 +530,27 @@ export async function readAvailable(streamId: string): Promise<bigint> {
     throw new Error(`Stream #${streamId} not found or RPC unavailable`);
   }
   return BigInt(scValToNative(retval) as bigint);
+}
+
+/** Effective destination for recipient claims (the recipient when unbound). */
+export async function readPayoutAddress(recipient: string): Promise<string> {
+  const retval = await simulateRead(CONTRACT_ID, "payout_address", [scAddr(recipient)]);
+  if (!retval) throw new Error("Payout address unavailable");
+  return String(scValToNative(retval));
+}
+
+/** Pending delayed destination, or null when no change is waiting. */
+export async function readPendingPayout(
+  recipient: string
+): Promise<PayoutProposalView | null> {
+  const retval = await simulateRead(CONTRACT_ID, "pending_payout", [scAddr(recipient)]);
+  if (!retval) return null;
+  const raw = scValToNative(retval) as Record<string, unknown> | null;
+  if (!raw) return null;
+  return {
+    payoutAddress: String(raw.payout_address),
+    activatesAt: Number(raw.activates_at),
+  };
 }
 
 const MAX_PAGE_SIZE = 50; // mirrors the contract's MAX_PAGE_SIZE

@@ -79,18 +79,19 @@ pub use errors::StreamError;
 pub use events::{
     ContractFrozenStateChanged, ContractUpgraded, FeeCharged, FeeWithdrawn, PolicyAssetExecuted,
     PolicyAssetQueued, PolicyHandoffAccepted, PolicyHandoffCancelled, PolicyHandoffProposed,
-    PolicyInitialized, ScheduledIntentCancelled, ScheduledIntentExpired, ScheduledStreamExecuted,
-    StorageMigrated, StreamCancelled, StreamCreated, StreamScheduled, StreamToppedUp,
-    StreamsCreated, UpgradeCancelled, UpgradeProposed, Withdrawn,
+    PolicyInitialized, PayoutActive, PayoutBindingCancelled, PayoutBound, ScheduledIntentCancelled,
+    ScheduledIntentExpired, ScheduledStreamExecuted, StorageMigrated, StreamCancelled,
+    StreamCreated, StreamScheduled, StreamToppedUp, StreamsCreated, UpgradeCancelled,
+    UpgradeProposed, Withdrawn,
 };
 pub use policy::QueuedAssetChange;
 pub use schedule::{IntentStatus, ScheduledIntent, MAX_OCCURRENCES};
 // `streamed_at` is re-exported for the fuzz target and downstream rate
 // calculators: it is a pure function requiring no `Env`.
 pub use stream::{
-    streamed_at, MigrationStatus, PendingUpgrade, Stream, StreamStatus, INITIAL_SCHEMA_VERSION,
-    MAX_DURATION_SECONDS, MAX_MIGRATION_BATCH_SIZE, MAX_PAGE_SIZE, MIN_UPGRADE_DELAY_SECONDS,
-    TARGET_SCHEMA_VERSION,
+    streamed_at, MigrationStatus, PendingUpgrade, PayoutProposal, Stream, StreamStatus,
+    INITIAL_SCHEMA_VERSION, MAX_DURATION_SECONDS, MAX_MIGRATION_BATCH_SIZE, MAX_PAGE_SIZE,
+    MIN_UPGRADE_DELAY_SECONDS, PAYOUT_BINDING_DELAY_SECONDS, TARGET_SCHEMA_VERSION,
 };
 pub use treasury::{fee_amount, FeeScan, Treasury, TreasuryStatus, BPS_DENOMINATOR, MAX_FEE_BPS};
 
@@ -597,6 +598,78 @@ impl StreamingPayments {
         Ok(amount)
     }
 
+    /// Proposes a payout destination. The recipient's original address remains
+    /// the sole authorization principal; confirmation is delayed by 24 hours.
+    pub fn bind_payout(
+        env: Env,
+        recipient: Address,
+        payout_address: Address,
+    ) -> Result<u64, StreamError> {
+        Self::require_not_frozen(&env)?;
+        recipient.require_auth();
+        let activates_at = env
+            .ledger()
+            .timestamp()
+            .saturating_add(PAYOUT_BINDING_DELAY_SECONDS);
+        let proposal = PayoutProposal {
+            payout_address: payout_address.clone(),
+            activates_at,
+        };
+        stream::put_pending_payout(&env, &recipient, &proposal);
+        PayoutBound {
+            recipient,
+            payout_address,
+            activates_at,
+        }
+        .publish(&env);
+        Ok(activates_at)
+    }
+
+    /// Activates a matured payout destination after a second recipient action.
+    pub fn confirm_payout(env: Env, recipient: Address) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
+        recipient.require_auth();
+        let proposal = stream::pending_payout(&env, &recipient)
+            .ok_or_else(|| surface::reject(Branch::PayoutBindingMissing))?;
+        if env.ledger().timestamp() < proposal.activates_at {
+            return Err(surface::reject(Branch::PayoutBindingNotReady));
+        }
+
+        stream::put_payout_address(&env, &recipient, &proposal.payout_address);
+        stream::remove_pending_payout(&env, &recipient);
+        PayoutActive {
+            recipient,
+            payout_address: proposal.payout_address,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Cancels a pending payout destination without changing the active one.
+    pub fn cancel_payout(env: Env, recipient: Address) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
+        recipient.require_auth();
+        let proposal = stream::pending_payout(&env, &recipient)
+            .ok_or_else(|| surface::reject(Branch::PayoutBindingMissing))?;
+        stream::remove_pending_payout(&env, &recipient);
+        PayoutBindingCancelled {
+            recipient,
+            payout_address: proposal.payout_address,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Effective destination for recipient withdrawals; defaults to recipient.
+    pub fn payout_address(env: Env, recipient: Address) -> Address {
+        stream::payout_address(&env, &recipient)
+    }
+
+    /// Current pending destination and activation timestamp, if one exists.
+    pub fn pending_payout(env: Env, recipient: Address) -> Option<PayoutProposal> {
+        stream::pending_payout(&env, &recipient)
+    }
+
     /// Shared preamble for both withdrawal paths: load the stream, require
     /// the recipient's authorization, and reject terminal streams.
     fn authorize_withdrawal(env: &Env, stream_id: u64) -> Result<Stream, StreamError> {
@@ -632,7 +705,7 @@ impl StreamingPayments {
         push(
             env,
             &s.token,
-            &stream::muxed(&s.recipient),
+            &stream::muxed(&stream::payout_address(env, &s.recipient)),
             amount,
             Branch::RecipientPayoutFailed,
         )

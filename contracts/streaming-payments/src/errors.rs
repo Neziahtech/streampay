@@ -137,6 +137,10 @@ pub enum StreamError {
     UpgradeDelayTooShort = 40,
     /// The storage migration has already been completed.
     AlreadyMigrated = 41,
+    /// `confirm_payout` or `cancel_payout` was called without a pending binding.
+    NoPendingPayoutBinding = 42,
+    /// `confirm_payout` was called before the binding delay elapsed.
+    PayoutBindingNotReady = 43,
 }
 
 impl StreamError {
@@ -185,6 +189,8 @@ impl StreamError {
         StreamError::TimelockNotExpired,
         StreamError::UpgradeDelayTooShort,
         StreamError::AlreadyMigrated,
+        StreamError::NoPendingPayoutBinding,
+        StreamError::PayoutBindingNotReady,
     ];
 
     /// The stable numeric value carried across the contract boundary

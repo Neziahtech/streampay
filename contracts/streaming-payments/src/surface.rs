@@ -145,13 +145,16 @@ pub enum Branch {
     UpgradeDelayTooShort,
     /// `migrate_storage`: the schema has already been migrated to the target version.
     AlreadyMigrated,
+    // --------------------------------------------------------- payout binding
+    PayoutBindingMissing,
+    PayoutBindingNotReady,
 }
 
 impl Branch {
     /// Every branch, in declaration order. The matrix test walks this list and
     /// the coverage test requires each [`StreamError`] variant to be produced by
     /// one of these (or retired).
-    pub const ALL: [Branch; 49] = [
+    pub const ALL: [Branch; 51] = [
         Branch::CreateDepositNonPositive,
         Branch::CreateStartTimeInPast,
         Branch::CreateInvalidTimeRange,
@@ -201,6 +204,8 @@ impl Branch {
         Branch::TimelockNotExpired,
         Branch::UpgradeDelayTooShort,
         Branch::AlreadyMigrated,
+        Branch::PayoutBindingMissing,
+        Branch::PayoutBindingNotReady,
     ];
 
     /// The entrypoint(s) through which this branch can fire. Shared helpers
@@ -227,6 +232,9 @@ impl Branch {
                 "withdraw_max",
                 "cancel_stream",
                 "top_up",
+                "bind_payout",
+                "confirm_payout",
+                "cancel_payout",
             ],
             Branch::StreamNotActive => &["withdraw", "withdraw_max", "cancel_stream", "top_up"],
             Branch::CapacityOverflow => &["create_stream", "create_streams", "top_up"],
@@ -302,6 +310,8 @@ impl Branch {
             Branch::ExecuteUpgradeNoPending | Branch::TimelockNotExpired => &["execute_upgrade"],
             Branch::CancelUpgradeNoPending => &["cancel_upgrade"],
             Branch::UpgradeDelayTooShort => &["propose_upgrade"],
+            Branch::PayoutBindingMissing => &["confirm_payout", "cancel_payout"],
+            Branch::PayoutBindingNotReady => &["confirm_payout"],
         }
     }
 
@@ -361,6 +371,8 @@ impl Branch {
             Branch::TimelockNotExpired => StreamError::TimelockNotExpired,
             Branch::UpgradeDelayTooShort => StreamError::UpgradeDelayTooShort,
             Branch::AlreadyMigrated => StreamError::AlreadyMigrated,
+            Branch::PayoutBindingMissing => StreamError::NoPendingPayoutBinding,
+            Branch::PayoutBindingNotReady => StreamError::PayoutBindingNotReady,
         }
     }
 
@@ -452,6 +464,8 @@ impl Branch {
             Branch::AlreadyMigrated => {
                 "storage has already been migrated to the target schema version"
             }
+            Branch::PayoutBindingMissing => "no pending payout binding exists",
+            Branch::PayoutBindingNotReady => "the payout binding delay has not elapsed",
         }
     }
 
