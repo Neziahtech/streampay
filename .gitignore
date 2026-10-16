@@ -5,7 +5,7 @@ indexer/dist/
 *.wasm
 
 # Node / Next.js frontend
-node_modules/
+node_modules
 .next/
 out/
 *.tsbuildinfo
@@ -43,3 +43,8 @@ fuzz/target/
 fuzz/corpus/
 fuzz/artifacts/
 fuzz/Cargo.lock
+
+# Playwright test artifacts
+test-results/
+playwright-report/
+blob-report/
