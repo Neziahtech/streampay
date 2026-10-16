@@ -8,6 +8,11 @@ indexer/dist/
 node_modules/
 .next/
 out/
+storybook-static/
+playwright-report/
+**/playwright-report/
+test-results/
+**/test-results/
 *.tsbuildinfo
 
 # Environment

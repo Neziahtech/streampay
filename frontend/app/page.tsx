@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import Link from "next/link";
 import { isConnected, requestAccess } from "@stellar/freighter-api";
 import {
   createStream,
@@ -16,9 +15,7 @@ import {
   type StreamView,
 } from "@/lib/stellar";
 import { loadStreamIds, saveStreamId } from "@/lib/storage";
-import StreamForm from "@/components/StreamForm";
-import BatchStreamForm from "@/components/BatchStreamForm";
-import StreamList from "@/components/StreamList";
+import StreamDashboardView from "@/components/StreamDashboardView";
 import { useToast } from "@/components/toast";
 
 export default function Home() {
@@ -112,169 +109,83 @@ export default function Home() {
     }
   }
 
-  if (!address) {
-    return (
-      <main className="wrap">
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div className="kicker mono">SOROBAN · STELLAR</div>
-          <Link href="/docs" style={{ color: "#38bdf8", fontSize: "0.85rem", textDecoration: "none" }}>
-            API Docs ↗
-          </Link>
-        </div>
-        <h1>⚡ StreamPay</h1>
-        <p className="muted">
-          Continuous, per-second payment streams — payroll, vesting,
-          subscriptions. Connect Freighter to begin.
-        </p>
-        <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
-          <button onClick={connect}>Connect Freighter</button>
-          <a
-            href="/simulator"
-            style={{
-              display: "inline-block",
-              marginTop: "14px",
-              padding: "10px 18px",
-              background: "#161f30",
-              border: "1px solid var(--line)",
-              borderRadius: "8px",
-              color: "var(--accent2)",
-              textDecoration: "none",
-              fontWeight: 600,
-              fontSize: "14px",
-            }}
-          >
-            Accrual Simulator →
-          </a>
-        </div>
-      </main>
-    );
-  }
-
   return (
-    <main className="wrap">
-      <h1>⚡ StreamPay</h1>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-        <p className="muted">
-          Connected: <code>{address}</code>
-        </p>
-        <a
-          href="/simulator"
-          style={{
-            color: "var(--accent2)",
-            textDecoration: "none",
-            fontSize: "13px",
-            fontWeight: 600,
-          }}
-        >
-          Accrual Simulator →
-        </a>
-      </div>
-
-      <StreamForm
-        onCreate={async (args) => {
-          try {
-            const id = await createStream(address, args);
-            toast.success(`Stream #${id} created.`);
-            await refresh(String(id));
-          } catch (e) {
-            toast.error(describeError(e));
-          }
-        }}
-      />
-
-      <BatchStreamForm
-        onCreate={async (token, entries, cancelable) => {
-          try {
-            const ids = await createStreams(address, token, entries, cancelable);
-            toast.success(
-              `${ids.length} stream${ids.length === 1 ? "" : "s"} created: ${ids
-                .map((id) => `#${id}`)
-                .join(", ")}.`
-            );
-            await Promise.all(ids.map((id) => refresh(String(id))));
-            return true;
-          } catch (e) {
-            toast.error(describeError(e));
-            return false;
-          }
-        }}
-      />
-
-      <section className="card">
-        <h2>Fetch stream by ID</h2>
-
-        <div className="row">
-          <input
-            type="text"
-            inputMode="numeric"
-            placeholder="Stream ID"
-            value={lookupId}
-            onChange={(e) => setLookupId(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                void fetchStreamById();
-              }
-            }}
-          />
-
-          <button
-            type="button"
-            onClick={fetchStreamById}
-            disabled={lookupLoading}
-          >
-            {lookupLoading ? "Fetching..." : "Fetch stream"}
-          </button>
-        </div>
-      </section>
-
-      <section className="card">
-        <h2>Your streams</h2>
-        <div className="row">
-          <button onClick={discover} title="Scan the on-chain address indexes">
-            Discover on-chain
-          </button>
-        </div>
-        <StreamList
-          streams={streams}
-          onWithdraw={async (id, amount) => {
-            try {
-              await withdrawFromStream(address, id, amount);
-              toast.success(`Withdrew ${amount} units from stream #${id}.`);
-              await refresh(id);
-            } catch (e) {
-              toast.error(describeError(e));
-            }
-          }}
-          onWithdrawMax={async (id) => {
-            try {
-              const paid = await withdrawMaxFromStream(address, id);
-              toast.success(`Claimed ${paid} units from stream #${id}.`);
-              await refresh(id);
-            } catch (e) {
-              toast.error(describeError(e));
-            }
-          }}
-          onTopUp={async (id, amount) => {
-            try {
-              await topUpStream(address, id, amount);
-              toast.success(`Topped up stream #${id} by ${amount} units.`);
-              await refresh(id);
-            } catch (e) {
-              toast.error(describeError(e));
-            }
-          }}
-          onCancel={async (id) => {
-            try {
-              await cancelStream(address, id);
-              toast.success(`Stream #${id} cancelled.`);
-              await refresh(id);
-            } catch (e) {
-              toast.error(describeError(e));
-            }
-          }}
-          onRefresh={(id) => refresh(id)}
-        />
-      </section>
-    </main>
+    <StreamDashboardView
+      address={address}
+      streams={streams}
+      lookupId={lookupId}
+      lookupLoading={lookupLoading}
+      onConnect={connect}
+      onLookupChange={setLookupId}
+      onLookupSubmit={fetchStreamById}
+      onCreateStream={async (args) => {
+        if (!address) return;
+        try {
+          const id = await createStream(address, args);
+          toast.success(`Stream #${id} created.`);
+          await refresh(String(id));
+        } catch (e) {
+          toast.error(describeError(e));
+        }
+      }}
+      onCreateBatch={async (token, entries, cancelable) => {
+        if (!address) return false;
+        try {
+          const ids = await createStreams(address, token, entries, cancelable);
+          toast.success(
+            `${ids.length} stream${ids.length === 1 ? "" : "s"} created: ${ids
+              .map((id) => `#${id}`)
+              .join(", ")}.`
+          );
+          await Promise.all(ids.map((id) => refresh(String(id))));
+          return true;
+        } catch (e) {
+          toast.error(describeError(e));
+          return false;
+        }
+      }}
+      onDiscover={discover}
+      onWithdraw={async (id, amount) => {
+        if (!address) return;
+        try {
+          await withdrawFromStream(address, id, amount);
+          toast.success(`Withdrew ${amount} units from stream #${id}.`);
+          await refresh(id);
+        } catch (e) {
+          toast.error(describeError(e));
+        }
+      }}
+      onWithdrawMax={async (id) => {
+        if (!address) return;
+        try {
+          const paid = await withdrawMaxFromStream(address, id);
+          toast.success(`Claimed ${paid} units from stream #${id}.`);
+          await refresh(id);
+        } catch (e) {
+          toast.error(describeError(e));
+        }
+      }}
+      onTopUp={async (id, amount) => {
+        if (!address) return;
+        try {
+          await topUpStream(address, id, amount);
+          toast.success(`Topped up stream #${id} by ${amount} units.`);
+          await refresh(id);
+        } catch (e) {
+          toast.error(describeError(e));
+        }
+      }}
+      onCancel={async (id) => {
+        if (!address) return;
+        try {
+          await cancelStream(address, id);
+          toast.success(`Stream #${id} cancelled.`);
+          await refresh(id);
+        } catch (e) {
+          toast.error(describeError(e));
+        }
+      }}
+      onRefresh={(id) => refresh(id)}
+    />
   );
 }
