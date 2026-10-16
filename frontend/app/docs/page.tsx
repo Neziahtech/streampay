@@ -2,13 +2,12 @@
 
 import Link from "next/link";
 import Script from "next/script";
-import { useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 
 export default function DocsPage() {
   const [swaggerReady, setSwaggerReady] = useState(false);
 
-  useEffect(() => {
-    // If SwaggerUI is already on window
+  const initSwagger = useCallback(() => {
     const win = window as unknown as {
       SwaggerUIBundle?: (config: Record<string, unknown>) => void;
     };
@@ -24,33 +23,17 @@ export default function DocsPage() {
     }
   }, []);
 
-  const initSwagger = () => {
-    const win = window as unknown as {
-      SwaggerUIBundle?: (config: Record<string, unknown>) => void;
-    };
-    if (win.SwaggerUIBundle) {
-      win.SwaggerUIBundle({
-        url: "/openapi.json",
-        dom_id: "#swagger-ui",
-        deepLinking: true,
-        presets: [],
-        layout: "BaseLayout",
-      });
-      setSwaggerReady(true);
-    }
-  };
-
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto", padding: "2rem 1.5rem" }}>
       {/* Swagger UI styles */}
       <link
         rel="stylesheet"
-        href="https://unpkg.com/swagger-ui-dist@5.18.2/swagger-ui.css"
+        href="https://unpkg.com/swagger-ui-dist@5.18.2/swagger-ui-css"
       />
 
       <Script
         src="https://unpkg.com/swagger-ui-dist@5.18.2/swagger-ui-bundle.js"
-        onLoad={initSwagger}
+        onReady={initSwagger}
       />
 
       {/* Header */}

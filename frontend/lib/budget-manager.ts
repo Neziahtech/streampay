@@ -65,7 +65,6 @@ export class RpcBudgetManager {
     this.nodeRpcWindowSeconds = options.nodeRpcWindowSeconds ?? 60;
     this.maxStaleAgeSeconds = options.maxStaleAgeSeconds ?? 300;
 
-    const now = Date.now();
     this.nodeRpcBucket = {
       tokens: this.nodeRpcLimit,
       lastRefill: -1,
@@ -178,7 +177,6 @@ export class RpcBudgetManager {
    */
   public reset(): void {
     this.clientBuckets.clear();
-    const now = Date.now();
     this.nodeRpcBucket = {
       tokens: this.nodeRpcLimit,
       lastRefill: -1,
