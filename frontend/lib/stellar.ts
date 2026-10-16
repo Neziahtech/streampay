@@ -163,6 +163,7 @@ const STREAM_ERRORS: Record<number, string> = {
   22: "TreasuryPayoutFailed",
 };
 
+
 /** Rewrites raw simulation/tx error text into a readable StreamError name. */
 export function describeError(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err);

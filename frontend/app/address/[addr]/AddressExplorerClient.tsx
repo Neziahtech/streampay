@@ -294,6 +294,19 @@ export default function AddressExplorerClient({
                     <span className={`status-badge ${statusClass}`}>
                       {s.status}
                     </span>
+                    {s.isPrivate ? (
+                      <span
+                        className="badge-pill"
+                        style={{
+                          background: "rgba(124, 58, 237, 0.15)",
+                          color: "#a78bfa",
+                          border: "1px solid rgba(167, 139, 250, 0.3)",
+                        }}
+                        title="Opt-in commit-reveal claim privacy active"
+                      >
+                        🔒 Private
+                      </span>
+                    ) : null}
                     <span className="badge-pill" style={{ background: isRecipient ? "rgba(61,220,132,0.12)" : "rgba(139,124,255,0.12)", color: isRecipient ? "var(--green)" : "var(--accent)" }}>
                       {isRecipient ? "Incoming" : "Outgoing"}
                     </span>
@@ -353,8 +366,17 @@ export default function AddressExplorerClient({
 
                   <div>
                     <div className="muted" style={{ fontSize: 11, textTransform: "uppercase" }}>Claimed / Withdrawn</div>
-                    <div className="mono" style={{ fontSize: 14, color: "var(--muted)" }}>{formatAmount(withdrawn)}</div>
+                    <div className="mono" style={{ fontSize: 14, color: "var(--muted)" }}>
+                      {s.pendingClaims && s.pendingClaims > 0 ? (
+                        <span title="Claim amount hidden behind private commitment until revealed" style={{ color: "var(--accent2)" }}>
+                          🔒 Hidden
+                        </span>
+                      ) : (
+                        formatAmount(withdrawn)
+                      )}
+                    </div>
                   </div>
+
 
                   <div>
                     <div className="muted" style={{ fontSize: 11, textTransform: "uppercase" }}>Window</div>

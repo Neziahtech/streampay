@@ -9,7 +9,10 @@ export interface StreamView {
   endTime: number;
   cancelable: boolean;
   status: string;
+  isPrivate?: boolean;
+  pendingClaims?: number;
 }
+
 
 export type StreamRoleFilter = "all" | "incoming" | "outgoing";
 export type StreamStatusFilter = "all" | "active" | "ended";

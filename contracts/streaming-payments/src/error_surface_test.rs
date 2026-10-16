@@ -301,6 +301,7 @@ fn probe(branch: Branch) -> Option<StreamError> {
     }
 }
 
+
 /// The matrix: every reachable branch fires its declared code, and every
 /// defensive branch is never reached.
 #[test]

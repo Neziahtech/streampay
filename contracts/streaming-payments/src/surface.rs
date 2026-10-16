@@ -292,6 +292,7 @@ impl Branch {
         }
     }
 
+
     /// Reachability classification; drives whether the matrix test probes it.
     pub const fn reachability(self) -> Reachability {
         match self {

@@ -129,3 +129,4 @@ impl StreamError {
         self as u32
     }
 }
+

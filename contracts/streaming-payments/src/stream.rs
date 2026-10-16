@@ -99,6 +99,38 @@ pub enum DataKey {
     /// Fee charged for one stream at creation time (persistent storage;
     /// written only when the fee rounds above zero, so absent == 0).
     StreamFee(u64),
+    /// Next claim commitment id; ids start at 1.
+    NextCommitmentId,
+    /// Stored claim commitment record by id.
+    ClaimCommitment(u64),
+    /// Index of claim commitment ids for a stream.
+    StreamCommitments(u64),
+}
+
+/// Status of a commit-reveal claim commitment.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum CommitmentStatus {
+    /// Committed; awaiting reveal.
+    Committed,
+    /// Successfully revealed and settled to recipient.
+    Revealed,
+    /// Expired without reveal; deposit refunded to sender.
+    Expired,
+}
+
+/// A commitment to a private claim on an active stream.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaimCommitment {
+    pub commitment_id: u64,
+    pub stream_id: u64,
+    pub recipient: Address,
+    pub hash: soroban_sdk::BytesN<32>,
+    pub deposit: i128,
+    pub commit_time: u64,
+    pub reveal_deadline: u64,
+    pub status: CommitmentStatus,
 }
 
 /// Seconds elapsed of the stream window at the current ledger time.
@@ -292,3 +324,48 @@ pub fn page_stream_ids(env: &Env, key: &DataKey, offset: u32, limit: u32) -> Vec
     }
     page
 }
+
+/// Hands out the next claim commitment id (1-based) and stores the incremented counter.
+pub fn next_commitment_id(env: &Env) -> u64 {
+    let key = DataKey::NextCommitmentId;
+    let id: u64 = env.storage().persistent().get(&key).unwrap_or(1);
+    env.storage().persistent().set(&key, &id.saturating_add(1));
+    id
+}
+
+/// Loads a claim commitment, or returns [`StreamError::CommitmentNotFound`].
+pub fn get_commitment(env: &Env, id: u64) -> Result<ClaimCommitment, StreamError> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::ClaimCommitment(id))
+        .ok_or_else(|| surface::reject(Branch::CommitmentNotFound))
+}
+
+/// Persists a claim commitment and extends its storage TTL.
+pub fn put_commitment(env: &Env, commitment: &ClaimCommitment) {
+    let key = DataKey::ClaimCommitment(commitment.commitment_id);
+    env.storage().persistent().set(&key, commitment);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+}
+
+/// Appends a commitment id to the stream's commitments index.
+pub fn index_commitment(env: &Env, stream_id: u64, commitment_id: u64) {
+    push_to_index(
+        env,
+        &DataKey::StreamCommitments(stream_id),
+        commitment_id,
+    );
+}
+
+/// Returns one page of commitment ids for a stream, in creation order.
+pub fn page_commitment_ids(env: &Env, stream_id: u64, offset: u32, limit: u32) -> Vec<u64> {
+    page_stream_ids(
+        env,
+        &DataKey::StreamCommitments(stream_id),
+        offset,
+        limit,
+    )
+}
+

@@ -58,4 +58,22 @@ pub trait StreamingPaymentsApi {
     fn stream_fee(env: Env, stream_id: u64) -> Result<i128, StreamError>;
     fn verify_treasury(env: Env, token: Address, start_id: u64, count: u32) -> FeeScan;
     fn total_streams(env: Env) -> u64;
+    fn commit_claim(
+        env: Env,
+        stream_id: u64,
+        recipient: Address,
+        hash: soroban_sdk::BytesN<32>,
+        deposit: i128,
+        reveal_window_seconds: u64,
+    ) -> Result<u64, StreamError>;
+    fn reveal_claim(
+        env: Env,
+        commitment_id: u64,
+        claim_amount: i128,
+        salt: soroban_sdk::BytesN<32>,
+    ) -> Result<(), StreamError>;
+    fn expire_reveal(env: Env, commitment_id: u64) -> Result<(), StreamError>;
+    fn get_commitment(env: Env, commitment_id: u64) -> Result<crate::ClaimCommitment, StreamError>;
+    fn stream_commitments(env: Env, stream_id: u64, offset: u32, limit: u32) -> Vec<u64>;
 }
+
