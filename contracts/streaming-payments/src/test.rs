@@ -2496,3 +2496,175 @@ fn run_fee_property(seed: u64, steps: usize) {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Negative authorization proofs (unauthorized / unsigned calls fail on-chain)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn create_stream_fails_without_sender_authorization() {
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+    let attacker = Address::generate(&f.env);
+    f.env.mock_auths(&[MockAuth {
+        address: &attacker,
+        invoke: &MockAuthInvoke {
+            contract: &f.client.address,
+            fn_name: "create_stream",
+            args: (
+                &f.sender,
+                &f.recipient,
+                &f.token,
+                DEPOSIT,
+                now + DAY,
+                now + 10 * DAY,
+                true,
+            )
+                .into_val(&f.env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(f
+        .client
+        .try_create_stream(
+            &f.sender,
+            &f.recipient,
+            &f.token,
+            &DEPOSIT,
+            &(now + DAY),
+            &(now + 10 * DAY),
+            &true,
+        )
+        .is_err());
+}
+
+#[test]
+fn withdraw_max_fails_without_recipient_authorization() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    f.advance_time(2 * DAY);
+
+    let attacker = Address::generate(&f.env);
+    f.env.mock_auths(&[MockAuth {
+        address: &attacker,
+        invoke: &MockAuthInvoke {
+            contract: &f.client.address,
+            fn_name: "withdraw_max",
+            args: (id,).into_val(&f.env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(f.client.try_withdraw_max(&id).is_err());
+}
+
+#[test]
+fn top_up_fails_without_sender_authorization() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    f.advance_time(2 * DAY);
+
+    let attacker = Address::generate(&f.env);
+    f.env.mock_auths(&[MockAuth {
+        address: &attacker,
+        invoke: &MockAuthInvoke {
+            contract: &f.client.address,
+            fn_name: "top_up",
+            args: (id, 1_000_000_000i128).into_val(&f.env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(f.client.try_top_up(&id, &1_000_000_000).is_err());
+}
+
+#[test]
+fn cancel_stream_fails_without_caller_authorization() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, true);
+    f.advance_time(2 * DAY);
+
+    let attacker = Address::generate(&f.env);
+    f.env.mock_auths(&[MockAuth {
+        address: &attacker,
+        invoke: &MockAuthInvoke {
+            contract: &f.client.address,
+            fn_name: "cancel_stream",
+            args: (&f.sender, id).into_val(&f.env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(f.client.try_cancel_stream(&f.sender, &id).is_err());
+}
+
+#[test]
+fn set_fee_bps_fails_without_governor_authorization() {
+    let f = Fixture::setup();
+    let attacker = Address::generate(&f.env);
+    f.env.mock_auths(&[MockAuth {
+        address: &attacker,
+        invoke: &MockAuthInvoke {
+            contract: &f.client.address,
+            fn_name: "set_fee_bps",
+            args: (&f.governor, 50u32).into_val(&f.env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(f.client.try_set_fee_bps(&f.governor, &50).is_err());
+}
+
+#[test]
+fn nominate_governor_fails_without_governor_authorization() {
+    let f = Fixture::setup();
+    let nominee = Address::generate(&f.env);
+    let attacker = Address::generate(&f.env);
+    f.env.mock_auths(&[MockAuth {
+        address: &attacker,
+        invoke: &MockAuthInvoke {
+            contract: &f.client.address,
+            fn_name: "nominate_governor",
+            args: (&f.governor, &nominee).into_val(&f.env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(f.client.try_nominate_governor(&f.governor, &nominee).is_err());
+}
+
+#[test]
+fn accept_governor_fails_without_pending_governor_authorization() {
+    let f = Fixture::setup();
+    let nominee = Address::generate(&f.env);
+    f.client.mock_all_auths().nominate_governor(&f.governor, &nominee);
+
+    let attacker = Address::generate(&f.env);
+    f.env.mock_auths(&[MockAuth {
+        address: &attacker,
+        invoke: &MockAuthInvoke {
+            contract: &f.client.address,
+            fn_name: "accept_governor",
+            args: (&nominee,).into_val(&f.env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(f.client.try_accept_governor(&nominee).is_err());
+}
+
+#[test]
+fn withdraw_treasury_fails_without_governor_authorization() {
+    let f = Fixture::setup();
+    f.client.mock_all_auths().set_fee_bps(&f.governor, &100);
+    f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+
+    let attacker = Address::generate(&f.env);
+    f.env.mock_auths(&[MockAuth {
+        address: &attacker,
+        invoke: &MockAuthInvoke {
+            contract: &f.client.address,
+            fn_name: "withdraw_treasury",
+            args: (&f.governor, &f.token, &f.recipient, 1_000_000i128).into_val(&f.env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(f
+        .client
+        .try_withdraw_treasury(&f.governor, &f.token, &f.recipient, &1_000_000)
+        .is_err());
+}

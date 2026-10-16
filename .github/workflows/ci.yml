@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -97,6 +100,11 @@ jobs:
 
       - name: Typecheck
         run: npm run typecheck
+
+      - name: Unit + signing conformance tests
+        env:
+          FREIGHTER_CONFORMANCE_LIVE: ${{ github.event_name == 'schedule' && '1' || '0' }}
+        run: npm test
 
       - name: Build
         run: npm run build
