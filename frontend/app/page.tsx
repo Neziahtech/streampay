@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { isConnected, requestAccess } from "@stellar/freighter-api";
 import {
   createStream,
@@ -114,7 +115,12 @@ export default function Home() {
   if (!address) {
     return (
       <main className="wrap">
-        <div className="kicker mono">SOROBAN · STELLAR</div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div className="kicker mono">SOROBAN · STELLAR</div>
+          <Link href="/docs" style={{ color: "#38bdf8", fontSize: "0.85rem", textDecoration: "none" }}>
+            API Docs ↗
+          </Link>
+        </div>
         <h1>⚡ StreamPay</h1>
         <p className="muted">
           Continuous, per-second payment streams — payroll, vesting,
