@@ -202,9 +202,8 @@ impl StreamingPayments {
     ///   start streaming immediately).
     /// * `end_time` must be strictly after `start_time` (zero-duration streams
     ///   are rejected) and at most `MAX_DURATION_SECONDS` long.
-    #[allow(clippy::too_many_arguments)] // 8-arg surface is the intended client API
-    /// * `cancelable` controls whether the recipient may also call
-    ///   `cancel_stream` to reclaim their accrued balance.
+    /// Creates a linear payment stream and pulls `deposit_amount` of `token`
+    /// from `sender` into this contract.
     ///
     /// Returns the new stream id (monotonically increasing, starting at 1).
     ///
@@ -220,6 +219,32 @@ impl StreamingPayments {
         start_time: u64,
         end_time: u64,
         cancelable: bool,
+    ) -> Result<u64, StreamError> {
+        Self::create_stream_with_oracle(
+            env,
+            sender,
+            recipient,
+            token,
+            deposit_amount,
+            start_time,
+            end_time,
+            cancelable,
+            false,
+        )
+    }
+
+    /// Creates a linear payment stream with optional oracle time source settlement.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_stream_with_oracle(
+        env: Env,
+        sender: Address,
+        recipient: Address,
+        token: Address,
+        deposit_amount: i128,
+        start_time: u64,
+        end_time: u64,
+        cancelable: bool,
+        use_oracle: bool,
     ) -> Result<u64, StreamError> {
         sender.require_auth();
 
@@ -262,6 +287,7 @@ impl StreamingPayments {
             start_time,
             end_time,
             cancelable,
+            use_oracle,
             status: StreamStatus::Active,
         };
         stream::put_stream(&env, &s);
@@ -548,7 +574,8 @@ impl StreamingPayments {
         }
         let mut s = Self::authorize_withdrawal(&env, stream_id)?;
 
-        let available = stream::available_amount(&env, &s)?;
+        let resolved = oracle::resolve_stream_time(&env, stream_id, s.use_oracle);
+        let available = stream::available_amount_at(&s, resolved.timestamp)?;
         if amount > available {
             return Err(surface::reject(Branch::WithdrawAmountExceedsAvailable));
         }
@@ -570,7 +597,8 @@ impl StreamingPayments {
     pub fn withdraw_max(env: Env, stream_id: u64) -> Result<i128, StreamError> {
         let mut s = Self::authorize_withdrawal(&env, stream_id)?;
 
-        let amount = stream::available_amount(&env, &s)?;
+        let resolved = oracle::resolve_stream_time(&env, stream_id, s.use_oracle);
+        let amount = stream::available_amount_at(&s, resolved.timestamp)?;
         if amount <= 0 {
             return Err(surface::reject(Branch::WithdrawMaxNothingToWithdraw));
         }
@@ -669,7 +697,8 @@ impl StreamingPayments {
             }
         }
 
-        let (recipient_amount, sender_amount) = stream::cancel_amounts(&env, &s)?;
+        let resolved = oracle::resolve_stream_time(&env, stream_id, s.use_oracle);
+        let (recipient_amount, sender_amount) = stream::cancel_amounts_at(&s, resolved.timestamp)?;
 
         // Effects first (CEI): finalise state before moving tokens.
         s.status = StreamStatus::Cancelled;
@@ -781,12 +810,14 @@ impl StreamingPayments {
         stream::get_stream(&env, stream_id)
     }
 
-    /// Read-only view of the accrued-but-unwithdrawn balance at the current
-    /// ledger time. Zero before `start_time` and for cancelled streams; the
-    /// full remainder at or after `end_time`.
+    /// Read-only view of the accrued-but-unwithdrawn balance at the stream's
+    /// reference time (oracle-resolved for oracle streams, ledger time otherwise).
+    /// Zero before `start_time` and for cancelled streams; the full remainder at
+    /// or after `end_time`.
     pub fn available(env: Env, stream_id: u64) -> Result<i128, StreamError> {
         let s = stream::get_stream(&env, stream_id)?;
-        stream::available_amount(&env, &s)
+        let resolved = oracle::resolve_stream_time(&env, stream_id, s.use_oracle);
+        stream::available_amount_at(&s, resolved.timestamp)
     }
 
     /// A page of stream ids where `recipient` is the recipient, in creation

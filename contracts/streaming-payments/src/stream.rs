@@ -58,6 +58,8 @@ pub struct Stream {
     pub end_time: u64,
     /// If true, the recipient may also cancel and reclaim their accrued balance.
     pub cancelable: bool,
+    /// If true, settlement uses the external oracle reference clock (when quorum/freshness permit).
+    pub use_oracle: bool,
     pub status: StreamStatus,
 }
 
@@ -106,28 +108,30 @@ pub enum DataKey {
     /// Fee charged for one stream at creation time (persistent storage;
     /// written only when the fee rounds above zero, so absent == 0).
     StreamFee(u64),
+    /// Oracle configuration (instance storage: publishers, threshold, max_stale_seconds).
+    OracleConfig,
+    /// Latest report from an oracle publisher (persistent storage).
+    OracleReport(Address),
 }
 
-/// Seconds elapsed of the stream window at the current ledger time.
+/// Seconds elapsed of the stream window at a given reference time `now`.
 ///
-/// The window is half-open `[start_time, end_time)`: at `now == start_time`
+/// The window is half-open `[start_time, end_time)`: at `now <= start_time`
 /// nothing has accrued yet; at `now >= end_time` the full duration has elapsed.
-pub fn elapsed_seconds(env: &Env, start_time: u64, end_time: u64) -> u64 {
-    let now = env.ledger().timestamp();
+pub fn elapsed_seconds_at(now: u64, start_time: u64, end_time: u64) -> u64 {
     if now <= start_time {
         0
     } else if now >= end_time {
-        // MUTANT-SUPPRESS: replace - with + is acceptable because this branch
-        // is only reachable when now >= end_time, which means the full duration
-        // has already elapsed. The test elapsed_after_end_returns_full_duration
-        // verifies that the full deposit is available at this point. The mutation
-        // would cause an overflow in the subsequent streamed_at calculation,
-        // which is caught by MathOverflow. This is an unreachable code path given
-        // the contract's usage pattern.
         end_time - start_time
     } else {
         now - start_time
     }
+}
+
+/// Seconds elapsed of the stream window at the current ledger time.
+#[allow(dead_code)]
+pub fn elapsed_seconds(env: &Env, start_time: u64, end_time: u64) -> u64 {
+    elapsed_seconds_at(env.ledger().timestamp(), start_time, end_time)
 }
 
 /// Validates that `deposit * duration` — the worst-case rate multiplication —
@@ -162,32 +166,45 @@ pub fn streamed_at(deposit: i128, duration: u64, elapsed: u64) -> Result<i128, S
     Ok(streamed as i128)
 }
 
-/// Amount streamed (accrued) at the current ledger time.
-///
-/// See [`streamed_at`] for the rate semantics.
-pub fn streamed_amount(env: &Env, stream: &Stream) -> Result<i128, StreamError> {
-    let elapsed = elapsed_seconds(env, stream.start_time, stream.end_time);
+/// Amount streamed (accrued) at reference timestamp `now`.
+pub fn streamed_amount_at(stream: &Stream, now: u64) -> Result<i128, StreamError> {
+    let elapsed = elapsed_seconds_at(now, stream.start_time, stream.end_time);
     streamed_at(stream.deposit, stream.duration(), elapsed)
 }
 
-/// Accrued-but-unwithdrawn balance at the current ledger time. Zero for
+/// Amount streamed (accrued) at the current ledger time.
+///
+/// See [`streamed_at`] for the rate semantics.
+#[allow(dead_code)]
+pub fn streamed_amount(env: &Env, stream: &Stream) -> Result<i128, StreamError> {
+    streamed_amount_at(stream, env.ledger().timestamp())
+}
+
+/// Accrued-but-unwithdrawn balance at a given reference time `now`. Zero for
 /// cancelled streams (their payout was settled atomically at cancellation).
-pub fn available_amount(env: &Env, stream: &Stream) -> Result<i128, StreamError> {
+pub fn available_amount_at(stream: &Stream, now: u64) -> Result<i128, StreamError> {
     if stream.status == StreamStatus::Cancelled {
         return Ok(0);
     }
-    let streamed = streamed_amount(env, stream)?;
+    let streamed = streamed_amount_at(stream, now)?;
     streamed
         .checked_sub(stream.withdrawn)
         .ok_or_else(|| surface::reject(Branch::AvailableBalanceOverflow))
 }
 
-/// Payout split at cancellation: `(recipient_amount, sender_amount)`.
+/// Accrued-but-unwithdrawn balance at the current ledger time. Zero for
+/// cancelled streams (their payout was settled atomically at cancellation).
+#[allow(dead_code)]
+pub fn available_amount(env: &Env, stream: &Stream) -> Result<i128, StreamError> {
+    available_amount_at(stream, env.ledger().timestamp())
+}
+
+/// Payout split at cancellation given reference time `now`: `(recipient_amount, sender_amount)`.
 ///
 /// The recipient receives their accrued-but-unwithdrawn balance; the sender is
 /// refunded the unaccrued remainder.
-pub fn cancel_amounts(env: &Env, stream: &Stream) -> Result<(i128, i128), StreamError> {
-    let streamed = streamed_amount(env, stream)?;
+pub fn cancel_amounts_at(stream: &Stream, now: u64) -> Result<(i128, i128), StreamError> {
+    let streamed = streamed_amount_at(stream, now)?;
     let recipient_amount = streamed
         .checked_sub(stream.withdrawn)
         .ok_or_else(|| surface::reject(Branch::CancelSplitOverflow))?;
@@ -196,6 +213,12 @@ pub fn cancel_amounts(env: &Env, stream: &Stream) -> Result<(i128, i128), Stream
         .checked_sub(streamed)
         .ok_or_else(|| surface::reject(Branch::CancelSplitOverflow))?;
     Ok((recipient_amount, sender_amount))
+}
+
+/// Payout split at cancellation: `(recipient_amount, sender_amount)`.
+#[allow(dead_code)]
+pub fn cancel_amounts(env: &Env, stream: &Stream) -> Result<(i128, i128), StreamError> {
+    cancel_amounts_at(stream, env.ledger().timestamp())
 }
 
 /// Address helper: token transfer destinations are muxed addresses.

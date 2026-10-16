@@ -122,6 +122,27 @@ impl Fixture {
         )
     }
 
+    pub(crate) fn create_stream_with_oracle(
+        &self,
+        deposit: i128,
+        start_in: u64,
+        duration: u64,
+        cancelable: bool,
+        use_oracle: bool,
+    ) -> u64 {
+        let now = self.env.ledger().timestamp();
+        self.client.mock_all_auths().create_stream_with_oracle(
+            &self.sender,
+            &self.recipient,
+            &self.token,
+            &deposit,
+            &(now + start_in),
+            &(now + start_in + duration),
+            &cancelable,
+            &use_oracle,
+        )
+    }
+
     pub(crate) fn advance_time(&self, seconds: u64) {
         self.env.ledger().with_mut(|li| li.timestamp += seconds);
     }
