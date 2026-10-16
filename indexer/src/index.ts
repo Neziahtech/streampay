@@ -1,11 +1,16 @@
 import express from "express";
-import { nativeToScVal } from "@stellar/stellar-sdk";
+import { Keypair, Networks, nativeToScVal } from "@stellar/stellar-sdk";
 import { decodeEvent } from "./decoder.js";
+import { generateStreamProof } from "./proof.js";
 import { StreamStore } from "./store.js";
 import type { RpcEvent } from "./types.js";
 
 const rpcUrl = process.env.RPC_URL ?? "https://soroban-testnet.stellar.org";
 const contractId = process.env.CONTRACT_ID;
+const networkPassphrase = process.env.NETWORK_PASSPHRASE ?? Networks.TESTNET;
+const checkpointSigner = process.env.CHECKPOINT_SIGNER_SECRET
+  ? Keypair.fromSecret(process.env.CHECKPOINT_SIGNER_SECRET)
+  : Keypair.random();
 const pollInterval = Number(process.env.POLL_INTERVAL_MS ?? 5000);
 const port = Number(process.env.PORT ?? 8787);
 const dbPath = process.env.DATABASE_PATH ?? "./data/streampay.sqlite";
@@ -14,11 +19,28 @@ if (!Number.isFinite(pollInterval) || pollInterval < 250) throw new Error("POLL_
 
 const store = new StreamStore(dbPath);
 const app = express();
-app.get("/health", (_req, res) => res.json({ ok: true, lastLedger: store.getState("lastLedger") ?? null }));
+app.get("/health", (_req, res) => res.json({ ok: true, lastLedger: store.getState("lastLedger") ?? null, checkpointSigner: checkpointSigner.publicKey() }));
 app.get("/streams/:id", (req, res) => {
   if (!/^\d+$/.test(req.params.id)) return res.status(400).json({ error: "stream id must be an unsigned integer" });
   const stream = store.getStream(req.params.id);
   return stream ? res.json(stream) : res.status(404).json({ error: "stream not found" });
+});
+app.get("/streams/:id/proof", (req, res) => {
+  if (!/^\d+$/.test(req.params.id)) return res.status(400).json({ error: "stream id must be an unsigned integer" });
+  const stream = store.getStream(req.params.id);
+  if (!stream) return res.status(404).json({ error: "stream not found" });
+  const ledger = Number(store.getState("lastLedger") ?? stream.lastLedger);
+  const ledgerCloseTime = Math.floor(new Date(stream.updatedAt).getTime() / 1000) || Math.floor(Date.now() / 1000);
+  const proof = generateStreamProof({
+    networkPassphrase,
+    contractId,
+    ledger,
+    ledgerCloseTime,
+    streams: store.listAllStreams(),
+    targetStreamId: req.params.id,
+    signer: checkpointSigner,
+  });
+  return res.json(proof);
 });
 app.get("/address/:addr/streams", (req, res) => {
   const address = req.params.addr;

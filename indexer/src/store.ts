@@ -86,6 +86,9 @@ export class StreamStore {
   listAddress(address: string): Stream[] {
     return (this.db.prepare("SELECT * FROM streams WHERE sender = ? OR recipient = ? ORDER BY CAST(stream_id AS INTEGER) DESC").all(address, address) as Record<string, unknown>[]).map((row) => this.toStream(row));
   }
+  listAllStreams(): Stream[] {
+    return (this.db.prepare("SELECT * FROM streams ORDER BY CAST(stream_id AS INTEGER) ASC").all() as Record<string, unknown>[]).map((row) => this.toStream(row));
+  }
   private toStream(row: Record<string, unknown>): Stream {
     return { streamId: String(row.stream_id), sender: row.sender as string | null, recipient: row.recipient as string | null, token: row.token as string | null, deposit: row.deposit as string | null, withdrawn: String(row.withdrawn), startTime: row.start_time as string | null, endTime: row.end_time as string | null, cancelable: row.cancelable === null ? null : Boolean(row.cancelable), status: String(row.status), lastLedger: Number(row.last_ledger), updatedAt: String(row.updated_at) };
   }
