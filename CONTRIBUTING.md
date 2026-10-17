@@ -56,6 +56,7 @@ cd fuzz && cargo +nightly fuzz run streamed_at -- -max_total_time=60 && cd ..
 cd frontend && npm install
 npm run lint
 npm run typecheck
+npm test        # unit tests + recorded fee-series simulation (vitest)
 npm run build
 ```
 
@@ -130,7 +131,7 @@ lint/typecheck/build when frontend files are touched) are the minimum gate.
    - [ ] `cargo fmt --all -- --check`
    - [ ] `cargo clippy --all-targets -- -D warnings`
    - [ ] `cargo test -p streampay-contract`
-   - [ ] `cd frontend && npm run lint && npm run typecheck && npm run build` (if frontend touched)
+   - [ ] `cd frontend && npm run lint && npm run typecheck && npm test && npm run build` (if frontend touched)
    - [ ] Tests for new behavior; ARCHITECTURE.md updated for design changes
    - [ ] CHANGELOG.md gets an entry under **Unreleased**
 5. **Reviews**: one maintainer approval for docs/frontend, two for changes to

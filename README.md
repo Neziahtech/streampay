@@ -253,6 +253,7 @@ infra/indexer/                  event indexer service with Prometheus metrics & 
 infra/reconciler/               continuous state reconciler and truth verification daemon
 docs/RUNBOOK.md                 operational diagnosis runbook for all alert rules
 docs/ARCHITECTURE.md            design deep-dive
+docs/FEE_AWARE_CLAIMS.md        opt-in fee-aware claim scheduling (constraints + decisions)
 docs/SCHEDULED_INTENTS.md       scheduled intents: keeper guide + threat model
 docs/DEPLOY_PIPELINE.md         sandbox → testnet → mainnet-canary promotion design
 docs/CANARY_RUNBOOK.md          mainnet canary + rollback procedure

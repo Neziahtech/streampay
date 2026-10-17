@@ -21,7 +21,7 @@ import {
 import { signTransaction } from "@stellar/freighter-api";
 import type { BatchStreamEntry } from "./batch";
 
-const RPC_URL =
+export const RPC_URL =
   process.env.NEXT_PUBLIC_SOROBAN_RPC_URL ||
   "https://soroban-testnet.stellar.org";
 const NETWORK =
@@ -398,6 +398,86 @@ export async function withdrawMaxFromStream(
     contract().call("withdraw_max", u64(streamId)),
     (v) => BigInt(scValToNative(v) as bigint)
   );
+}
+
+/**
+ * A simulated, unsigned transaction ready to be signed and held. The claim
+ * scheduler builds one of these, has Freighter sign it, and stores the
+ * resulting envelope until it is worth submitting.
+ */
+export interface PreparedIntent {
+  /** Base64 envelope XDR (unsigned). */
+  xdr: string;
+  /** Unix seconds after which the envelope is invalid (tx `maxTime`). */
+  validUntil: number;
+}
+
+/**
+ * Builds and simulates a `withdraw_max` claim and returns the assembled
+ * transaction *without* signing it, so it can be stored and submitted later.
+ * `validitySeconds` becomes the transaction's `maxTime` window — the hard
+ * limit on how long a held signature stays usable.
+ */
+export async function prepareWithdrawMax(
+  recipient: string,
+  streamId: string,
+  validitySeconds: number
+): Promise<PreparedIntent> {
+  const server = new rpc.Server(RPC_URL);
+  const account = await server.getAccount(recipient);
+  const tx = new TransactionBuilder(account, {
+    fee: "100000",
+    networkPassphrase: NETWORK,
+  })
+    .addOperation(contract().call("withdraw_max", u64(streamId)))
+    .setTimeout(validitySeconds)
+    .build();
+  const simulated = await server.simulateTransaction(tx);
+  if (rpc.Api.isSimulationError(simulated)) {
+    throw new Error(`Simulation failed: ${simulated.error}`);
+  }
+  const ready = rpc.assembleTransaction(tx, simulated).build();
+  const maxTime = ready.timeBounds?.maxTime;
+  return {
+    xdr: ready.toXDR(),
+    validUntil: maxTime
+      ? Number(maxTime)
+      : Math.floor(Date.now() / 1000) + validitySeconds,
+  };
+}
+
+/** Freighter-signs a prepared envelope, returning the signed XDR. */
+export async function signPreparedIntent(xdr: string): Promise<string> {
+  const { signedTxXdr } = await signTransaction(xdr, {
+    networkPassphrase: NETWORK,
+  });
+  return signedTxXdr;
+}
+
+/**
+ * Submits a previously signed envelope and waits for inclusion. Resolves with
+ * the transaction hash; throws on rejection or timeout.
+ */
+export async function submitSignedIntent(
+  signedXdr: string
+): Promise<{ hash: string }> {
+  const server = new rpc.Server(RPC_URL);
+  const signed = TransactionBuilder.fromXDR(signedXdr, NETWORK);
+  const sent = await server.sendTransaction(signed);
+  if (sent.status === "ERROR") {
+    throw new Error(`Submit failed: ${JSON.stringify(sent.errorResult)}`);
+  }
+  for (let i = 0; i < 30; i++) {
+    await new Promise((r) => setTimeout(r, 1000));
+    const res = await server.getTransaction(sent.hash);
+    if (res.status === rpc.Api.GetTransactionStatus.FAILED) {
+      throw new Error(`Transaction failed: ${JSON.stringify(res.resultXdr)}`);
+    }
+    if (res.status === rpc.Api.GetTransactionStatus.SUCCESS) {
+      return { hash: sent.hash };
+    }
+  }
+  throw new Error("Timed out waiting for transaction inclusion");
 }
 
 export async function topUpStream(

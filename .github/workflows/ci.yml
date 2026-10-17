@@ -121,6 +121,9 @@ jobs:
       - name: Accessibility audit (axe WCAG 2.1 AA gate)
         run: node --experimental-strip-types --test test/a11y.test.ts
 
+      - name: Test (node suites + scheduler / fee-series simulation)
+        run: npm test
+
       - name: Build
         run: npm run build
 

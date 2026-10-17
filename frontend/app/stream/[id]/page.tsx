@@ -13,6 +13,8 @@ import {
   withdrawMaxFromStream,
   type StreamView,
 } from "@/lib/stellar";
+import { useClaimScheduler } from "@/lib/use-claim-scheduler";
+import ClaimSchedulerSettings from "@/components/ClaimSchedulerSettings";
 import { computeAvailable, StreamSnapshot } from "@/lib/accrual";
 import { useToast } from "@/components/toast";
 
@@ -93,6 +95,10 @@ export default function StreamDetail() {
       }
     })();
   }, []);
+
+  // Fee-aware claim scheduling is scoped to the connected wallet; the hook is
+  // inert until an address is available.
+  const scheduler = useClaimScheduler(address);
 
   if (loadError && !stream) {
     return (
@@ -246,6 +252,10 @@ export default function StreamDetail() {
             </p>
           )}
         </section>
+      )}
+
+      {isRecipient && stream.status === "Active" && (
+        <ClaimSchedulerSettings stream={stream} scheduler={scheduler} />
       )}
 
       {(isSender || (isRecipient && stream.cancelable)) &&

@@ -9,7 +9,9 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "node --test",
+    "test": "node --test && vitest run",
+    "test:accrual": "node --test lib/accrual.test.ts",
+    "test:scheduler": "vitest run",
     "test:a11y": "node --experimental-strip-types --test test/a11y.test.ts",
     "generate:openapi": "npx tsx scripts/generate-openapi.ts"
   },
@@ -29,7 +31,8 @@
     "eslint": "^10.12.0",
     "eslint-config-next": "^16.3.8",
     "jsdom": "26.1.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^5.0.5"
   },
   "overrides": {
     "postcss": "8.5.28",
