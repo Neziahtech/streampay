@@ -147,6 +147,14 @@ pub enum StreamError {
     PolicyDurationAboveCeiling = 45,
     /// Stream deposit is below the governance policy floor.
     PolicyDepositBelowFloor = 46,
+    /// Stream deposit is below the economically viable threshold (`MIN_STREAM_AMOUNT`); dust streams are rejected.
+    StreamTooSmall = 47,
+    /// Claim amount is below the transaction fee floor (`MIN_CLAIM_AMOUNT`); not worth claiming.
+    ClaimAmountTooSmall = 48,
+    /// Sweep was attempted on a stream that is not fully depleted (remaining_balance != 0).
+    StreamNotDepleted = 49,
+    /// Sweep was attempted before the stream's `end_time`; the stream has not expired.
+    StreamNotExpired = 50,
 }
 
 impl StreamError {
@@ -189,7 +197,7 @@ impl StreamError {
         StreamError::PolicyNoQueuedChange,
         StreamError::PolicyNotInitialized,
         StreamError::PolicyNoPendingHandoff,
-        StreamError::ContractFrozen,
+StreamError::ContractFrozen,
         StreamError::ContractNotFrozen,
         StreamError::NoPendingUpgrade,
         StreamError::TimelockNotExpired,
@@ -200,6 +208,10 @@ impl StreamError {
         StreamError::PolicyDurationBelowFloor,
         StreamError::PolicyDurationAboveCeiling,
         StreamError::PolicyDepositBelowFloor,
+        StreamError::StreamTooSmall,
+        StreamError::ClaimAmountTooSmall,
+        StreamError::StreamNotDepleted,
+        StreamError::StreamNotExpired,
     ];
 
     /// The stable numeric value carried across the contract boundary

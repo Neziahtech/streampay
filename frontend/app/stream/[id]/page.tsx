@@ -121,6 +121,11 @@ export default function StreamDetail() {
   const isSender = address !== null && address === stream.sender;
   const overWithdrawal =
     available !== null && amount !== "" && BigInt(amount || "0") > available;
+  const claimNotWorthwhile =
+    isRecipient &&
+    stream.status === "Active" &&
+    available !== null &&
+    available < BigInt("1000"); // MIN_CLAIM_AMOUNT from contract
 
   async function doWithdraw(max: boolean) {
     if (!address) return;
@@ -224,25 +229,33 @@ export default function StreamDetail() {
       {isRecipient && stream.status === "Active" && (
         <section className="card">
           <h2>Withdraw accrued funds</h2>
-          <div className="row">
-            <input
-              type="number"
-              min="0"
-              placeholder="amount (defaults to available)"
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-            />
-            <button onClick={() => void doWithdraw(false)}>Withdraw</button>
-            <button
-              onClick={() => void doWithdraw(true)}
-              title="withdraw_max: atomic claim of the full accrued balance"
-            >
-              Withdraw max
-            </button>
-          </div>
-          {overWithdrawal && (
+          {claimNotWorthwhile && available !== null ? (
             <p className="err">
-              That exceeds the currently accrued {available?.toString()} units —
+              Not worth claiming yet: <span className="mono">{fmtUnits(available)} units</span> {" "}
+              is below the transaction fee floor (<span className="mono">1000</span> units). {" "}
+              The gas cost to claim would exceed the payout.
+            </p>
+          ) : (
+            <div className="row">
+              <input
+                type="number"
+                min="0"
+                placeholder="amount (defaults to available)"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+              />
+              <button onClick={() => void doWithdraw(false)}>Withdraw</button>
+              <button
+                onClick={() => void doWithdraw(true)}
+                title="withdraw_max: atomic claim of the full accrued balance"
+              >
+                Withdraw max
+              </button>
+            </div>
+          )}
+          {available !== null && overWithdrawal && !claimNotWorthwhile && (
+            <p className="err">
+              That exceeds the currently accrued {fmtUnits(available)} units —
               the contract would reject it with AmountExceedsAvailable.
             </p>
           )}

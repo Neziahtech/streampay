@@ -151,13 +151,22 @@ pub enum Branch {
     PolicyDurationBelowFloor,
     PolicyDurationAboveCeiling,
     PolicyDepositBelowFloor,
+    // ------------------------------------------------------ dust protection
+    /// `create_stream` / `create_streams`: deposit amount is below `MIN_STREAM_AMOUNT`.
+    StreamTooSmall,
+    /// `withdraw` / `withdraw_max`: claimable balance is below `MIN_CLAIM_AMOUNT`.
+    ClaimAmountTooSmall,
+    /// `sweep`: stream is not fully depleted (remaining_balance != 0).
+    StreamNotDepleted,
+    /// `sweep`: stream has not reached its `end_time`.
+    StreamNotExpired,
 }
 
 impl Branch {
     /// Every branch, in declaration order. The matrix test walks this list and
     /// the coverage test requires each [`StreamError`] variant to be produced by
     /// one of these (or retired).
-    pub const ALL: [Branch; 54] = [
+    pub const ALL: [Branch; 58] = [
         Branch::CreateDepositNonPositive,
         Branch::CreateStartTimeInPast,
         Branch::CreateInvalidTimeRange,
@@ -212,6 +221,10 @@ impl Branch {
         Branch::PolicyDurationBelowFloor,
         Branch::PolicyDurationAboveCeiling,
         Branch::PolicyDepositBelowFloor,
+        Branch::StreamTooSmall,
+        Branch::ClaimAmountTooSmall,
+        Branch::StreamNotDepleted,
+        Branch::StreamNotExpired,
     ];
 
     /// The entrypoint(s) through which this branch can fire. Shared helpers
@@ -309,6 +322,7 @@ impl Branch {
                 "withdraw_max",
                 "cancel_stream",
                 "top_up",
+                "sweep",
             ],
             Branch::MigrationNotFrozen | Branch::AlreadyMigrated => &["migrate_storage"],
             Branch::ExecuteUpgradeNoPending | Branch::TimelockNotExpired => &["execute_upgrade"],
@@ -319,6 +333,10 @@ impl Branch {
             | Branch::PolicyRateAboveCeiling => &["create_stream", "create_streams", "top_up"],
             Branch::PolicyDurationBelowFloor
             | Branch::PolicyDurationAboveCeiling => &["create_stream", "create_streams"],
+            Branch::StreamTooSmall => &["create_stream", "create_streams"],
+            Branch::ClaimAmountTooSmall => &["withdraw", "withdraw_max"],
+            Branch::StreamNotDepleted => &["sweep"],
+            Branch::StreamNotExpired => &["sweep"],
         }
     }
 
@@ -383,6 +401,10 @@ impl Branch {
             Branch::PolicyDurationBelowFloor => StreamError::PolicyDurationBelowFloor,
             Branch::PolicyDurationAboveCeiling => StreamError::PolicyDurationAboveCeiling,
             Branch::PolicyDepositBelowFloor => StreamError::PolicyDepositBelowFloor,
+            Branch::StreamTooSmall => StreamError::StreamTooSmall,
+            Branch::ClaimAmountTooSmall => StreamError::ClaimAmountTooSmall,
+            Branch::StreamNotDepleted => StreamError::StreamNotDepleted,
+            Branch::StreamNotExpired => StreamError::StreamNotExpired,
         }
     }
 
@@ -485,6 +507,10 @@ impl Branch {
             Branch::PolicyDepositBelowFloor => {
                 "stream deposit is below the governance policy floor"
             }
+            Branch::StreamTooSmall => "deposit is below MIN_STREAM_AMOUNT (dust protection)",
+            Branch::ClaimAmountTooSmall => "claimable balance is below MIN_CLAIM_AMOUNT (not worth claiming)",
+            Branch::StreamNotDepleted => "stream still has remaining balance (not fully depleted)",
+            Branch::StreamNotExpired => "stream has not reached its end_time",
         }
     }
 

@@ -80,7 +80,7 @@ pub use events::{
     ContractFrozenStateChanged, ContractUpgraded, FeeCharged, FeeWithdrawn, PolicyAssetExecuted,
     PolicyAssetQueued, PolicyHandoffAccepted, PolicyHandoffCancelled, PolicyHandoffProposed,
     PolicyInitialized, ScheduledIntentCancelled, ScheduledIntentExpired, ScheduledStreamExecuted,
-    StorageMigrated, StreamCancelled, StreamCreated, StreamPolicySet, StreamScheduled,
+    Swept, StorageMigrated, StreamCancelled, StreamCreated, StreamPolicySet, StreamScheduled,
     StreamToppedUp, StreamsCreated, UpgradeCancelled, UpgradeProposed, Withdrawn,
 };
 pub use policy::{
@@ -327,6 +327,9 @@ impl StreamingPayments {
     ) -> Result<(), StreamError> {
         if deposit_amount <= 0 {
             return Err(surface::reject(Branch::CreateDepositNonPositive));
+        }
+        if deposit_amount < stream::MIN_STREAM_AMOUNT {
+            return Err(surface::reject(Branch::StreamTooSmall));
         }
         if start_time < now {
             return Err(surface::reject(Branch::CreateStartTimeInPast));
@@ -608,12 +611,17 @@ impl StreamingPayments {
     }
 
     /// Shared preamble for both withdrawal paths: load the stream, require
-    /// the recipient's authorization, and reject terminal streams.
+    /// the recipient's authorization, reject terminal streams, and enforce the
+    /// dust floor (claims below `MIN_CLAIM_AMOUNT` are not worth the gas cost).
     fn authorize_withdrawal(env: &Env, stream_id: u64) -> Result<Stream, StreamError> {
         let s = stream::get_stream(env, stream_id)?;
         s.recipient.require_auth();
         if s.status != StreamStatus::Active {
             return Err(surface::reject(Branch::StreamNotActive));
+        }
+        let available = stream::available_amount(env, &s)?;
+        if available < stream::MIN_CLAIM_AMOUNT {
+            return Err(surface::reject(Branch::ClaimAmountTooSmall));
         }
         Ok(s)
     }
@@ -820,6 +828,90 @@ impl StreamingPayments {
     pub fn available(env: Env, stream_id: u64) -> Result<i128, StreamError> {
         let s = stream::get_stream(&env, stream_id)?;
         stream::available_amount(&env, &s)
+    }
+
+    /// Permissionlessly sweeps a depleted/expired stream, reclaiming storage rent
+    /// and removing storage entries. Anyone can call this.
+    ///
+    /// # Safety
+    /// Only succeeds when: stream.remaining_balance == 0 AND stream.end_time <= now
+    /// This prevents sweeping streams with remaining funds or prematurely.
+    ///
+    /// On success: destroys stream storage entry and index references,
+    /// reclaiming storage rent to the contract balance.
+    pub fn sweep(env: Env, stream_id: u64) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
+        // Load stream (returns StreamNotFound if missing)
+        let s = stream::get_stream(&env, stream_id)?;
+        
+        // Critical security predicate: depleted AND expired
+        if s.status != StreamStatus::Depleted {
+            return Err(surface::reject(Branch::StreamNotDepleted));
+        }
+        
+        let now = env.ledger().timestamp();
+        if s.end_time > now {
+            return Err(surface::reject(Branch::StreamNotExpired));
+        }
+        
+        // Additional dust protection: verify zero remaining balance
+        // (redundant with Depleted status but explicit for clarity)
+        let available = stream::available_amount(&env, &s)?;
+        if available != 0 {
+            return Err(surface::reject(Branch::StreamNotDepleted));
+        }
+        
+        // Storage reclamation: remove stream entry and index references
+        
+        // 1. Remove main stream entry
+        stream::remove_stream(&env, &s);
+        
+        // 2. Remove from sender index
+        Self::remove_from_index(&env, &stream::DataKey::SenderStreams(s.sender.clone()), s.id);
+        
+        // 3. Remove from recipient index  
+        Self::remove_from_index(&env, &stream::DataKey::RecipientStreams(s.recipient.clone()), s.id);
+        
+        // Storage rent is automatically reclaimed to contract balance when entries removed
+        
+        Swept {
+            stream_id,
+            sender: s.sender,
+            recipient: s.recipient,
+        }
+        .publish(&env);
+        
+        Ok(())
+    }
+
+    /// Helper to remove ID from index vector while preserving order
+    fn remove_from_index(env: &Env, key: &stream::DataKey, id_to_remove: u64) {
+        let mut ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(key)
+            .unwrap_or_else(|| Vec::new(env));
+        
+        // Find and remove ID (preserve order of remaining)
+        let mut pos = 0;
+        while pos < ids.len() {
+            if let Some(id) = ids.get(pos) {
+                if id == id_to_remove {
+                    ids.remove(pos);
+                    break;
+                }
+            }
+            pos += 1;
+        }
+        
+        // Save updated index (may be empty)
+        env.storage().persistent().set(key, &ids);
+        // Extend TTL if still active
+        if !ids.is_empty() {
+            env.storage()
+                .persistent()
+                .extend_ttl(key, stream::TTL_THRESHOLD_LEDGERS, stream::TTL_EXTEND_LEDGERS);
+        }
     }
 
     /// A page of stream ids where `recipient` is the recipient, in creation
