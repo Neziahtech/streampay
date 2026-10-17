@@ -2625,14 +2625,19 @@ fn nominate_governor_fails_without_governor_authorization() {
             sub_invokes: &[],
         },
     }]);
-    assert!(f.client.try_nominate_governor(&f.governor, &nominee).is_err());
+    assert!(f
+        .client
+        .try_nominate_governor(&f.governor, &nominee)
+        .is_err());
 }
 
 #[test]
 fn accept_governor_fails_without_pending_governor_authorization() {
     let f = Fixture::setup();
     let nominee = Address::generate(&f.env);
-    f.client.mock_all_auths().nominate_governor(&f.governor, &nominee);
+    f.client
+        .mock_all_auths()
+        .nominate_governor(&f.governor, &nominee);
 
     let attacker = Address::generate(&f.env);
     f.env.mock_auths(&[MockAuth {
