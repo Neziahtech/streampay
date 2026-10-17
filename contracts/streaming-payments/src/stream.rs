@@ -176,11 +176,7 @@ pub fn streamed_at(deposit: i128, duration: u64, elapsed: u64) -> Result<i128, S
 /// and the result is clamped to `[0, stream.duration()]`.
 pub fn stream_elapsed_seconds(env: &Env, stream: &Stream) -> u64 {
     let now = env.ledger().timestamp();
-    let effective_now = if stream.paused {
-        stream.paused_at
-    } else {
-        now
-    };
+    let effective_now = if stream.paused { stream.paused_at } else { now };
 
     if effective_now <= stream.start_time {
         0

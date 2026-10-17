@@ -187,9 +187,7 @@ impl Branch {
             Branch::PauseStreamNotAuthorized | Branch::PauseStreamAlreadyPaused => {
                 &["pause_stream"]
             }
-            Branch::ResumeStreamNotAuthorized | Branch::ResumeStreamNotPaused => {
-                &["resume_stream"]
-            }
+            Branch::ResumeStreamNotAuthorized | Branch::ResumeStreamNotPaused => &["resume_stream"],
         }
     }
 

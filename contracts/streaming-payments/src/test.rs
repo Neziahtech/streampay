@@ -2559,7 +2559,9 @@ fn pause_and_resume_happy_path_freezes_accrual_and_extends_end_time() {
     assert_eq!(f.client.available(&id), DEPOSIT - withdraw_amount);
 
     // Recipient can withdraw the full remainder
-    f.client.mock_all_auths().withdraw(&id, &(DEPOSIT - withdraw_amount));
+    f.client
+        .mock_all_auths()
+        .withdraw(&id, &(DEPOSIT - withdraw_amount));
     let s_final = f.client.get_stream(&id);
     assert_eq!(s_final.status, StreamStatus::Depleted);
     assert_eq!(s_final.withdrawn, DEPOSIT);
@@ -2797,4 +2799,3 @@ fn multiple_pause_and_resume_intervals_accumulate_offsets() {
     // Active time elapsed so far is exactly 2 days (1 before 1st pause, 1 between pauses)
     assert_eq!(f.client.available(&id), DEPOSIT * 2 / 10);
 }
-
