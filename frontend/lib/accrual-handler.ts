@@ -7,10 +7,7 @@ import {
   ValidationError,
   type AccrualCurveResponse,
 } from "./curve.ts";
-import {
-  globalRpcBudgetManager,
-  RpcBudgetManager,
-} from "./budget-manager.ts";
+import { globalRpcBudgetManager, RpcBudgetManager } from "./budget-manager.ts";
 import {
   defaultIndexerClient,
   type IStreamFetcher,
@@ -44,7 +41,7 @@ export function extractClientId(request: Request): string {
 export async function handleAccrualRequest(
   request: Request,
   routeParams: { id: string },
-  options: AccrualHandlerOptions = {}
+  options: AccrualHandlerOptions = {},
 ): Promise<Response> {
   const budgetManager = options.budgetManager ?? globalRpcBudgetManager;
   const indexerClient = options.indexerClient ?? defaultIndexerClient;
@@ -60,7 +57,10 @@ export async function handleAccrualRequest(
     const retryAfter = clientDecision.retryAfterSeconds ?? 1;
 
     // Check if we can serve a safe stale response
-    const staleSnapshot = budgetManager.getStaleSnapshot(routeParams.id, nowSec);
+    const staleSnapshot = budgetManager.getStaleSnapshot(
+      routeParams.id,
+      nowSec,
+    );
     if (staleSnapshot) {
       try {
         const url = new URL(request.url);
@@ -83,7 +83,9 @@ export async function handleAccrualRequest(
               ETag: etag,
               "X-State-Hash": stateHash,
               "X-As-Of-Ledger": staleSnapshot.asOfLedger.toString(),
-              "X-As-Of-Timestamp": new Date(staleSnapshot.asOfTimestamp * 1000).toISOString(),
+              "X-As-Of-Timestamp": new Date(
+                staleSnapshot.asOfTimestamp * 1000,
+              ).toISOString(),
               Age: lagSeconds.toString(),
               "X-Cache": "STALE",
               "X-RateLimit-Remaining": "0",
@@ -116,7 +118,9 @@ export async function handleAccrualRequest(
             ETag: etag,
             "X-State-Hash": stateHash,
             "X-As-Of-Ledger": staleSnapshot.asOfLedger.toString(),
-            "X-As-Of-Timestamp": new Date(staleSnapshot.asOfTimestamp * 1000).toISOString(),
+            "X-As-Of-Timestamp": new Date(
+              staleSnapshot.asOfTimestamp * 1000,
+            ).toISOString(),
             Age: lagSeconds.toString(),
             "X-Cache": "STALE",
             "X-RateLimit-Remaining": "0",
@@ -143,7 +147,7 @@ export async function handleAccrualRequest(
           "Retry-After": retryAfter.toString(),
           "X-RateLimit-Remaining": "0",
         },
-      }
+      },
     );
   }
 
@@ -167,7 +171,7 @@ export async function handleAccrualRequest(
         {
           status: err.statusCode,
           headers: { "Content-Type": "application/json" },
-        }
+        },
       );
     }
     return new Response(
@@ -178,7 +182,7 @@ export async function handleAccrualRequest(
       {
         status: 400,
         headers: { "Content-Type": "application/json" },
-      }
+      },
     );
   }
 
@@ -187,7 +191,11 @@ export async function handleAccrualRequest(
   try {
     fetchResult = await indexerClient.fetchStream(queryParams.id);
   } catch (err: unknown) {
-    const errorObj = err as { code?: string; retryAfter?: number; message?: string };
+    const errorObj = err as {
+      code?: string;
+      retryAfter?: number;
+      message?: string;
+    };
     if (errorObj?.code === "RPC_BUDGET_EXHAUSTED") {
       const retryAfter = errorObj.retryAfter ?? 5;
       return new Response(
@@ -202,7 +210,7 @@ export async function handleAccrualRequest(
             "Content-Type": "application/json",
             "Retry-After": retryAfter.toString(),
           },
-        }
+        },
       );
     }
     return new Response(
@@ -213,7 +221,7 @@ export async function handleAccrualRequest(
       {
         status: 500,
         headers: { "Content-Type": "application/json" },
-      }
+      },
     );
   }
 
@@ -226,7 +234,7 @@ export async function handleAccrualRequest(
       {
         status: 404,
         headers: { "Content-Type": "application/json" },
-      }
+      },
     );
   }
 
@@ -237,7 +245,8 @@ export async function handleAccrualRequest(
   const etag = computeETag(stateHash, queryParams);
 
   // 5. Build freshness and cache headers
-  const isTerminal = stream.status === "Cancelled" || stream.status === "Depleted";
+  const isTerminal =
+    stream.status === "Cancelled" || stream.status === "Depleted";
   const cacheControl = isTerminal
     ? "public, max-age=3600, immutable"
     : "public, max-age=5, stale-while-revalidate=15";
@@ -254,7 +263,8 @@ export async function handleAccrualRequest(
 
   if (freshness.isLagging) {
     headers["X-Indexer-Lag"] = freshness.lagSeconds.toString();
-    headers["Warning"] = `199 - "Indexer state lagging behind tip by ${freshness.lagSeconds} seconds"`;
+    headers["Warning"] =
+      `199 - "Indexer state lagging behind tip by ${freshness.lagSeconds} seconds"`;
   }
 
   if (isStaleFallback) {

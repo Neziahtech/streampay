@@ -7,10 +7,7 @@ import {
   TransactionBuilder,
   nativeToScVal,
 } from "@stellar/stellar-sdk";
-import {
-  type StreamData,
-  DEFAULT_LAG_THRESHOLD_SECONDS,
-} from "./curve.ts";
+import { type StreamData, DEFAULT_LAG_THRESHOLD_SECONDS } from "./curve.ts";
 import {
   globalRpcBudgetManager,
   RpcBudgetManager,
@@ -38,14 +35,16 @@ export interface IStreamFetcher {
 
 const DUMMY_SOURCE = new Account(
   "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-  "0"
+  "0",
 );
 
 /**
  * Direct read-only RPC simulation against the Soroban contract.
  * Does not require any browser wallet or signing credentials.
  */
-async function queryContractStream(streamId: string): Promise<StreamData | null> {
+async function queryContractStream(
+  streamId: string,
+): Promise<StreamData | null> {
   const contractId = process.env.NEXT_PUBLIC_STREAMING_CONTRACT_ID;
   if (!contractId) return null;
   const rpcUrl =
@@ -99,7 +98,7 @@ export class IndexerClient implements IStreamFetcher {
   constructor(
     budgetManager: RpcBudgetManager = globalRpcBudgetManager,
     lagThresholdSeconds = DEFAULT_LAG_THRESHOLD_SECONDS,
-    customFetcher?: (streamId: string) => Promise<StreamData | null>
+    customFetcher?: (streamId: string) => Promise<StreamData | null>,
   ) {
     this.budgetManager = budgetManager;
     this.lagThresholdSeconds = lagThresholdSeconds;

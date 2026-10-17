@@ -41,7 +41,7 @@ describe("Notifications System", () => {
       const result = verifySignatureChallenge(
         challenge.message,
         signature,
-        address
+        address,
       );
 
       assert.equal(result.valid, true);
@@ -56,16 +56,19 @@ describe("Notifications System", () => {
 
       // Attacker signs the message intended for legitKeypair
       const attackerSig = attackerKeypair.sign(
-        Buffer.from(challenge.message, "utf8")
+        Buffer.from(challenge.message, "utf8"),
       );
       const result = verifySignatureChallenge(
         challenge.message,
         attackerSig,
-        address
+        address,
       );
 
       assert.equal(result.valid, false);
-      assert.ok(result.reason?.includes("failed") || result.reason?.includes("verification"));
+      assert.ok(
+        result.reason?.includes("failed") ||
+          result.reason?.includes("verification"),
+      );
     });
 
     it("enforces replay protection by consuming nonces", () => {
@@ -76,11 +79,19 @@ describe("Notifications System", () => {
       const signature = keypair.sign(Buffer.from(challenge.message, "utf8"));
 
       // First verification succeeds and consumes nonce
-      const first = verifySignatureChallenge(challenge.message, signature, address);
+      const first = verifySignatureChallenge(
+        challenge.message,
+        signature,
+        address,
+      );
       assert.equal(first.valid, true);
 
       // Replay attack with same challenge fails
-      const replay = verifySignatureChallenge(challenge.message, signature, address);
+      const replay = verifySignatureChallenge(
+        challenge.message,
+        signature,
+        address,
+      );
       assert.equal(replay.valid, false);
       assert.ok(replay.reason?.includes("nonce"));
     });
@@ -102,7 +113,9 @@ describe("Notifications System", () => {
       const sub = await store.addSubscription({
         address,
         channel: "webhook",
-        config: { webhook: { url: "https://example.com/webhook", secret: "sec123" } },
+        config: {
+          webhook: { url: "https://example.com/webhook", secret: "sec123" },
+        },
         eventTypes: ["claim", "cancel"],
         digest: "instant",
       });
@@ -155,7 +168,10 @@ describe("Notifications System", () => {
       });
 
       // Imposter fails to delete
-      const deletedByImposter = await store.removeSubscription(sub.id, imposter);
+      const deletedByImposter = await store.removeSubscription(
+        sub.id,
+        imposter,
+      );
       assert.equal(deletedByImposter, false);
 
       // Owner successfully deletes
@@ -167,7 +183,12 @@ describe("Notifications System", () => {
   describe("Dispatch Worker & Retry-Math Semantics", () => {
     it("strictly bounds exponential backoff math and jitter", () => {
       // Config: base 1000ms, max 32000ms, jitter 0.2 (+/- 20%)
-      const config = { baseDelayMs: 1000, maxDelayMs: 32000, maxRetries: 5, jitterFactor: 0.2 };
+      const config = {
+        baseDelayMs: 1000,
+        maxDelayMs: 32000,
+        maxRetries: 5,
+        jitterFactor: 0.2,
+      };
 
       for (let attempt = 0; attempt <= 6; attempt++) {
         const delay = computeExponentialBackoff(attempt, config);
@@ -177,7 +198,7 @@ describe("Notifications System", () => {
 
         assert.ok(
           delay >= minExpected && delay <= maxExpected,
-          `Attempt ${attempt}: delay ${delay} outside expected bounds [${minExpected}, ${maxExpected}]`
+          `Attempt ${attempt}: delay ${delay} outside expected bounds [${minExpected}, ${maxExpected}]`,
         );
       }
     });
@@ -196,7 +217,9 @@ describe("Notifications System", () => {
       await store.addSubscription({
         address,
         channel: "webhook",
-        config: { webhook: { url: "https://mock.local/events", secret: "test_secret" } },
+        config: {
+          webhook: { url: "https://mock.local/events", secret: "test_secret" },
+        },
         eventTypes: ["claim"],
       });
 
@@ -242,7 +265,9 @@ describe("Notifications System", () => {
       await store.addSubscription({
         address,
         channel: "webhook",
-        config: { webhook: { url: "https://mock.local/retry", secret: "secret" } },
+        config: {
+          webhook: { url: "https://mock.local/retry", secret: "secret" },
+        },
         eventTypes: ["liveness"],
       });
 
@@ -287,7 +312,9 @@ describe("Notifications System", () => {
       await store.addSubscription({
         address,
         channel: "email",
-        config: { email: { email: "nonexistent@nowhere.xyz", digest: "instant" } },
+        config: {
+          email: { email: "nonexistent@nowhere.xyz", digest: "instant" },
+        },
         eventTypes: ["cancel"],
       });
 
@@ -318,7 +345,10 @@ describe("Notifications System", () => {
       let capturedHeaders: Record<string, string> = {};
       let capturedBody = "";
 
-      const mockFetch: FetchFunction = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const mockFetch: FetchFunction = (async (
+        _url: string | URL | Request,
+        init?: RequestInit,
+      ) => {
         capturedHeaders = (init?.headers as Record<string, string>) || {};
         capturedBody = String(init?.body || "");
         return new Response(JSON.stringify({ status: "ok" }), { status: 200 });

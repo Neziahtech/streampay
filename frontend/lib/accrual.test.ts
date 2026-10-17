@@ -50,15 +50,24 @@ describe("computeAccruedAt", () => {
 
 describe("computeAvailable", () => {
   it("returns 0 for cancelled stream", () => {
-    assert.strictEqual(computeAvailable(1000n, 1000, 2000, 100n, "Cancelled", 1500n), 0n);
+    assert.strictEqual(
+      computeAvailable(1000n, 1000, 2000, 100n, "Cancelled", 1500n),
+      0n,
+    );
   });
 
   it("returns 0 for depleted stream", () => {
-    assert.strictEqual(computeAvailable(1000n, 1000, 2000, 100n, "Depleted", 1500n), 0n);
+    assert.strictEqual(
+      computeAvailable(1000n, 1000, 2000, 100n, "Depleted", 1500n),
+      0n,
+    );
   });
 
   it("returns streamed - withdrawn for active stream", () => {
     // 1000n * 500n / 1000n = 500n, 500n - 100n = 400n
-    assert.strictEqual(computeAvailable(1000n, 1000, 2000, 100n, "Active", 1500n), 400n);
+    assert.strictEqual(
+      computeAvailable(1000n, 1000, 2000, 100n, "Active", 1500n),
+      400n,
+    );
   });
 });

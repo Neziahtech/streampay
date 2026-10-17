@@ -32,7 +32,10 @@ export class SubscriptionStore {
       address: input.address,
       channel: input.channel,
       config: input.config,
-      eventTypes: input.eventTypes.length > 0 ? input.eventTypes : ["claim", "liveness", "cancel"],
+      eventTypes:
+        input.eventTypes.length > 0
+          ? input.eventTypes
+          : ["claim", "liveness", "cancel"],
       digest: input.digest ?? "instant",
       status: "active",
       verifiedAt: now,
@@ -93,7 +96,7 @@ export class SubscriptionStore {
    */
   async recordDeliveryFailure(
     subscriptionId: string,
-    opts: { isBounce?: boolean; reason?: string } = {}
+    opts: { isBounce?: boolean; reason?: string } = {},
   ): Promise<void> {
     const sub = this.subscriptions.get(subscriptionId);
     if (!sub) return;
@@ -103,10 +106,12 @@ export class SubscriptionStore {
 
     if (opts.isBounce) {
       sub.status = "bounced";
-      sub.bounceReason = opts.reason || "Hard bounce detected by delivery provider.";
+      sub.bounceReason =
+        opts.reason || "Hard bounce detected by delivery provider.";
     } else if (sub.consecutiveFailures >= 5) {
       sub.status = "paused";
-      sub.bounceReason = opts.reason || "Paused after 5 consecutive delivery failures.";
+      sub.bounceReason =
+        opts.reason || "Paused after 5 consecutive delivery failures.";
     }
   }
 
@@ -125,7 +130,7 @@ export class SubscriptionStore {
   async updateStatus(
     id: string,
     address: string,
-    status: SubscriptionStatus
+    status: SubscriptionStatus,
   ): Promise<Subscription | null> {
     const sub = this.subscriptions.get(id);
     if (!sub || sub.address !== address) return null;

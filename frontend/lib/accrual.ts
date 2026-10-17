@@ -22,11 +22,15 @@ export function computeAccruedAt(
   deposit: bigint,
   startTime: number,
   endTime: number,
-  now: bigint
+  now: bigint,
 ): bigint {
   const duration: bigint = BigInt(endTime - startTime);
   const elapsed: bigint =
-    now < BigInt(startTime) ? 0n : now > BigInt(endTime) ? duration : now - BigInt(startTime);
+    now < BigInt(startTime)
+      ? 0n
+      : now > BigInt(endTime)
+        ? duration
+        : now - BigInt(startTime);
 
   if (elapsed === 0n || deposit <= 0n || duration === 0n) return 0n;
 
@@ -44,7 +48,7 @@ export function computeAvailable(
   endTime: number,
   withdrawn: bigint,
   status: string,
-  now: bigint
+  now: bigint,
 ): bigint {
   if (status !== "Active") return 0n;
   return computeAccruedAt(deposit, startTime, endTime, now) - withdrawn;

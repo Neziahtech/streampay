@@ -9,7 +9,7 @@ export default function BatchStreamForm({
   onCreate: (
     token: string,
     entries: BatchStreamEntry[],
-    cancelable: boolean
+    cancelable: boolean,
   ) => Promise<boolean>;
 }) {
   const [token, setToken] = useState("");
@@ -42,7 +42,9 @@ export default function BatchStreamForm({
   return (
     <form className="card" onSubmit={submit}>
       <h2>Create payroll batch</h2>
-      <label htmlFor="batch-token">Token contract id (shared by all rows)</label>
+      <label htmlFor="batch-token">
+        Token contract id (shared by all rows)
+      </label>
       <input
         id="batch-token"
         type="text"
@@ -74,10 +76,10 @@ export default function BatchStreamForm({
         </div>
       </div>
       <p className="muted">
-        Rate is in smallest token units per second; duration is in seconds.
-        Each deposit is rate × duration and starts immediately. Approve the
-        summed deposits (plus any configured fees) before submitting. The
-        contract applies this batch atomically.
+        Rate is in smallest token units per second; duration is in seconds. Each
+        deposit is rate × duration and starts immediately. Approve the summed
+        deposits (plus any configured fees) before submitting. The contract
+        applies this batch atomically.
       </p>
       {error && <p className="err">{error}</p>}
       <button type="submit" disabled={busy}>
