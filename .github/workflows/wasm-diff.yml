@@ -7,6 +7,7 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/wasm-diff.yml'
+      - '.github/actions/**'
       - '.github/scripts/**'
   workflow_dispatch:
 
@@ -17,6 +18,34 @@ concurrency:
 permissions:
   contents: read
   pull-requests: write
+
+# ==============================================================================
+# DISASSEMBLY TOOL CHOICE & JUSTIFICATION:
+#
+# We select `wasm-objdump` (WebAssembly Binary Toolkit - WABT) combined with a
+# dedicated bytecode parser as our primary disassembly and analysis tooling.
+#
+# Why `wasm-objdump` over `wasm-dis` (Binaryen):
+# 1. Byte-level granularity: `wasm-objdump -d` parses the Wasm Code section and
+#    explicitly annotates each function body with its exact size in bytes (`size=N`)
+#    and binary file offset. In contrast, `wasm-dis` transforms bytecode into
+#    high-level S-expression WebAssembly Text (WAT), stripping section boundaries
+#    and function byte sizes.
+# 2. Stable, comparable function-level output: `wasm-objdump` outputs linear
+#    instruction streams with machine opcodes and operands, allowing direct,
+#    deterministic function-by-function comparison.
+# 3. Churn Normalization:
+#    NOTE ON NORMALIZATION ("SAME FUNCTIONS, OFFSET SHIFT" VS "NEW ROUTINE ADDED"):
+#    When an upstream routine is added or edited, downstream functions experience
+#    "offset and index churn" — their file offsets shift, function indices are
+#    renumbered, and compiler-generated mangled symbol hashes (`::h[0-9a-f]{16}`)
+#    change, despite their functional bytecode being 100% identical.
+#    Our diff action normalizes call target operands and strips compiler hash suffixes
+#    to fingerprint function bodies. Functions with shifted offsets but identical
+#    normalized bodies are classified as filtered churn (0 B delta) and omitted from
+#    the Top Movers table to prevent review fatigue. Only genuine function additions,
+#    removals, or byte growth/shrinkage are reported as true movers.
+# ==============================================================================
 
 jobs:
   wasm-diff:
@@ -46,7 +75,7 @@ jobs:
           stellar --version
 
       - name: Install disassembly tools (wabt & binaryen)
-        # wabt provides wasm-objdump (primary tool); binaryen provides wasm-dis
+        # wabt provides wasm-objdump (primary tool); binaryen provides wasm-dis (fallback)
         run: |
           sudo apt-get update
           sudo apt-get install -y wabt binaryen
@@ -81,20 +110,14 @@ jobs:
           cp ../../target/wasm32v1-none/release/streampay_contract.wasm ../../../artifacts/head/streampay_contract.wasm
           sha256sum ../../../artifacts/head/streampay_contract.wasm
 
-      - name: Disassemble Wasm Binaries (wasm-objdump)
-        run: |
-          wasm-objdump -d artifacts/base/streampay_contract.wasm > artifacts/base/streampay_contract.dis
-          wasm-objdump -d artifacts/head/streampay_contract.wasm > artifacts/head/streampay_contract.dis
-
-      - name: Run Function-Level Diff & Normalization
-        run: |
-          python head-repo/.github/scripts/wasm_diff.py \
-            --base artifacts/base/streampay_contract.wasm \
-            --head artifacts/head/streampay_contract.wasm \
-            --base-dis artifacts/base/streampay_contract.dis \
-            --head-dis artifacts/head/streampay_contract.dis \
-            --output-json artifacts/wasm_diff.json \
-            --output-markdown artifacts/wasm_diff_report.md
+      # Invoke the composite action: .github/actions/wasm-diff
+      - name: Run Wasm Function Diff Action
+        id: diff
+        uses: ./head-repo/.github/actions/wasm-diff
+        with:
+          base_wasm: artifacts/base/streampay_contract.wasm
+          head_wasm: artifacts/head/streampay_contract.wasm
+          output_dir: artifacts
 
       - name: Display Report in CI Summary
         run: |
