@@ -829,44 +829,52 @@ impl StreamingPayments {
     pub fn sweep(env: Env, stream_id: u64) -> Result<(), StreamError> {
         // Load stream (returns StreamNotFound if missing)
         let s = stream::get_stream(&env, stream_id)?;
-        
+
         // Critical security predicate: depleted AND expired
         if s.status != StreamStatus::Depleted {
             return Err(surface::reject(Branch::StreamNotDepleted));
         }
-        
+
         let now = env.ledger().timestamp();
         if s.end_time > now {
             return Err(surface::reject(Branch::StreamNotExpired));
         }
-        
+
         // Additional dust protection: verify zero remaining balance
         // (redundant with Depleted status but explicit for clarity)
         let available = stream::available_amount(&env, &s)?;
         if available != 0 {
             return Err(surface::reject(Branch::StreamNotDepleted));
         }
-        
+
         // Storage reclamation: remove stream entry and index references
-        
+
         // 1. Remove main stream entry
         stream::remove_stream(&env, &s);
-        
+
         // 2. Remove from sender index
-        Self::remove_from_index(&env, &stream::DataKey::SenderStreams(s.sender.clone()), s.id);
-        
-        // 3. Remove from recipient index  
-        Self::remove_from_index(&env, &stream::DataKey::RecipientStreams(s.recipient.clone()), s.id);
-        
+        Self::remove_from_index(
+            &env,
+            &stream::DataKey::SenderStreams(s.sender.clone()),
+            s.id,
+        );
+
+        // 3. Remove from recipient index
+        Self::remove_from_index(
+            &env,
+            &stream::DataKey::RecipientStreams(s.recipient.clone()),
+            s.id,
+        );
+
         // Storage rent is automatically reclaimed to contract balance when entries removed
-        
+
         Swept {
             stream_id,
             sender: s.sender,
             recipient: s.recipient,
         }
         .publish(&env);
-        
+
         Ok(())
     }
 
@@ -877,7 +885,7 @@ impl StreamingPayments {
             .persistent()
             .get(key)
             .unwrap_or_else(|| Vec::new(env));
-        
+
         // Find and remove ID (preserve order of remaining)
         let mut pos = 0;
         while pos < ids.len() {
@@ -889,14 +897,16 @@ impl StreamingPayments {
             }
             pos += 1;
         }
-        
+
         // Save updated index (may be empty)
         env.storage().persistent().set(key, &ids);
         // Extend TTL if still active
         if !ids.is_empty() {
-            env.storage()
-                .persistent()
-                .extend_ttl(key, stream::TTL_THRESHOLD_LEDGERS, stream::TTL_EXTEND_LEDGERS);
+            env.storage().persistent().extend_ttl(
+                key,
+                stream::TTL_THRESHOLD_LEDGERS,
+                stream::TTL_EXTEND_LEDGERS,
+            );
         }
     }
 

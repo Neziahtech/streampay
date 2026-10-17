@@ -130,7 +130,7 @@ pub enum Branch {
     PolicyNotInitialized,
     /// `policy_accept_handoff` / `policy_cancel_handoff`: no handoff pending.
     PolicyNoPendingHandoff,
-// ------------------------------------------------------ dust protection
+    // ------------------------------------------------------ dust protection
     /// `create_stream` / `create_streams`: deposit amount is below `MIN_STREAM_AMOUNT`.
     StreamTooSmall,
     /// `withdraw` / `withdraw_max`: claimable balance is below `MIN_CLAIM_AMOUNT`.
