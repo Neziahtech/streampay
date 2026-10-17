@@ -86,13 +86,72 @@ pub enum Branch {
     /// `withdraw_treasury`: amount exceeds fees collected minus fees already
     /// withdrawn.
     WithdrawTreasuryExceedsBalance,
+    // --------------------------------------------------- scheduled intents
+    /// No stored intent exists for the supplied id.
+    IntentNotFound,
+    /// An operation requiring a pending intent found a terminal intent.
+    IntentNotPending,
+    /// `execute_scheduled`: the next occurrence is not due yet.
+    IntentNotYetExecutable,
+    /// `execute_scheduled` / `cancel_scheduled`: the intent expired.
+    IntentExpired,
+    /// `cancel_scheduled`: the execution window has opened.
+    IntentNotCancellable,
+    /// A schedule parameter is inconsistent or outside its supported bounds.
+    ScheduleInvalidParameters,
+    /// A stored intent no longer matches its authorization commitment.
+    IntentParamsMismatch,
+    /// `reclaim_expired`: the intent has not expired yet.
+    IntentNotExpired,
+    // --------------------------------------------------- token interactions
+    /// `create_stream`: the token refused the pull of `deposit_amount + fee`
+    /// (missing balance/allowance, a non-transferable asset, a non-SEP-41
+    /// callee). Nothing is persisted, so no stream id is consumed.
+    CreateDepositTransferFailed,
+    /// `top_up`: the token refused the pull of the added funds; `deposit` is
+    /// left unchanged.
+    TopUpTransferFailed,
+    /// `withdraw` / `withdraw_max` / the recipient leg of `cancel_stream`: the
+    /// token refused the payout to the stream recipient.
+    RecipientPayoutFailed,
+    /// `cancel_stream`: the token refused the refund of unaccrued funds to the
+    /// sender; the whole cancellation rolls back.
+    SenderRefundFailed,
+    /// `withdraw_treasury`: the token refused the payout of collected fees.
+    TreasuryPayoutFailed,
+    // ------------------------------------------------------------ policy
+    /// `create_stream`: asset is not on the policy allowlist.
+    PolicyAssetNotAllowed,
+    /// `policy_execute_asset`: timelock delay has not elapsed.
+    PolicyTimelockNotElapsed,
+    /// `policy_execute_asset`: no change queued for the asset.
+    PolicyNoQueuedChange,
+    /// policy admin entrypoints called before initialization.
+    PolicyNotInitialized,
+    /// `policy_accept_handoff` / `policy_cancel_handoff`: no handoff pending.
+    PolicyNoPendingHandoff,
+    // ------------------------------------------------ upgrade & freeze
+    /// The contract is currently frozen for maintenance or upgrade.
+    ContractFrozen,
+    /// Storage migration was invoked while the contract is not frozen.
+    MigrationNotFrozen,
+    /// `execute_upgrade`: no upgrade proposal is pending.
+    ExecuteUpgradeNoPending,
+    /// `cancel_upgrade`: no upgrade proposal is pending.
+    CancelUpgradeNoPending,
+    /// `execute_upgrade`: the timelock delay has not yet expired.
+    TimelockNotExpired,
+    /// `propose_upgrade`: the proposed delay is shorter than MIN_UPGRADE_DELAY_SECONDS.
+    UpgradeDelayTooShort,
+    /// `migrate_storage`: the schema has already been migrated to the target version.
+    AlreadyMigrated,
 }
 
 impl Branch {
     /// Every branch, in declaration order. The matrix test walks this list and
     /// the coverage test requires each [`StreamError`] variant to be produced by
     /// one of these (or retired).
-    pub const ALL: [Branch; 24] = [
+    pub const ALL: [Branch; 49] = [
         Branch::CreateDepositNonPositive,
         Branch::CreateStartTimeInPast,
         Branch::CreateInvalidTimeRange,
@@ -117,6 +176,31 @@ impl Branch {
         Branch::AcceptGovernorNotNominee,
         Branch::WithdrawTreasuryAmountNonPositive,
         Branch::WithdrawTreasuryExceedsBalance,
+        Branch::IntentNotFound,
+        Branch::IntentNotPending,
+        Branch::IntentNotYetExecutable,
+        Branch::IntentExpired,
+        Branch::IntentNotCancellable,
+        Branch::ScheduleInvalidParameters,
+        Branch::IntentParamsMismatch,
+        Branch::IntentNotExpired,
+        Branch::CreateDepositTransferFailed,
+        Branch::TopUpTransferFailed,
+        Branch::RecipientPayoutFailed,
+        Branch::SenderRefundFailed,
+        Branch::TreasuryPayoutFailed,
+        Branch::PolicyAssetNotAllowed,
+        Branch::PolicyTimelockNotElapsed,
+        Branch::PolicyNoQueuedChange,
+        Branch::PolicyNotInitialized,
+        Branch::PolicyNoPendingHandoff,
+        Branch::ContractFrozen,
+        Branch::MigrationNotFrozen,
+        Branch::ExecuteUpgradeNoPending,
+        Branch::CancelUpgradeNoPending,
+        Branch::TimelockNotExpired,
+        Branch::UpgradeDelayTooShort,
+        Branch::AlreadyMigrated,
     ];
 
     /// The entrypoint(s) through which this branch can fire. Shared helpers
@@ -127,7 +211,7 @@ impl Branch {
             Branch::CreateDepositNonPositive
             | Branch::CreateStartTimeInPast
             | Branch::CreateInvalidTimeRange
-            | Branch::CreateDurationTooLong => &["create_stream"],
+            | Branch::CreateDurationTooLong => &["create_stream", "create_streams"],
             Branch::WithdrawAmountNonPositive | Branch::WithdrawAmountExceedsAvailable => {
                 &["withdraw"]
             }
@@ -145,7 +229,7 @@ impl Branch {
                 "top_up",
             ],
             Branch::StreamNotActive => &["withdraw", "withdraw_max", "cancel_stream", "top_up"],
-            Branch::CapacityOverflow => &["create_stream", "top_up"],
+            Branch::CapacityOverflow => &["create_stream", "create_streams", "top_up"],
             Branch::RateProductOverflow => &[
                 "streamed_at",
                 "available",
@@ -157,15 +241,67 @@ impl Branch {
             Branch::CancelSplitOverflow => &["cancel_stream"],
             Branch::PayoutOverflow => &["withdraw", "withdraw_max"],
             Branch::SetFeeRateTooHigh => &["set_fee_bps"],
-            Branch::GovernorNotAllowed => {
-                &["set_fee_bps", "nominate_governor", "withdraw_treasury"]
-            }
+            Branch::GovernorNotAllowed => &[
+                "set_fee_bps",
+                "nominate_governor",
+                "withdraw_treasury",
+                "set_frozen",
+                "propose_upgrade",
+                "cancel_upgrade",
+                "execute_upgrade",
+                "migrate_storage",
+            ],
             Branch::AcceptGovernorNoPending | Branch::AcceptGovernorNotNominee => {
                 &["accept_governor"]
             }
             Branch::WithdrawTreasuryAmountNonPositive | Branch::WithdrawTreasuryExceedsBalance => {
                 &["withdraw_treasury"]
             }
+            Branch::IntentNotFound => &[
+                "get_intent",
+                "execute_scheduled",
+                "cancel_scheduled",
+                "reclaim_expired",
+            ],
+            Branch::IntentNotPending => {
+                &["execute_scheduled", "cancel_scheduled", "reclaim_expired"]
+            }
+            Branch::IntentNotYetExecutable
+            | Branch::IntentExpired
+            | Branch::IntentParamsMismatch => &["execute_scheduled"],
+            Branch::IntentNotCancellable => &["cancel_scheduled"],
+            Branch::ScheduleInvalidParameters => &["schedule_stream"],
+            Branch::IntentNotExpired => &["reclaim_expired"],
+            Branch::CreateDepositTransferFailed => &["create_stream", "create_streams"],
+            Branch::TopUpTransferFailed => &["top_up"],
+            Branch::RecipientPayoutFailed => &["withdraw", "withdraw_max", "cancel_stream"],
+            Branch::SenderRefundFailed => &["cancel_stream"],
+            Branch::TreasuryPayoutFailed => &["withdraw_treasury"],
+            Branch::PolicyAssetNotAllowed => &["create_stream", "create_streams"],
+            Branch::PolicyTimelockNotElapsed | Branch::PolicyNoQueuedChange => {
+                &["policy_execute_asset"]
+            }
+            Branch::PolicyNotInitialized => &[
+                "policy_execute_asset",
+                "policy_propose_asset",
+                "policy_propose_handoff",
+                "policy_accept_handoff",
+                "policy_cancel_handoff",
+                "policy_set_timelock_delay",
+            ],
+            Branch::PolicyNoPendingHandoff => &["policy_accept_handoff", "policy_cancel_handoff"],
+            Branch::ContractFrozen => &[
+                "create_stream",
+                "create_streams",
+                "withdraw",
+                "withdraw_max",
+                "cancel_stream",
+                "top_up",
+            ],
+            Branch::MigrationNotFrozen | Branch::AlreadyMigrated => &["migrate_storage"],
+            Branch::ExecuteUpgradeNoPending | Branch::TimelockNotExpired => &["execute_upgrade"],
+            Branch::CancelUpgradeNoPending => &["cancel_upgrade"],
+            Branch::UpgradeDelayTooShort => &["propose_upgrade"],
         }
     }
 
@@ -199,6 +335,32 @@ impl Branch {
             Branch::AcceptGovernorNoPending => StreamError::NoPendingGovernor,
             Branch::WithdrawTreasuryAmountNonPositive => StreamError::ZeroAmount,
             Branch::WithdrawTreasuryExceedsBalance => StreamError::InsufficientTreasuryBalance,
+            Branch::IntentNotFound => StreamError::IntentNotFound,
+            Branch::IntentNotPending => StreamError::IntentNotPending,
+            Branch::IntentNotYetExecutable => StreamError::IntentNotYetExecutable,
+            Branch::IntentExpired => StreamError::IntentExpired,
+            Branch::IntentNotCancellable => StreamError::IntentNotCancellable,
+            Branch::ScheduleInvalidParameters => StreamError::InvalidScheduleParameters,
+            Branch::IntentParamsMismatch => StreamError::IntentParamsMismatch,
+            Branch::IntentNotExpired => StreamError::IntentNotExpired,
+            Branch::CreateDepositTransferFailed => StreamError::DepositTransferFailed,
+            Branch::TopUpTransferFailed => StreamError::TopUpTransferFailed,
+            Branch::RecipientPayoutFailed => StreamError::RecipientPayoutFailed,
+            Branch::SenderRefundFailed => StreamError::SenderRefundFailed,
+            Branch::TreasuryPayoutFailed => StreamError::TreasuryPayoutFailed,
+            Branch::PolicyAssetNotAllowed => StreamError::PolicyAssetNotAllowed,
+            Branch::PolicyTimelockNotElapsed => StreamError::PolicyTimelockNotElapsed,
+            Branch::PolicyNoQueuedChange => StreamError::PolicyNoQueuedChange,
+            Branch::PolicyNotInitialized => StreamError::PolicyNotInitialized,
+            Branch::PolicyNoPendingHandoff => StreamError::PolicyNoPendingHandoff,
+            Branch::ContractFrozen => StreamError::ContractFrozen,
+            Branch::MigrationNotFrozen => StreamError::ContractNotFrozen,
+            Branch::ExecuteUpgradeNoPending | Branch::CancelUpgradeNoPending => {
+                StreamError::NoPendingUpgrade
+            }
+            Branch::TimelockNotExpired => StreamError::TimelockNotExpired,
+            Branch::UpgradeDelayTooShort => StreamError::UpgradeDelayTooShort,
+            Branch::AlreadyMigrated => StreamError::AlreadyMigrated,
         }
     }
 
@@ -244,6 +406,51 @@ impl Branch {
             }
             Branch::WithdrawTreasuryExceedsBalance => {
                 "amount exceeds fees collected minus fees already withdrawn"
+            }
+            Branch::IntentNotFound => "no scheduled intent is stored under the id",
+            Branch::IntentNotPending => "the intent is already executed, cancelled, or expired",
+            Branch::IntentNotYetExecutable => "the next occurrence has not reached execute_after",
+            Branch::IntentExpired => "the intent has reached expires_at",
+            Branch::IntentNotCancellable => "the execution window opened before cancellation",
+            Branch::ScheduleInvalidParameters => {
+                "schedule parameters are inconsistent or out of bounds"
+            }
+            Branch::IntentParamsMismatch => {
+                "stored parameters do not match the authorization commitment"
+            }
+            Branch::IntentNotExpired => "the intent has not reached expires_at",
+            Branch::CreateDepositTransferFailed => {
+                "the token refuses the deposit (+fee) pull (allowance, balance, or a non-compliant token)"
+            }
+            Branch::TopUpTransferFailed => {
+                "the token refuses the pull of the added funds"
+            }
+            Branch::RecipientPayoutFailed => {
+                "the token refuses a payout to the recipient"
+            }
+            Branch::SenderRefundFailed => "the token refuses the refund to the sender",
+            Branch::TreasuryPayoutFailed => {
+                "the token refuses the payout of collected protocol fees"
+            }
+            Branch::PolicyAssetNotAllowed => {
+                "the asset is not permitted by the policy module allowlist"
+            }
+            Branch::PolicyTimelockNotElapsed => {
+                "the timelock delay has not elapsed for this queued policy change"
+            }
+            Branch::PolicyNoQueuedChange => "no policy change is queued for the specified asset",
+            Branch::PolicyNotInitialized => "the policy module has not been initialized",
+            Branch::PolicyNoPendingHandoff => "no admin handoff proposal is pending",
+            Branch::ContractFrozen => "the contract is frozen for maintenance or upgrade",
+            Branch::MigrationNotFrozen => "storage migration requires the contract to be frozen",
+            Branch::ExecuteUpgradeNoPending => "execute_upgrade called with no upgrade pending",
+            Branch::CancelUpgradeNoPending => "cancel_upgrade called with no upgrade pending",
+            Branch::TimelockNotExpired => "upgrade timelock delay has not yet expired",
+            Branch::UpgradeDelayTooShort => {
+                "proposed upgrade delay is shorter than MIN_UPGRADE_DELAY_SECONDS"
+            }
+            Branch::AlreadyMigrated => {
+                "storage has already been migrated to the target schema version"
             }
         }
     }

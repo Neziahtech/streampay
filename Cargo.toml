@@ -1,9 +1,12 @@
+
 [workspace]
 resolver = "2"
 members = [
     "contracts/streaming-payments",
     "contracts/vault",
+    "model",
 ]
+
 # The fuzz harness is its own workspace (cargo-fuzz needs nightly-only
 # settings that must not leak into the contract build).
 exclude = [
@@ -16,7 +19,7 @@ edition = "2021"
 license = "Apache-2.0"
 
 [workspace.dependencies]
-soroban-sdk = "28"
+soroban-sdk = "29"
 
 [profile.release]
 opt-level = "z"

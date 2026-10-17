@@ -6,10 +6,22 @@
 //! intermediate products) and returns [`StreamError::MathOverflow`] instead of
 //! overflowing or panicking.
 
-use soroban_sdk::{contracttype, Address, Env, MuxedAddress, Vec};
+use soroban_sdk::{contracttype, Address, BytesN, Env, MuxedAddress, Vec};
 
 use crate::errors::StreamError;
 use crate::surface::{self, Branch};
+
+/// Minimum delay for an upgrade proposal timelock: 24 hours.
+pub const MIN_UPGRADE_DELAY_SECONDS: u64 = 86_400;
+
+/// Initial schema version (v1).
+pub const INITIAL_SCHEMA_VERSION: u32 = 1;
+
+/// Target schema version after migration (v2).
+pub const TARGET_SCHEMA_VERSION: u32 = 2;
+
+/// Maximum number of streams processed per migration call.
+pub const MAX_MIGRATION_BATCH_SIZE: u32 = 50;
 
 /// Maximum supported stream duration: 100 years, including leap days
 /// (36,525 days). Bounds worst-case rate multiplications and rejects
@@ -69,6 +81,25 @@ impl Stream {
     }
 }
 
+/// Proposed contract upgrade pending timelock expiration.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingUpgrade {
+    pub new_wasm_hash: BytesN<32>,
+    pub unlock_time: u64,
+}
+
+/// Progress report for on-chain storage migration.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MigrationStatus {
+    pub current_version: u32,
+    pub target_version: u32,
+    pub cursor: u64,
+    pub total_streams: u64,
+    pub is_complete: bool,
+}
+
 /// Storage keys for the contract.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -84,6 +115,13 @@ pub enum DataKey {
     /// Append-only index of stream ids created (as sender) by the given
     /// address. Same advisory semantics as [`DataKey::RecipientStreams`].
     SenderStreams(Address),
+    /// Next scheduled-intent id to hand out; ids start at 1.
+    NextIntentId,
+    /// The scheduled intent with the given id.
+    Intent(u64),
+    /// Append-only index of scheduled-intent ids created (as sender) by the
+    /// given address. Same advisory semantics as [`DataKey::SenderStreams`].
+    SenderIntents(Address),
     /// Treasury governor address (instance storage; set once by the
     /// contract constructor, later by two-step nomination/acceptance).
     Governor,
@@ -99,6 +137,14 @@ pub enum DataKey {
     /// Fee charged for one stream at creation time (persistent storage;
     /// written only when the fee rounds above zero, so absent == 0).
     StreamFee(u64),
+    /// Schema version for storage layout evolution (instance storage).
+    SchemaVersion,
+    /// Freeze state: when true, all state-mutating entrypoints revert (instance storage).
+    ContractFrozen,
+    /// Proposed contract upgrade pending timelock expiration (instance storage).
+    PendingUpgrade,
+    /// Highest stream id processed by storage migration (instance storage).
+    MigrationCursor,
 }
 
 /// Seconds elapsed of the stream window at the current ledger time.
@@ -204,6 +250,17 @@ pub fn next_stream_id(env: &Env) -> u64 {
     id
 }
 
+/// Reserves a contiguous range of stream ids with one persistent write.
+pub fn reserve_stream_ids(env: &Env, count: u32) -> Result<u64, StreamError> {
+    let key = DataKey::NextStreamId;
+    let first: u64 = env.storage().persistent().get(&key).unwrap_or(1);
+    let next = first
+        .checked_add(count as u64)
+        .ok_or(StreamError::MathOverflow)?;
+    env.storage().persistent().set(&key, &next);
+    Ok(first)
+}
+
 /// Loads a stream, or returns [`StreamError::StreamNotFound`].
 pub fn get_stream(env: &Env, id: u64) -> Result<Stream, StreamError> {
     env.storage()
@@ -223,7 +280,8 @@ pub fn put_stream(env: &Env, stream: &Stream) {
 
 /// Appends a stream's id to both parties' address indexes.
 ///
-/// Called once, from `create_stream`, right after the stream is persisted.
+/// Called after each stream created by `create_stream` or `create_streams`
+/// is persisted.
 /// Cancel/deplete/top-up flows intentionally do not touch the indexes: they
 /// are append-only discovery aids keyed by *creation*, not by lifecycle.
 pub fn index_stream(env: &Env, stream: &Stream) {
@@ -239,7 +297,7 @@ pub fn index_stream(env: &Env, stream: &Stream) {
     );
 }
 
-fn push_to_index(env: &Env, key: &DataKey, id: u64) {
+pub(crate) fn push_to_index(env: &Env, key: &DataKey, id: u64) {
     let mut ids: Vec<u64> = env
         .storage()
         .persistent()
@@ -279,4 +337,81 @@ pub fn page_stream_ids(env: &Env, key: &DataKey, offset: u32, limit: u32) -> Vec
         i += 1;
     }
     page
+}
+
+/// Returns the current schema version (defaults to INITIAL_SCHEMA_VERSION if unset).
+pub fn schema_version(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::SchemaVersion)
+        .unwrap_or(INITIAL_SCHEMA_VERSION)
+}
+
+/// Persists the new schema version and extends instance storage TTL.
+pub fn set_schema_version(env: &Env, version: u32) {
+    env.storage()
+        .instance()
+        .set(&DataKey::SchemaVersion, &version);
+    env.storage()
+        .instance()
+        .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+}
+
+/// Checks whether the contract is currently frozen.
+pub fn is_frozen(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::ContractFrozen)
+        .unwrap_or(false)
+}
+
+/// Updates the contract freeze state and extends instance storage TTL.
+pub fn set_frozen(env: &Env, frozen: bool) {
+    env.storage()
+        .instance()
+        .set(&DataKey::ContractFrozen, &frozen);
+    env.storage()
+        .instance()
+        .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+}
+
+/// Returns the pending contract upgrade proposal, if one exists.
+pub fn pending_upgrade(env: &Env) -> Option<PendingUpgrade> {
+    env.storage().instance().get(&DataKey::PendingUpgrade)
+}
+
+/// Sets the pending contract upgrade proposal and extends instance storage TTL.
+pub fn set_pending_upgrade(env: &Env, pending: &PendingUpgrade) {
+    env.storage()
+        .instance()
+        .set(&DataKey::PendingUpgrade, pending);
+    env.storage()
+        .instance()
+        .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+}
+
+/// Removes any pending contract upgrade proposal and extends instance storage TTL.
+pub fn remove_pending_upgrade(env: &Env) {
+    env.storage().instance().remove(&DataKey::PendingUpgrade);
+    env.storage()
+        .instance()
+        .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+}
+
+/// Returns the current migration cursor (highest stream id migrated so far).
+pub fn migration_cursor(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKey::MigrationCursor)
+        .unwrap_or(0)
+}
+
+/// Sets the migration cursor and extends instance storage TTL.
+pub fn set_migration_cursor(env: &Env, cursor: u64) {
+    env.storage()
+        .instance()
+        .set(&DataKey::MigrationCursor, &cursor);
+    env.storage()
+        .instance()
+        .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
 }

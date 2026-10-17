@@ -1,9 +1,9 @@
 //! Events emitted by StreamPay.
 //!
-//! Every event is keyed by `stream_id` as a topic, so indexers can filter per
-//! stream efficiently. Non-`#[topic]` fields are event data.
+//! Per-stream events are keyed by `stream_id`; `StreamsCreated` is keyed by
+//! sender and carries the batch ids. Non-topic fields are event data.
 
-use soroban_sdk::{contractevent, Address};
+use soroban_sdk::{contractevent, Address, BytesN, Vec};
 
 /// Emitted when a new stream is created and its deposit pulled in.
 #[contractevent]
@@ -18,6 +18,15 @@ pub struct StreamCreated {
     pub start_time: u64,
     pub end_time: u64,
     pub cancelable: bool,
+}
+
+/// Emitted once after an atomic batch creates its streams.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamsCreated {
+    #[topic]
+    pub sender: Address,
+    pub stream_ids: Vec<u64>,
 }
 
 /// Emitted when the recipient withdraws accrued funds.
@@ -58,6 +67,78 @@ pub struct StreamToppedUp {
     pub new_deposit: i128,
 }
 
+/// Emitted when a sender pre-authorizes a future (optionally recurring)
+/// stream creation and escrows the deposit plus keeper fee budget.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamScheduled {
+    #[topic]
+    pub intent_id: u64,
+    pub sender: Address,
+    pub recipient: Address,
+    pub token: Address,
+    /// Deposit escrowed for *each* occurrence.
+    pub deposit: i128,
+    /// Scheduled start of the first occurrence (later occurrences are shifted
+    /// by `interval`).
+    pub start_time: u64,
+    /// Scheduled end of the first occurrence.
+    pub end_time: u64,
+    pub cancelable: bool,
+    /// Seconds between occurrence starts; `0` for a one-shot intent.
+    pub interval: u64,
+    /// Total number of streams this intent will create.
+    pub occurrences: u32,
+    /// Keeper fee escrowed for *each* occurrence.
+    pub fee_budget: i128,
+    /// Earliest time the first occurrence may be executed.
+    pub execute_after: u64,
+    /// After this time no occurrence may be executed; the escrow is reclaimable.
+    pub expires_at: u64,
+}
+
+/// Emitted when a keeper executes one occurrence of a scheduled intent,
+/// creating the stream and paying itself the escrowed per-occurrence fee.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScheduledStreamExecuted {
+    #[topic]
+    pub intent_id: u64,
+    pub keeper: Address,
+    /// The newly created stream id.
+    pub stream_id: u64,
+    /// Zero-based index of the occurrence just executed.
+    pub occurrence_index: u32,
+    /// Occurrences still outstanding after this execution.
+    pub occurrences_remaining: u32,
+    /// Fee paid to the keeper for this execution.
+    pub fee_paid: i128,
+}
+
+/// Emitted when a sender cancels a not-yet-executable intent and is refunded
+/// the escrow for all outstanding occurrences.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScheduledIntentCancelled {
+    #[topic]
+    pub intent_id: u64,
+    pub sender: Address,
+    /// Total refunded (deposit + fee budget for every outstanding occurrence).
+    pub refund: i128,
+}
+
+/// Emitted when an intent passed `expires_at` with occurrences outstanding and
+/// its escrow was returned to the sender.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScheduledIntentExpired {
+    #[topic]
+    pub intent_id: u64,
+    pub sender: Address,
+    /// Total refunded for the outstanding occurrences.
+    pub refund: i128,
+}
+
 /// Emitted exactly once per funded stream that owes a protocol fee, in the
 /// same transaction as (and immediately after) `StreamCreated`. Keyed by
 /// `stream_id` so fee history is auditable per stream; the stream's stored
@@ -95,4 +176,105 @@ pub struct FeeWithdrawn {
     pub amount: i128,
     /// Total fees withdrawn for this token after this withdrawal.
     pub withdrawn_total: i128,
+}
+
+/// Emitted when the policy module is initialized with its initial admin.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PolicyInitialized {
+    pub admin: Address,
+}
+
+/// Emitted when an asset allowlist mutation is proposed and queued under timelock.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PolicyAssetQueued {
+    #[topic]
+    pub asset: Address,
+    pub allowed: bool,
+    pub executable_after: u64,
+}
+
+/// Emitted when a queued asset allowlist change is executed after timelock expiry.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PolicyAssetExecuted {
+    #[topic]
+    pub asset: Address,
+    pub allowed: bool,
+}
+
+/// Emitted when the admin proposes a new admin in step 1 of the two-step handoff.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PolicyHandoffProposed {
+    #[topic]
+    pub current_admin: Address,
+    pub proposed_admin: Address,
+}
+
+/// Emitted when the proposed admin accepts the handoff in step 2.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PolicyHandoffAccepted {
+    #[topic]
+    pub new_admin: Address,
+}
+
+/// Emitted when a pending admin handoff is cancelled by the current admin.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PolicyHandoffCancelled {
+    #[topic]
+    pub proposed_admin: Address,
+}
+
+/// Emitted when a contract upgrade is proposed with a timelock delay.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpgradeProposed {
+    #[topic]
+    pub new_wasm_hash: BytesN<32>,
+    pub unlock_time: u64,
+    pub proposer: Address,
+}
+
+/// Emitted when a pending contract upgrade is cancelled by the governor.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpgradeCancelled {
+    #[topic]
+    pub new_wasm_hash: BytesN<32>,
+    pub cancelled_by: Address,
+}
+
+/// Emitted when a contract upgrade is executed after its timelock has elapsed.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractUpgraded {
+    #[topic]
+    pub new_wasm_hash: BytesN<32>,
+    pub executed_by: Address,
+}
+
+/// Emitted when the contract freeze state is toggled by the governor.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractFrozenStateChanged {
+    #[topic]
+    pub frozen: bool,
+    pub changed_by: Address,
+}
+
+/// Emitted when a batch of streams is migrated to a new storage schema version.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StorageMigrated {
+    #[topic]
+    pub from_version: u32,
+    #[topic]
+    pub to_version: u32,
+    pub start_id: u64,
+    pub end_id: u64,
+    pub is_complete: bool,
 }

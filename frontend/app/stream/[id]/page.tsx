@@ -1,5 +1,4 @@
 "use client";
-
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
@@ -7,6 +6,7 @@ import { getAddress, isConnected } from "@stellar/freighter-api";
 import {
   cancelStream,
   describeError,
+  isNativeXlm,
   readAvailable,
   readStream,
   withdrawFromStream,
@@ -14,12 +14,14 @@ import {
   type StreamView,
 } from "@/lib/stellar";
 import { computeAvailable, StreamSnapshot } from "@/lib/accrual";
+import { useToast } from "@/components/toast";
 
 function fmtUnits(v: bigint): string {
   return v.toString();
 }
 
 export default function StreamDetail() {
+  const toast = useToast();
   const params = useParams<{ id: string }>();
   const id = params?.id ?? "";
 
@@ -31,8 +33,7 @@ export default function StreamDetail() {
   const [snapshot, setSnapshot] = useState<StreamSnapshot | null>(null);
   const [amount, setAmount] = useState<string>("");
   const [address, setAddress] = useState<string | null>(null);
-  const [status, setStatus] = useState<string>("");
-  const [error, setError] = useState<string>("");
+  const [loadError, setLoadError] = useState<string>("");
 
   const reload = useCallback(async () => {
     if (!id) return;
@@ -47,11 +48,13 @@ export default function StreamDetail() {
         withdrawn: BigInt(s.withdrawn),
         status: s.status,
       });
-      setError("");
+      setLoadError("");
     } catch (e) {
-      setError(describeError(e));
+      const msg = describeError(e);
+      setLoadError(msg);
+      toast.error(msg);
     }
-  }, [id]);
+  }, [id, toast]);
 
   useEffect(() => {
     void (async () => {
@@ -91,11 +94,11 @@ export default function StreamDetail() {
     })();
   }, []);
 
-  if (error && !stream) {
+  if (loadError && !stream) {
     return (
       <main className="wrap">
         <h1>Stream #{id}</h1>
-        <p className="err">{error}</p>
+        <p className="err">{loadError}</p>
         <Link href="/">← All streams</Link>
       </main>
     );
@@ -120,38 +123,35 @@ export default function StreamDetail() {
 
   async function doWithdraw(max: boolean) {
     if (!address) return;
-    setError("");
-    setStatus("");
     try {
       if (max) {
         const paid = await withdrawMaxFromStream(address, stream!.id);
-        setStatus(`Claimed ${fmtUnits(paid)} units.`);
+        toast.success(`Claimed ${fmtUnits(paid)} units.`);
       } else {
         if (overWithdrawal) {
-          setError(
+          toast.error(
             `Amount exceeds the accrued balance (${available?.toString()} units). Try “Withdraw max”.`
           );
           return;
         }
         await withdrawFromStream(address, stream!.id, amount || "0");
-        setStatus("Withdrawal sent.");
+        toast.success("Withdrawal sent.");
       }
       setAmount("");
       await reload();
     } catch (e) {
-      setError(describeError(e));
+      toast.error(describeError(e));
     }
   }
 
   async function doCancel() {
     if (!address) return;
-    setError("");
     try {
       await cancelStream(address, stream!.id);
-      setStatus("Stream cancelled.");
+      toast.success("Stream cancelled.");
       await reload();
     } catch (e) {
-      setError(describeError(e));
+      toast.error(describeError(e));
     }
   }
 
@@ -161,8 +161,6 @@ export default function StreamDetail() {
       <h1>
         {stream.status === "Active" ? "⚡ Streaming" : `⏹ ${stream.status}`}
       </h1>
-      {status && <p className="ok">{status}</p>}
-      {error && <p className="err">{error}</p>}
 
       <section className="card">
         <div className="row">
@@ -181,7 +179,11 @@ export default function StreamDetail() {
             </tr>
             <tr>
               <th>Token</th>
-              <td className="mono">{stream.token}</td>
+              <td className="mono" style={{ wordBreak: "break-all" }}>
+                {isNativeXlm(stream.token)
+                  ? `Native XLM — ${stream.token}`
+                  : stream.token}
+              </td>
             </tr>
             <tr>
               <th>Deposit</th>

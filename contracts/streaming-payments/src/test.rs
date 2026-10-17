@@ -7,7 +7,10 @@
 //! malicious token contract, event payloads, an exhaustive accrual property
 //! test over the pure rate function, the per-address discovery indexes
 //! (append order, pagination, clamping, terminal streams), and `withdraw_max`
-//! semantics.
+//! semantics. A dedicated section pins the withdraw/cancel race semantics
+//! (same-ledger ordering, losing-call error codes). Fixed-seed Proptest
+//! state-machine sequences exercise the funds invariants across creates,
+//! top-ups, withdrawals, and cancellations.
 #![cfg(test)]
 
 // The crate is `no_std`, but the test build links std: the property-test
@@ -17,8 +20,13 @@ extern crate std;
 use std::format;
 use std::vec::Vec;
 
+use proptest::{
+    prelude::any,
+    prop_assert, prop_assert_eq,
+    test_runner::{Config as ProptestConfig, RngSeed, TestCaseError, TestRunner},
+};
 use soroban_sdk::{
-    contract, contractimpl, contracttype,
+    contract, contracterror, contractimpl, contracttype,
     testutils::{Address as _, Events as _, Ledger as _, MockAuth, MockAuthInvoke},
     token::{Client as TokenClient, StellarAssetClient},
     Address, Env, Event as _, IntoVal, MuxedAddress, String as SdkString,
@@ -26,7 +34,10 @@ use soroban_sdk::{
 
 use crate::stream::streamed_at;
 use crate::test_client::StreamingPaymentsClient as Client;
-use crate::{StreamError, StreamStatus, StreamingPayments, MAX_DURATION_SECONDS};
+use crate::{
+    StreamError, StreamInput, StreamStatus, StreamingPayments, INITIAL_SCHEMA_VERSION,
+    MAX_DURATION_SECONDS, MIN_UPGRADE_DELAY_SECONDS, TARGET_SCHEMA_VERSION,
+};
 
 // ---------------------------------------------------------------- fixtures --
 
@@ -147,6 +158,253 @@ fn create_stream_pulls_deposit_and_stores_state() {
     assert_eq!(
         TokenClient::new(&f.env, &f.token).balance(&f.client.address),
         DEPOSIT
+    );
+}
+
+#[test]
+fn create_streams_creates_multiple_streams_and_pulls_funds_once() {
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+    let inputs = soroban_sdk::Vec::from_array(
+        &f.env,
+        [
+            StreamInput {
+                recipient: f.recipient.clone(),
+                token: f.token.clone(),
+                deposit_amount: DEPOSIT / 2,
+                start_time: now,
+                end_time: now + DAY,
+                cancelable: true,
+            },
+            StreamInput {
+                recipient: Address::generate(&f.env),
+                token: f.token.clone(),
+                deposit_amount: DEPOSIT / 2,
+                start_time: now + DAY,
+                end_time: now + 2 * DAY,
+                cancelable: false,
+            },
+        ],
+    );
+
+    let ids = f.client.mock_all_auths().create_streams(&f.sender, &inputs);
+    assert_eq!(ids.len(), 2);
+    let batch_event = crate::StreamsCreated {
+        sender: f.sender.clone(),
+        stream_ids: ids.clone(),
+    };
+    assert_eq!(
+        f.env.events().all().filter_by_contract(&f.client.address),
+        [batch_event.to_xdr(&f.env, &f.client.address)]
+    );
+    assert_eq!(ids.get(0), Some(1));
+    assert_eq!(ids.get(1), Some(2));
+    assert_eq!(
+        f.client.mock_all_auths().get_stream(&1).deposit,
+        DEPOSIT / 2
+    );
+    assert_eq!(
+        f.client.mock_all_auths().get_stream(&2).deposit,
+        DEPOSIT / 2
+    );
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.client.address),
+        DEPOSIT
+    );
+    assert_eq!(
+        f.client
+            .mock_all_auths()
+            .sender_streams(&f.sender, &0, &50)
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn create_streams_groups_token_pulls_by_asset() {
+    let f = Fixture::setup();
+    let other_token = f
+        .env
+        .register_stellar_asset_contract_v2(Address::generate(&f.env))
+        .address();
+    StellarAssetClient::new(&f.env, &other_token).mint(&f.sender, &DEPOSIT);
+    StellarAssetClient::new(&f.env, &other_token).approve(
+        &f.sender,
+        &f.client.address,
+        &DEPOSIT,
+        &1_000_000u32,
+    );
+    let now = f.env.ledger().timestamp();
+    let inputs = soroban_sdk::Vec::from_array(
+        &f.env,
+        [
+            StreamInput {
+                recipient: f.recipient.clone(),
+                token: f.token.clone(),
+                deposit_amount: DEPOSIT / 2,
+                start_time: now,
+                end_time: now + DAY,
+                cancelable: true,
+            },
+            StreamInput {
+                recipient: Address::generate(&f.env),
+                token: other_token.clone(),
+                deposit_amount: DEPOSIT / 2,
+                start_time: now,
+                end_time: now + DAY,
+                cancelable: false,
+            },
+        ],
+    );
+
+    let ids = f.client.mock_all_auths().create_streams(&f.sender, &inputs);
+    assert_eq!(ids.len(), 2);
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.client.address),
+        DEPOSIT / 2
+    );
+    assert_eq!(
+        TokenClient::new(&f.env, &other_token).balance(&f.client.address),
+        DEPOSIT / 2
+    );
+}
+
+#[test]
+fn create_streams_charges_fees_for_each_stream() {
+    let f = Fixture::setup();
+    f.client.mock_all_auths().set_fee_bps(&f.governor, &100);
+    let now = f.env.ledger().timestamp();
+    let inputs = soroban_sdk::Vec::from_array(
+        &f.env,
+        [
+            StreamInput {
+                recipient: f.recipient.clone(),
+                token: f.token.clone(),
+                deposit_amount: DEPOSIT / 2,
+                start_time: now,
+                end_time: now + DAY,
+                cancelable: true,
+            },
+            StreamInput {
+                recipient: Address::generate(&f.env),
+                token: f.token.clone(),
+                deposit_amount: DEPOSIT / 2,
+                start_time: now,
+                end_time: now + DAY,
+                cancelable: false,
+            },
+        ],
+    );
+
+    let ids = f.client.mock_all_auths().create_streams(&f.sender, &inputs);
+    assert_eq!(
+        f.client.mock_all_auths().stream_fee(&ids.get(0).unwrap()),
+        DEPOSIT / 200
+    );
+    assert_eq!(
+        f.client.mock_all_auths().stream_fee(&ids.get(1).unwrap()),
+        DEPOSIT / 200
+    );
+    assert_eq!(
+        f.client
+            .mock_all_auths()
+            .treasury_status(&f.token)
+            .charged_total,
+        DEPOSIT / 100
+    );
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.client.address),
+        DEPOSIT + DEPOSIT / 100
+    );
+}
+
+#[test]
+fn create_streams_rejects_mixed_valid_invalid_batch_atomically() {
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+    let inputs = soroban_sdk::Vec::from_array(
+        &f.env,
+        [
+            StreamInput {
+                recipient: f.recipient.clone(),
+                token: f.token.clone(),
+                deposit_amount: DEPOSIT / 2,
+                start_time: now,
+                end_time: now + DAY,
+                cancelable: true,
+            },
+            StreamInput {
+                recipient: Address::generate(&f.env),
+                token: f.token.clone(),
+                deposit_amount: 0,
+                start_time: now,
+                end_time: now + DAY,
+                cancelable: false,
+            },
+        ],
+    );
+
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_create_streams(&f.sender, &inputs)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::ZeroAmount);
+    assert_eq!(f.client.mock_all_auths().total_streams(), 0);
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.sender),
+        2 * DEPOSIT
+    );
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.client.address),
+        0
+    );
+    assert!(f
+        .client
+        .mock_all_auths()
+        .sender_streams(&f.sender, &0, &50)
+        .is_empty());
+}
+
+#[test]
+fn create_streams_accepts_empty_batch_without_creating_streams() {
+    let f = Fixture::setup();
+    let ids = f
+        .client
+        .mock_all_auths()
+        .create_streams(&f.sender, &soroban_sdk::Vec::new(&f.env));
+    assert!(ids.is_empty());
+    assert_eq!(f.client.mock_all_auths().total_streams(), 0);
+}
+
+#[test]
+fn create_streams_rejects_rate_math_overflow_atomically() {
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+    let inputs = soroban_sdk::Vec::from_array(
+        &f.env,
+        [StreamInput {
+            recipient: f.recipient.clone(),
+            token: f.token.clone(),
+            deposit_amount: i128::MAX,
+            start_time: now,
+            end_time: now + 3,
+            cancelable: false,
+        }],
+    );
+
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_create_streams(&f.sender, &inputs)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::MathOverflow);
+    assert_eq!(f.client.mock_all_auths().total_streams(), 0);
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.client.address),
+        0
     );
 }
 
@@ -782,6 +1040,171 @@ fn cancel_with_zero_sender_amount_skips_transfer() {
     assert_eq!(
         TokenClient::new(&f.env, &f.token).balance(&f.sender),
         DEPOSIT // headroom only, no refund
+    );
+}
+
+// ------------------------------------- withdraw/cancel race semantics -------
+//
+// Pinned semantics for the withdraw (recipient) / cancel_stream (sender)
+// race. Each invocation runs to completion (CEI) before the next begins, even
+// within a single ledger: last write wins in execution order, the losing call
+// observes the post-write state, and the loser's error is always
+// StreamNotActive (code 5) — no dedicated race code exists. Race table:
+// docs/ARCHITECTURE.md §6.1; rustdoc on `withdraw` / `cancel_stream`.
+
+#[test]
+fn race_withdraw_then_cancel_splits_only_the_remainder() {
+    // Partial withdraw first: the cancel pays the recipient the rest of the
+    // accrued balance and refunds the sender the unaccrued remainder.
+    // Conservation: the recipient ends with exactly `streamed` at cancel
+    // time, regardless of how many withdrawals preceded the cancel.
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    f.advance_time(3 * DAY); // 2 of 10 days elapsed → streamed = DEPOSIT / 5
+
+    let accrued = DEPOSIT / 5;
+    let first = DEPOSIT / 10; // partial withdrawal
+    f.client.mock_all_auths().withdraw(&id, &first);
+
+    f.client.mock_all_auths().cancel_stream(&f.sender, &id);
+
+    let stream = f.client.mock_all_auths().get_stream(&id);
+    assert_eq!(stream.status, StreamStatus::Cancelled);
+    // The cancel recorded only the *remaining* accrued amount.
+    assert_eq!(stream.withdrawn, accrued);
+    // Recipient total = first + (accrued - first) = accrued.
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.recipient),
+        accrued
+    );
+    // Sender = unspent headroom (DEPOSIT) + refund (DEPOSIT - accrued).
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.sender),
+        DEPOSIT + (DEPOSIT - accrued)
+    );
+    // Contract empty: nothing lost, nothing double-paid by the overlap.
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.client.address),
+        0
+    );
+    assert_eq!(f.client.mock_all_auths().available(&id), 0);
+}
+
+#[test]
+fn race_withdraw_max_then_cancel_reverts_stream_not_active() {
+    // Full withdrawal first (drains to Depleted): the cancel loses the race
+    // and reverts with StreamNotActive (#5); nothing else moves.
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    f.advance_time(20 * DAY); // fully accrued
+    f.client.mock_all_auths().withdraw_max(&id);
+
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_cancel_stream(&f.sender, &id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::StreamNotActive);
+    assert_eq!(err.code(), 5);
+
+    // State and balances unchanged by the losing call.
+    let stream = f.client.mock_all_auths().get_stream(&id);
+    assert_eq!(stream.status, StreamStatus::Depleted);
+    assert_eq!(stream.withdrawn, DEPOSIT);
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.recipient),
+        DEPOSIT
+    );
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.sender),
+        DEPOSIT // headroom only; the losing cancel refunded nothing
+    );
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.client.address),
+        0
+    );
+}
+
+#[test]
+fn race_cancel_then_withdraw_reverts_stream_not_active() {
+    // Cancel first: the withdraw loses the race and reverts with
+    // StreamNotActive (#5), leaving the cancelled balances untouched.
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    f.advance_time(3 * DAY); // 2 of 10 days elapsed
+    f.client.mock_all_auths().cancel_stream(&f.sender, &id);
+
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_withdraw(&id, &(DEPOSIT / 10))
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::StreamNotActive);
+    assert_eq!(err.code(), 5);
+
+    let stream = f.client.mock_all_auths().get_stream(&id);
+    assert_eq!(stream.status, StreamStatus::Cancelled);
+    assert_eq!(stream.withdrawn, DEPOSIT / 5); // cancel payout only
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.recipient),
+        DEPOSIT / 5
+    );
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.sender),
+        2 * DEPOSIT - DEPOSIT / 5 // headroom + refund
+    );
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.client.address),
+        0
+    );
+}
+
+#[test]
+fn race_cancel_then_withdraw_max_reverts_stream_not_active() {
+    // `withdraw_max` loses the same race as `withdraw`: same code, same
+    // rollback guarantee.
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    f.advance_time(3 * DAY);
+    f.client.mock_all_auths().cancel_stream(&f.sender, &id);
+
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_withdraw_max(&id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::StreamNotActive);
+    assert_eq!(err.code(), 5);
+    assert_eq!(f.client.mock_all_auths().available(&id), 0);
+}
+
+#[test]
+fn race_same_ledger_timestamp_cancel_wins() {
+    // Both calls land at the same ledger timestamp with no time advance in
+    // between: execution order alone decides. The cancel executes first, so
+    // the withdraw observes Cancelled and reverts — the race is strictly
+    // serial, never interleaved.
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    f.advance_time(3 * DAY);
+    let t = f.env.ledger().timestamp();
+
+    f.client.mock_all_auths().cancel_stream(&f.sender, &id);
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_withdraw(&id, &1)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::StreamNotActive);
+    assert_eq!(err.code(), 5);
+    assert_eq!(f.env.ledger().timestamp(), t); // same ledger: no time passed
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.recipient),
+        DEPOSIT / 5
     );
 }
 
@@ -2183,6 +2606,289 @@ impl Rng {
     }
 }
 
+#[derive(Clone, Debug)]
+struct StateMachineStream {
+    deposit: i128,
+    withdrawn: i128,
+    start: u64,
+    end: u64,
+    cancelable: bool,
+    status: StreamStatus,
+}
+
+impl StateMachineStream {
+    fn accrued(&self, now: u64) -> i128 {
+        let duration = self.end - self.start;
+        let elapsed = now.clamp(self.start, self.end) - self.start;
+        (self.deposit as u128 * elapsed as u128 / duration as u128) as i128
+    }
+}
+
+/// Stateful tests use proptest rather than the pure-function fuzz target:
+/// shrinking reduces a failing operation sequence, while fixed seeds make
+/// failures repeatable without relying on libFuzzer's separate harness.
+#[test]
+fn property_random_state_machine_sequences_preserve_fund_invariants() {
+    const SEEDS: [u64; 3] = [0x51A7_E001, 0x51A7_E002, 0x51A7_E003];
+    const CASES_PER_SEED: u32 = 16;
+
+    let sequence = proptest::collection::vec(any::<(u8, u16, u16)>(), 1..65);
+    for seed in SEEDS {
+        let mut runner = TestRunner::new(ProptestConfig {
+            cases: CASES_PER_SEED,
+            rng_seed: RngSeed::Fixed(seed),
+            ..ProptestConfig::default()
+        });
+        if let Err(error) = runner.run(&sequence, |steps| run_state_machine_sequence(seed, &steps))
+        {
+            panic!("state-machine property failed with seed {seed:#x}: {error}");
+        }
+    }
+}
+
+fn run_state_machine_sequence(seed: u64, steps: &[(u8, u16, u16)]) -> Result<(), TestCaseError> {
+    let mut env = Env::default();
+    env.set_config(soroban_sdk::testutils::EnvTestConfig {
+        capture_snapshot_at_drop: false,
+    });
+    env.mock_all_auths();
+
+    let token = env
+        .register_stellar_asset_contract_v2(Address::generate(&env))
+        .address();
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let governor = Address::generate(&env);
+    let contract_id = env.register(StreamingPayments, (governor,));
+    let client = Client::new(&env, &contract_id);
+
+    StellarAssetClient::new(&env, &token).mint(&sender, &1_000_000_000i128);
+    StellarAssetClient::new(&env, &token).approve(
+        &sender,
+        &contract_id,
+        &1_000_000_000i128,
+        &1_000_000u32,
+    );
+
+    let mut streams = Vec::<StateMachineStream>::new();
+    for (step_index, &(operation, first, second)) in steps.iter().enumerate() {
+        let context =
+            format!("seed {seed:#x}, step {step_index}, input {operation}/{first}/{second}");
+        match operation % 5 {
+            0 => {
+                let now = env.ledger().timestamp();
+                let start = now + (first as u64 % 4);
+                let duration = 1 + (second as u64 % 100);
+                let deposit = 1 + (first as i128 % 20_000) * 257 + second as i128 % 257;
+                let cancelable = operation & 0x80 != 0;
+                let id = client.mock_all_auths().create_stream(
+                    &sender,
+                    &recipient,
+                    &token,
+                    &deposit,
+                    &start,
+                    &(start + duration),
+                    &cancelable,
+                );
+                prop_assert_eq!(id as usize, streams.len() + 1, "{}: stream id", context);
+                streams.push(StateMachineStream {
+                    deposit,
+                    withdrawn: 0,
+                    start,
+                    end: start + duration,
+                    cancelable,
+                    status: StreamStatus::Active,
+                });
+            }
+            1 => {
+                env.ledger()
+                    .with_mut(|ledger| ledger.timestamp += 1 + first as u64 % 80);
+            }
+            2 if !streams.is_empty() => {
+                let index = first as usize % streams.len();
+                let id = index as u64 + 1;
+                if streams[index].status == StreamStatus::Cancelled {
+                    let error = client
+                        .mock_all_auths()
+                        .try_withdraw(&id, &1)
+                        .unwrap_err()
+                        .unwrap();
+                    prop_assert_eq!(error, StreamError::StreamNotActive, "{}", context);
+                    let error = client
+                        .mock_all_auths()
+                        .try_withdraw_max(&id)
+                        .unwrap_err()
+                        .unwrap();
+                    prop_assert_eq!(error, StreamError::StreamNotActive, "{}", context);
+                } else if streams[index].status == StreamStatus::Depleted {
+                    let error = client
+                        .mock_all_auths()
+                        .try_withdraw(&id, &1)
+                        .unwrap_err()
+                        .unwrap();
+                    prop_assert_eq!(error, StreamError::StreamNotActive, "{}", context);
+                } else {
+                    let available =
+                        streams[index].accrued(env.ledger().timestamp()) - streams[index].withdrawn;
+                    if available > 0 && second & 1 == 0 {
+                        let amount = 1 + second as i128 % available;
+                        client.mock_all_auths().withdraw(&id, &amount);
+                        streams[index].withdrawn += amount;
+                    } else if available > 0 {
+                        let paid = client.mock_all_auths().withdraw_max(&id);
+                        prop_assert_eq!(paid, available, "{}: withdraw_max amount", context);
+                        streams[index].withdrawn += paid;
+                    } else {
+                        let error = client
+                            .mock_all_auths()
+                            .try_withdraw_max(&id)
+                            .unwrap_err()
+                            .unwrap();
+                        prop_assert_eq!(error, StreamError::NothingToWithdraw, "{}", context);
+                    }
+                    if streams[index].withdrawn == streams[index].deposit {
+                        streams[index].status = StreamStatus::Depleted;
+                    }
+                }
+            }
+            3 if !streams.is_empty() => {
+                let index = first as usize % streams.len();
+                let id = index as u64 + 1;
+                if streams[index].status == StreamStatus::Active {
+                    let amount = 1 + second as i128;
+                    client.mock_all_auths().top_up(&id, &amount);
+                    streams[index].deposit += amount;
+                } else {
+                    let error = client
+                        .mock_all_auths()
+                        .try_top_up(&id, &(1 + second as i128))
+                        .unwrap_err()
+                        .unwrap();
+                    prop_assert_eq!(error, StreamError::StreamNotActive, "{}", context);
+                }
+            }
+            4 if !streams.is_empty() => {
+                let index = first as usize % streams.len();
+                let id = index as u64 + 1;
+                if streams[index].status == StreamStatus::Active {
+                    let caller = if streams[index].cancelable && second & 1 != 0 {
+                        &recipient
+                    } else {
+                        &sender
+                    };
+                    client.mock_all_auths().cancel_stream(caller, &id);
+                    streams[index].withdrawn +=
+                        streams[index].accrued(env.ledger().timestamp()) - streams[index].withdrawn;
+                    streams[index].status = StreamStatus::Cancelled;
+
+                    let error = client
+                        .mock_all_auths()
+                        .try_withdraw(&id, &1)
+                        .unwrap_err()
+                        .unwrap();
+                    prop_assert_eq!(
+                        error,
+                        StreamError::StreamNotActive,
+                        "{}: cancelled withdrawal",
+                        context
+                    );
+                    let error = client
+                        .mock_all_auths()
+                        .try_withdraw_max(&id)
+                        .unwrap_err()
+                        .unwrap();
+                    prop_assert_eq!(
+                        error,
+                        StreamError::StreamNotActive,
+                        "{}: cancelled withdraw_max",
+                        context
+                    );
+                    let error = client
+                        .mock_all_auths()
+                        .try_top_up(&id, &1)
+                        .unwrap_err()
+                        .unwrap();
+                    prop_assert_eq!(
+                        error,
+                        StreamError::StreamNotActive,
+                        "{}: cancelled top-up",
+                        context
+                    );
+                }
+            }
+            _ => {}
+        }
+
+        let now = env.ledger().timestamp();
+        let mut remaining = 0i128;
+        let mut total_withdrawn = 0i128;
+        let mut total_accrued = 0i128;
+        for (index, expected) in streams.iter().enumerate() {
+            let id = index as u64 + 1;
+            let actual = client.mock_all_auths().get_stream(&id);
+            prop_assert_eq!(
+                actual.deposit,
+                expected.deposit,
+                "{}: stream {} deposit",
+                context,
+                id
+            );
+            prop_assert_eq!(
+                actual.withdrawn,
+                expected.withdrawn,
+                "{}: stream {} withdrawn",
+                context,
+                id
+            );
+            prop_assert_eq!(
+                actual.status,
+                expected.status,
+                "{}: stream {} status",
+                context,
+                id
+            );
+
+            let accrued = expected.accrued(now);
+            prop_assert!(
+                actual.withdrawn <= accrued,
+                "{}: stream {} withdrew {} but accrued only {}",
+                context,
+                id,
+                actual.withdrawn,
+                accrued
+            );
+            total_withdrawn += actual.withdrawn;
+            total_accrued += accrued;
+            if expected.status == StreamStatus::Active {
+                remaining += expected.deposit - expected.withdrawn;
+                prop_assert_eq!(
+                    client.mock_all_auths().available(&id),
+                    accrued - expected.withdrawn,
+                    "{}: stream {} available",
+                    context,
+                    id
+                );
+            } else if expected.status == StreamStatus::Cancelled {
+                prop_assert_eq!(client.mock_all_auths().available(&id), 0, "{}", context);
+            }
+        }
+        prop_assert!(
+            total_withdrawn <= total_accrued,
+            "{}: recipient withdrew {} but accrued only {}",
+            context,
+            total_withdrawn,
+            total_accrued
+        );
+        prop_assert_eq!(
+            TokenClient::new(&env, &token).balance(&contract_id),
+            remaining,
+            "{}: contract balance must equal remaining escrow",
+            context
+        );
+    }
+    Ok(())
+}
+
 /// Off-chain mirror of one stream for the property model. Accrual is
 /// duplicated here (floor ratio over the half-open window) on purpose: the
 /// model must not import the contract's own accounting helpers.
@@ -2495,4 +3201,1589 @@ fn run_fee_property(seed: u64, steps: usize) {
             );
         }
     }
+}
+
+// ------------------------------------------------------------ policy tests --
+
+#[test]
+fn policy_uninitialized_allows_any_asset_without_regression() {
+    let f = Fixture::setup();
+    // In an uninitialized policy state, admin and pending admin are None.
+    assert_eq!(f.client.policy_admin(), None);
+    assert_eq!(f.client.policy_pending_admin(), None);
+    assert!(f.client.policy_is_asset_allowed(&f.token));
+
+    // Creating streams works exactly as before.
+    let now = f.env.ledger().timestamp();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, true);
+    let s = f.client.get_stream(&id);
+    assert_eq!(s.id, id);
+    assert_eq!(s.start_time, now + DAY);
+}
+
+#[test]
+fn policy_init_sets_admin_and_timelock_delay() {
+    let f = Fixture::setup();
+    let admin = Address::generate(&f.env);
+    f.client.mock_all_auths().policy_init(&admin);
+
+    assert_eq!(f.client.policy_admin(), Some(admin));
+    assert_eq!(f.client.policy_pending_admin(), None);
+    assert_eq!(
+        f.client.policy_timelock_delay(),
+        crate::policy::DEFAULT_TIMELOCK_DELAY
+    );
+}
+
+#[test]
+#[should_panic(expected = "policy already initialized")]
+fn policy_double_init_panics() {
+    let f = Fixture::setup();
+    let admin = Address::generate(&f.env);
+    f.client.mock_all_auths().policy_init(&admin);
+    let other = Address::generate(&f.env);
+    f.client.mock_all_auths().policy_init(&other);
+}
+
+#[test]
+fn policy_anti_brick_invariant_allows_withdraw_and_refund_after_asset_removed() {
+    let f = Fixture::setup();
+    let admin = Address::generate(&f.env);
+    f.client.mock_all_auths().policy_init(&admin);
+
+    // 1. Create a stream with asset f.token while it is allowed.
+    let now = f.env.ledger().timestamp();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, true);
+
+    // 2. Admin proposes removing f.token from the allowlist.
+    f.client
+        .mock_all_auths()
+        .policy_propose_asset(&f.token, &false);
+    let delay = f.client.policy_timelock_delay();
+    f.advance_time(delay);
+
+    // 3. Permissionlessly execute the queued removal.
+    f.client.mock_all_auths().policy_execute_asset(&f.token);
+    assert!(!f.client.policy_is_asset_allowed(&f.token));
+
+    // 4. Verify new streams with f.token are rejected (single and batch).
+    let res = f.client.mock_all_auths().try_create_stream(
+        &f.sender,
+        &f.recipient,
+        &f.token,
+        &DEPOSIT,
+        &(now + 2 * DAY),
+        &(now + 5 * DAY),
+        &true,
+    );
+    assert_eq!(
+        res.unwrap_err().unwrap(),
+        StreamError::PolicyAssetNotAllowed
+    );
+
+    let batch_input = crate::StreamInput {
+        recipient: f.recipient.clone(),
+        token: f.token.clone(),
+        deposit_amount: DEPOSIT,
+        start_time: now + 2 * DAY,
+        end_time: now + 5 * DAY,
+        cancelable: true,
+    };
+    let mut inputs = soroban_sdk::Vec::new(&f.env);
+    inputs.push_back(batch_input);
+    let batch_res = f
+        .client
+        .mock_all_auths()
+        .try_create_streams(&f.sender, &inputs);
+    assert_eq!(
+        batch_res.unwrap_err().unwrap(),
+        StreamError::PolicyAssetNotAllowed
+    );
+
+    // 5. Anti-brick invariant: existing stream remains fully withdrawable!
+    f.advance_time(2 * DAY); // now into the stream window
+    let avail = f.client.mock_all_auths().available(&id);
+    assert!(avail > 0);
+    f.client.mock_all_auths().withdraw(&id, &(avail / 2));
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.recipient),
+        avail / 2
+    );
+
+    // 6. Anti-brick invariant: existing stream remains fully refundable (cancelable)!
+    let recipient_before = TokenClient::new(&f.env, &f.token).balance(&f.recipient);
+    let sender_before = TokenClient::new(&f.env, &f.token).balance(&f.sender);
+    f.client.mock_all_auths().cancel_stream(&f.sender, &id);
+
+    // Both recipient and sender received their fair pro-rata split!
+    assert!(TokenClient::new(&f.env, &f.token).balance(&f.recipient) > recipient_before);
+    assert!(TokenClient::new(&f.env, &f.token).balance(&f.sender) > sender_before);
+}
+
+#[test]
+fn policy_timelock_enforcement_and_bypass_attempt() {
+    let f = Fixture::setup();
+    let admin = Address::generate(&f.env);
+    f.client.mock_all_auths().policy_init(&admin);
+
+    // Queue change: remove f.token.
+    f.client
+        .mock_all_auths()
+        .policy_propose_asset(&f.token, &false);
+    let delay = f.client.policy_timelock_delay();
+
+    // 1. Attempt to execute before timelock elapses -> fails with PolicyTimelockNotElapsed.
+    f.advance_time(delay - 10);
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_policy_execute_asset(&f.token)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::PolicyTimelockNotElapsed);
+
+    // 2. Timelock bypass attempt: executing an asset with no queued proposal -> fails with PolicyNoQueuedChange.
+    let other_asset = Address::generate(&f.env);
+    let err_no_change = f
+        .client
+        .mock_all_auths()
+        .try_policy_execute_asset(&other_asset)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err_no_change, StreamError::PolicyNoQueuedChange);
+
+    // 3. Advance the remaining 10 seconds to satisfy the timelock.
+    f.advance_time(10);
+    // Callable by anyone (permissionless).
+    f.client.mock_all_auths().policy_execute_asset(&f.token);
+    assert!(!f.client.policy_is_asset_allowed(&f.token));
+}
+
+#[test]
+fn policy_two_step_handoff_and_cancel() {
+    let f = Fixture::setup();
+    let admin1 = Address::generate(&f.env);
+    let admin2 = Address::generate(&f.env);
+    f.client.mock_all_auths().policy_init(&admin1);
+
+    // Step 1: Admin1 proposes Admin2.
+    f.client.mock_all_auths().policy_propose_handoff(&admin2);
+    assert_eq!(f.client.policy_pending_admin(), Some(admin2.clone()));
+
+    // Admin1 cancels handoff.
+    f.client.mock_all_auths().policy_cancel_handoff();
+    assert_eq!(f.client.policy_pending_admin(), None);
+
+    // Admin1 proposes Admin2 again.
+    f.client.mock_all_auths().policy_propose_handoff(&admin2);
+
+    // Step 2: Admin2 accepts handoff.
+    f.client.mock_all_auths().policy_accept_handoff();
+    assert_eq!(f.client.policy_admin(), Some(admin2.clone()));
+    assert_eq!(f.client.policy_pending_admin(), None);
+
+    // Admin2 can now propose changes.
+    f.client
+        .mock_all_auths()
+        .policy_propose_asset(&f.token, &false);
+    assert!(f.client.policy_get_queued_asset(&f.token).is_some());
+}
+
+#[test]
+fn policy_handoff_rejection_when_no_handoff_pending() {
+    let f = Fixture::setup();
+    let admin = Address::generate(&f.env);
+    f.client.mock_all_auths().policy_init(&admin);
+
+    // No handoff pending: accept and cancel revert with PolicyNoPendingHandoff.
+    let err_accept = f
+        .client
+        .mock_all_auths()
+        .try_policy_accept_handoff()
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err_accept, StreamError::PolicyNoPendingHandoff);
+
+    let err_cancel = f
+        .client
+        .mock_all_auths()
+        .try_policy_cancel_handoff()
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err_cancel, StreamError::PolicyNoPendingHandoff);
+}
+
+#[test]
+fn policy_handoff_mid_timelock_execution() {
+    let f = Fixture::setup();
+    let admin1 = Address::generate(&f.env);
+    let admin2 = Address::generate(&f.env);
+    f.client.mock_all_auths().policy_init(&admin1);
+
+    // Propose handoff and queue asset change in parallel.
+    f.client.mock_all_auths().policy_propose_handoff(&admin2);
+    f.client
+        .mock_all_auths()
+        .policy_propose_asset(&f.token, &false);
+
+    // Complete handoff before timelock matures.
+    f.client.mock_all_auths().policy_accept_handoff();
+    assert_eq!(f.client.policy_admin(), Some(admin2));
+
+    // Advance time past delay.
+    let delay = f.client.policy_timelock_delay();
+    f.advance_time(delay);
+
+    // The queued change is still valid and executable permissionlessly.
+    f.client.mock_all_auths().policy_execute_asset(&f.token);
+    assert!(!f.client.policy_is_asset_allowed(&f.token));
+}
+
+#[test]
+fn policy_configurable_timelock_delay() {
+    let f = Fixture::setup();
+    let admin = Address::generate(&f.env);
+    f.client.mock_all_auths().policy_init(&admin);
+
+    // Admin updates delay to 86_400 (1 day).
+    f.client.mock_all_auths().policy_set_timelock_delay(&86_400);
+    assert_eq!(f.client.policy_timelock_delay(), 86_400);
+
+    // Queue change: should mature after 86_400 seconds.
+    let now = f.env.ledger().timestamp();
+    f.client
+        .mock_all_auths()
+        .policy_propose_asset(&f.token, &false);
+    let queued = f.client.policy_get_queued_asset(&f.token).unwrap();
+    assert_eq!(queued.executable_after, now + 86_400);
+}
+
+#[test]
+fn policy_auth_enforcement_panics_without_correct_auth() {
+    let f = Fixture::setup();
+    let admin = Address::generate(&f.env);
+    let stranger = Address::generate(&f.env);
+
+    // 1. policy_init requires admin's authorization.
+    f.env.mock_auths(&[MockAuth {
+        address: &stranger,
+        invoke: &MockAuthInvoke {
+            contract: &f.client.address,
+            fn_name: "policy_init",
+            args: (admin.clone(),).into_val(&f.env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(f.client.try_policy_init(&admin).is_err());
+
+    // Initialize with actual admin auth.
+    f.env.mock_auths(&[MockAuth {
+        address: &admin,
+        invoke: &MockAuthInvoke {
+            contract: &f.client.address,
+            fn_name: "policy_init",
+            args: (admin.clone(),).into_val(&f.env),
+            sub_invokes: &[],
+        },
+    }]);
+    f.client.policy_init(&admin);
+
+    // 2. policy_propose_asset requires admin auth.
+    f.env.mock_auths(&[MockAuth {
+        address: &stranger,
+        invoke: &MockAuthInvoke {
+            contract: &f.client.address,
+            fn_name: "policy_propose_asset",
+            args: (f.token.clone(), false).into_val(&f.env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(f.client.try_policy_propose_asset(&f.token, &false).is_err());
+
+    // 3. policy_propose_handoff requires admin auth.
+    let new_admin = Address::generate(&f.env);
+    f.env.mock_auths(&[MockAuth {
+        address: &stranger,
+        invoke: &MockAuthInvoke {
+            contract: &f.client.address,
+            fn_name: "policy_propose_handoff",
+            args: (new_admin.clone(),).into_val(&f.env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(f.client.try_policy_propose_handoff(&new_admin).is_err());
+
+    // Propose new_admin with valid admin auth.
+    f.env.mock_auths(&[MockAuth {
+        address: &admin,
+        invoke: &MockAuthInvoke {
+            contract: &f.client.address,
+            fn_name: "policy_propose_handoff",
+            args: (new_admin.clone(),).into_val(&f.env),
+            sub_invokes: &[],
+        },
+    }]);
+    f.client.policy_propose_handoff(&new_admin);
+
+    // 4. policy_accept_handoff requires proposed admin (new_admin) auth.
+    f.env.mock_auths(&[MockAuth {
+        address: &stranger,
+        invoke: &MockAuthInvoke {
+            contract: &f.client.address,
+            fn_name: "policy_accept_handoff",
+            args: ().into_val(&f.env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(f.client.try_policy_accept_handoff().is_err());
+
+    // 5. policy_cancel_handoff requires current admin auth.
+    f.env.mock_auths(&[MockAuth {
+        address: &stranger,
+        invoke: &MockAuthInvoke {
+            contract: &f.client.address,
+            fn_name: "policy_cancel_handoff",
+            args: ().into_val(&f.env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(f.client.try_policy_cancel_handoff().is_err());
+
+    // 6. policy_set_timelock_delay requires current admin auth.
+    f.env.mock_auths(&[MockAuth {
+        address: &stranger,
+        invoke: &MockAuthInvoke {
+            contract: &f.client.address,
+            fn_name: "policy_set_timelock_delay",
+            args: (100u64,).into_val(&f.env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(f.client.try_policy_set_timelock_delay(&100).is_err());
+}
+
+#[test]
+fn policy_entrypoints_reject_when_uninitialized() {
+    let f = Fixture::setup();
+    let stranger = Address::generate(&f.env);
+
+    assert_eq!(
+        f.client
+            .mock_all_auths()
+            .try_policy_propose_asset(&f.token, &false)
+            .unwrap_err()
+            .unwrap(),
+        StreamError::PolicyNotInitialized
+    );
+    assert_eq!(
+        f.client
+            .mock_all_auths()
+            .try_policy_execute_asset(&f.token)
+            .unwrap_err()
+            .unwrap(),
+        StreamError::PolicyNotInitialized
+    );
+    assert_eq!(
+        f.client
+            .mock_all_auths()
+            .try_policy_propose_handoff(&stranger)
+            .unwrap_err()
+            .unwrap(),
+        StreamError::PolicyNotInitialized
+    );
+    assert_eq!(
+        f.client
+            .mock_all_auths()
+            .try_policy_accept_handoff()
+            .unwrap_err()
+            .unwrap(),
+        StreamError::PolicyNotInitialized
+    );
+    assert_eq!(
+        f.client
+            .mock_all_auths()
+            .try_policy_cancel_handoff()
+            .unwrap_err()
+            .unwrap(),
+        StreamError::PolicyNotInitialized
+    );
+    assert_eq!(
+        f.client
+            .mock_all_auths()
+            .try_policy_set_timelock_delay(&3600)
+            .unwrap_err()
+            .unwrap(),
+        StreamError::PolicyNotInitialized
+    );
+}
+
+#[test]
+fn policy_re_allow_previously_removed_asset() {
+    let f = Fixture::setup();
+    let admin = Address::generate(&f.env);
+    f.client.mock_all_auths().policy_init(&admin);
+    f.client.mock_all_auths().policy_set_timelock_delay(&0);
+
+    // 1. Remove asset
+    f.client
+        .mock_all_auths()
+        .policy_propose_asset(&f.token, &false);
+    f.client.mock_all_auths().policy_execute_asset(&f.token);
+    assert!(!f.client.policy_is_asset_allowed(&f.token));
+
+    // 2. Re-allow asset
+    f.client
+        .mock_all_auths()
+        .policy_propose_asset(&f.token, &true);
+    f.client.mock_all_auths().policy_execute_asset(&f.token);
+    assert!(f.client.policy_is_asset_allowed(&f.token));
+
+    // 3. New stream succeeds now
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, true);
+    assert_eq!(f.client.get_stream(&id).id, id);
+}
+
+// ----------------------------------------- non-native (token) assets ------
+//
+// Tokenized assets (USDC-style) are a first-class path, not an incidental
+// one: every money movement is exercised against a *registered* Stellar Asset
+// Contract (the fixture's token is one, registered via
+// `register_stellar_asset_contract_v2`), and each token-side failure must
+// surface as its own `StreamError` code (18–22) — never the token's own error
+// number, which lives in the same `Error(Contract, #N)` namespace.
+
+/// Full lifecycle on a registered Stellar Asset Contract: create → top-up →
+/// withdraw → withdraw_max → cancel, asserting token balances at every step
+/// and that the total minted supply is conserved (contract holds exactly
+/// `deposit − withdrawn` at all times).
+#[test]
+fn full_lifecycle_on_registered_stellar_asset() {
+    let f = Fixture::setup(); // registers a SAC and funds the sender
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, true);
+
+    // --- create: deposit pulled from the sender into the contract ---
+    assert_eq!(f.client.get_stream(&id).token, f.token);
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.client.address),
+        DEPOSIT
+    );
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.sender),
+        DEPOSIT // 2 * DEPOSIT minted − DEPOSIT pulled
+    );
+
+    // --- top-up after 2 days of the 10-day window ---
+    f.advance_time(3 * DAY);
+    f.client.mock_all_auths().top_up(&id, &(DEPOSIT / 2));
+    let deposit = DEPOSIT + DEPOSIT / 2; // 1.5 ×
+    assert_eq!(f.client.get_stream(&id).deposit, deposit);
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.client.address),
+        deposit
+    );
+    assert_eq!(f.client.available(&id), deposit * 2 / 10); // 0.3 ×
+
+    // --- partial withdraw of accrued funds ---
+    let first = DEPOSIT / 10;
+    f.client.mock_all_auths().withdraw(&id, &first);
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.recipient),
+        first
+    );
+
+    // --- withdraw_max drains everything accrued so far ---
+    f.advance_time(2 * DAY); // 4 of 10 days elapsed
+    let accrued = deposit * 4 / 10;
+    assert_eq!(f.client.available(&id), accrued - first);
+    let paid = f.client.mock_all_auths().withdraw_max(&id);
+    assert_eq!(paid, accrued - first);
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.recipient),
+        accrued
+    );
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.client.address),
+        deposit - accrued
+    );
+
+    // --- cancel splits the remainder across both legs (both > 0) ---
+    f.advance_time(3 * DAY); // 7 of 10 days elapsed
+    f.client.mock_all_auths().cancel_stream(&f.sender, &id);
+    let streamed = deposit * 7 / 10; // 1.05 ×
+    let stream = f.client.get_stream(&id);
+    assert_eq!(stream.status, StreamStatus::Cancelled);
+    // Recipient leg: accrued-but-unwithdrawn = streamed − withdrawn.
+    // Sender leg: deposit − streamed. Recorded `withdrawn` = everything the
+    // recipient has ever received.
+    assert_eq!(stream.withdrawn, streamed);
+
+    let token = TokenClient::new(&f.env, &f.token);
+    assert_eq!(token.balance(&f.recipient), streamed);
+    // Sender: un-deposited headroom (2× minted − 1.5× deposited) + refund
+    // (deposit − streamed) — i.e. exactly `2 × DEPOSIT − streamed`.
+    assert_eq!(token.balance(&f.sender), 2 * DEPOSIT - streamed);
+    assert_eq!(token.balance(&f.client.address), 0);
+    // Conservation: every unit of the 2 × minted supply is accounted for.
+    assert_eq!(
+        token.balance(&f.recipient) + token.balance(&f.sender) + token.balance(&f.client.address),
+        2 * DEPOSIT
+    );
+}
+
+/// A registered asset with balance but no allowance: the failed pull is
+/// reported as `DepositTransferFailed` (not the SAC's own error code), and
+/// nothing is persisted — not even a consumed stream id or an event.
+#[test]
+fn create_stream_without_allowance_reports_deposit_transfer_failed() {
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+    let sender = Address::generate(&f.env);
+    StellarAssetClient::new(&f.env, &f.token).mint(&sender, &DEPOSIT);
+    // …but `approve` was never called for this sender.
+
+    let try_create = |sender: &Address| {
+        f.client.mock_all_auths().try_create_stream(
+            sender,
+            &f.recipient,
+            &f.token,
+            &DEPOSIT,
+            &(now + DAY),
+            &(now + 11 * DAY),
+            &false,
+        )
+    };
+
+    let err = try_create(&sender).unwrap_err().unwrap();
+    assert_eq!(err, StreamError::DepositTransferFailed);
+    // No stream, no event, no consumed id — the failed pull rolled back.
+    assert!(f.client.mock_all_auths().try_get_stream(&1).is_err());
+    assert!(f
+        .env
+        .events()
+        .all()
+        .filter_by_contract(&f.client.address)
+        .events()
+        .is_empty());
+
+    // Once approved, the very same call succeeds and hands out id 1.
+    StellarAssetClient::new(&f.env, &f.token).approve(
+        &sender,
+        &f.client.address,
+        &DEPOSIT,
+        &1_000_000u32,
+    );
+    assert_eq!(try_create(&sender).unwrap().unwrap(), 1);
+}
+
+/// Allowance but no balance is a token-side failure too: same distinct code.
+#[test]
+fn create_stream_without_balance_reports_deposit_transfer_failed() {
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+    let broke = Address::generate(&f.env); // no tokens, but a full allowance
+    StellarAssetClient::new(&f.env, &f.token).approve(
+        &broke,
+        &f.client.address,
+        &DEPOSIT,
+        &1_000_000u32,
+    );
+
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_create_stream(
+            &broke,
+            &f.recipient,
+            &f.token,
+            &DEPOSIT,
+            &(now + DAY),
+            &(now + 11 * DAY),
+            &false,
+        )
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::DepositTransferFailed);
+    assert!(f.client.mock_all_auths().try_get_stream(&1).is_err());
+}
+
+/// A top-up the sender's balance cannot cover fails with its own code and
+/// leaves `deposit` and the contract's balance untouched; a retry within the
+/// balance then succeeds.
+#[test]
+fn top_up_beyond_balance_reports_top_up_transfer_failed() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false); // sender keeps DEPOSIT
+
+    // Allowance (10 × DEPOSIT) still covers it — this fails on balance only.
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_top_up(&id, &(2 * DEPOSIT))
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::TopUpTransferFailed);
+    assert_eq!(f.client.get_stream(&id).deposit, DEPOSIT);
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.client.address),
+        DEPOSIT
+    );
+
+    // Recovery: a top-up the balance can cover succeeds.
+    f.client.mock_all_auths().top_up(&id, &DEPOSIT);
+    assert_eq!(f.client.get_stream(&id).deposit, 2 * DEPOSIT);
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.client.address),
+        2 * DEPOSIT
+    );
+}
+
+// ------------------------------------------------ refusing transfers ------
+
+/// A token that refuses `transfer` (payouts) and/or `transfer_from` (pulls) on
+/// demand — the moral equivalent of a frozen/blacklisted asset, and the
+/// "token that refuses transfers" the non-native path must handle.
+///
+/// Its error code deliberately collides with `StreamError::NothingToWithdraw`
+/// (13): if a raw token error ever leaked through StreamPay, these tests would
+/// observe `#13` ("nothing to withdraw") instead of the dedicated code — the
+/// exact misdiagnosis distinct codes exist to prevent.
+#[contract]
+pub(crate) struct RefusingToken;
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub(crate) enum TokenRefuseError {
+    /// Deliberately equals `StreamError::NothingToWithdraw` (13).
+    Refused = 13,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum RefusingKey {
+    RefusePush,
+    RefusePull,
+}
+
+#[contractimpl]
+impl RefusingToken {
+    /// Refuses outgoing payouts (`transfer`), incoming pulls
+    /// (`transfer_from`), both, or neither.
+    pub fn set_refuse(env: Env, push: bool, pull: bool) {
+        env.storage()
+            .temporary()
+            .set(&RefusingKey::RefusePush, &push);
+        env.storage()
+            .temporary()
+            .set(&RefusingKey::RefusePull, &pull);
+    }
+
+    fn refuses(env: &Env, key: &RefusingKey) -> bool {
+        env.storage().temporary().get(key).unwrap_or(false)
+    }
+
+    pub fn transfer(
+        env: Env,
+        _from: Address,
+        _to: MuxedAddress,
+        _amount: i128,
+    ) -> Result<(), TokenRefuseError> {
+        if Self::refuses(&env, &RefusingKey::RefusePush) {
+            return Err(TokenRefuseError::Refused);
+        }
+        Ok(())
+    }
+
+    pub fn transfer_from(
+        env: Env,
+        _spender: Address,
+        _from: Address,
+        _to: Address,
+        _amount: i128,
+    ) -> Result<(), TokenRefuseError> {
+        if Self::refuses(&env, &RefusingKey::RefusePull) {
+            return Err(TokenRefuseError::Refused);
+        }
+        Ok(())
+    }
+
+    // --- read-only SEP-41 surface. Balances are fictional: these tests
+    // assert StreamPay's own state, and real balance conservation is covered
+    // by the Stellar Asset Contract tests above. ---
+    pub fn allowance(_env: Env, _from: Address, _spender: Address) -> i128 {
+        i128::MAX
+    }
+
+    pub fn approve(
+        _env: Env,
+        _from: Address,
+        _spender: Address,
+        _amount: i128,
+        _live_until_ledger: u32,
+    ) {
+    }
+
+    pub fn balance(_env: Env, _id: Address) -> i128 {
+        0
+    }
+
+    pub fn burn(_env: Env, _from: Address, _amount: i128) {}
+
+    pub fn burn_from(_env: Env, _spender: Address, _from: Address, _amount: i128) {}
+
+    pub fn decimals(_env: Env) -> u32 {
+        7
+    }
+
+    pub fn name(env: Env) -> SdkString {
+        SdkString::from_str(&env, "Refusing Token")
+    }
+
+    pub fn symbol(env: Env) -> SdkString {
+        SdkString::from_str(&env, "REFUSE")
+    }
+}
+
+/// Test driver for streams funded by the [`RefusingToken`]. Shared with the
+/// error-surface matrix (`error_surface_test.rs`), whose probes need a token
+/// that refuses a specific leg.
+pub(crate) struct RefusingFixture {
+    pub(crate) env: Env,
+    pub(crate) client: Client<'static>,
+    pub(crate) token: Address,
+    pub(crate) token_client: RefusingTokenClient<'static>,
+    pub(crate) sender: Address,
+    pub(crate) recipient: Address,
+    pub(crate) governor: Address,
+}
+
+impl RefusingFixture {
+    pub(crate) fn setup() -> Self {
+        Self::setup_with_snapshot(true)
+    }
+
+    /// Like [`RefusingFixture::setup`], but disables the SDK's test-snapshot
+    /// capture: the error-surface matrix asserts through the branch trace, so a
+    /// snapshot file per probe would be pure noise.
+    pub(crate) fn setup_quiet() -> Self {
+        Self::setup_with_snapshot(false)
+    }
+
+    fn setup_with_snapshot(capture_snapshots: bool) -> Self {
+        let mut env = Env::default();
+        env.set_config(soroban_sdk::testutils::EnvTestConfig {
+            capture_snapshot_at_drop: capture_snapshots,
+        });
+        env.mock_all_auths();
+        let token = env.register(RefusingToken, ());
+        let token_client = RefusingTokenClient::new(&env, &token);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let governor = Address::generate(&env);
+        // The constructor binds the treasury governor at "deploy" time.
+        let contract_id = env.register(StreamingPayments, (governor.clone(),));
+        let client = Client::new(&env, &contract_id);
+        RefusingFixture {
+            env,
+            client,
+            token,
+            token_client,
+            sender,
+            recipient,
+            governor,
+        }
+    }
+
+    pub(crate) fn create(&self, deposit: i128, start_in: u64, duration: u64) -> u64 {
+        let now = self.env.ledger().timestamp();
+        self.client.mock_all_auths().create_stream(
+            &self.sender,
+            &self.recipient,
+            &self.token,
+            &deposit,
+            &(now + start_in),
+            &(now + start_in + duration),
+            &true,
+        )
+    }
+
+    pub(crate) fn refuse(&self, push: bool, pull: bool) {
+        self.token_client.set_refuse(&push, &pull);
+    }
+
+    pub(crate) fn advance_time(&self, seconds: u64) {
+        self.env.ledger().with_mut(|li| li.timestamp += seconds);
+    }
+}
+
+/// Creating a stream on an asset that refuses the pull fails with
+/// `DepositTransferFailed`, consumes no id, and emits nothing — then works
+/// (still at id 1) once the asset accepts transfers again.
+#[test]
+fn create_stream_against_refusing_token_reports_deposit_transfer_failed() {
+    let f = RefusingFixture::setup();
+    f.refuse(false, true); // refuses incoming pulls
+    let now = f.env.ledger().timestamp();
+
+    let try_create = || {
+        f.client.mock_all_auths().try_create_stream(
+            &f.sender,
+            &f.recipient,
+            &f.token,
+            &DEPOSIT,
+            &(now + DAY),
+            &(now + 11 * DAY),
+            &true,
+        )
+    };
+
+    let err = try_create().unwrap_err().unwrap();
+    // The token's own error is `Refused = 13` (NothingToWithdraw): seeing
+    // StreamPay's #18 proves the raw token code did not leak.
+    assert_eq!(err, StreamError::DepositTransferFailed);
+    assert!(f.client.mock_all_auths().try_get_stream(&1).is_err());
+    assert!(f
+        .env
+        .events()
+        .all()
+        .filter_by_contract(&f.client.address)
+        .events()
+        .is_empty());
+
+    f.refuse(false, false);
+    assert_eq!(try_create().unwrap().unwrap(), 1); // id counter never advanced
+}
+
+/// A top-up refused by the asset fails with `TopUpTransferFailed` and keeps
+/// `deposit` untouched; re-enabling transfers lets the same top-up through.
+#[test]
+fn top_up_against_refusing_token_reports_top_up_transfer_failed() {
+    let f = RefusingFixture::setup();
+    let id = f.create(DEPOSIT, DAY, 10 * DAY);
+
+    f.refuse(false, true); // stops accepting incoming transfers
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_top_up(&id, &(DEPOSIT / 2))
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::TopUpTransferFailed);
+    assert_eq!(f.client.get_stream(&id).deposit, DEPOSIT);
+
+    f.refuse(false, false);
+    f.client.mock_all_auths().top_up(&id, &(DEPOSIT / 2));
+    assert_eq!(f.client.get_stream(&id).deposit, DEPOSIT + DEPOSIT / 2);
+}
+
+/// A payout refused by the asset fails with `RecipientPayoutFailed` and rolls
+/// back *all* effects: `withdrawn`, status, accrual, and the event log. Both
+/// withdrawal paths hit it; a re-enabled asset pays the full amount.
+#[test]
+fn withdraw_against_refusing_token_reports_recipient_payout_failed() {
+    let f = RefusingFixture::setup();
+    let id = f.create(DEPOSIT, 0, 10 * DAY); // starts now
+    f.advance_time(DAY); // 1/10 accrued
+    let _ = f.env.events().all(); // drain StreamCreated
+
+    f.refuse(true, false); // asset stops paying out
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_withdraw(&id, &(DEPOSIT / 10))
+        .unwrap_err()
+        .unwrap();
+    // Token's own code is 13 (NothingToWithdraw) — StreamPay reports 20.
+    assert_eq!(err, StreamError::RecipientPayoutFailed);
+
+    // Effects written before the transfer were rolled back with it…
+    let stream = f.client.get_stream(&id);
+    assert_eq!(stream.withdrawn, 0);
+    assert_eq!(stream.status, StreamStatus::Active);
+    assert_eq!(f.client.available(&id), DEPOSIT / 10);
+    // …and the failed attempt emitted no event.
+    assert!(f
+        .env
+        .events()
+        .all()
+        .filter_by_contract(&f.client.address)
+        .events()
+        .is_empty());
+
+    // withdraw_max hits the same wall with the same code, equally atomic.
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_withdraw_max(&id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::RecipientPayoutFailed);
+    assert_eq!(f.client.get_stream(&id).withdrawn, 0);
+
+    // Re-enabling the asset lets the claim through, in full.
+    f.refuse(false, false);
+    assert_eq!(f.client.mock_all_auths().withdraw_max(&id), DEPOSIT / 10);
+    assert_eq!(f.client.get_stream(&id).withdrawn, DEPOSIT / 10);
+}
+
+/// Cancellation reports *which* leg the asset refused — the recipient's
+/// accrued share or the sender's refund — and rolls the whole cancellation
+/// back so the stream stays `Active` with `withdrawn` restored.
+#[test]
+fn cancel_against_refusing_token_reports_the_failing_leg() {
+    let f = RefusingFixture::setup();
+    f.refuse(true, false); // asset pays out nothing
+
+    // Accrued > 0 → the recipient leg runs first and fails.
+    let id = f.create(DEPOSIT, DAY, 10 * DAY);
+    f.advance_time(2 * DAY); // 1 of 10 days elapsed
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_cancel_stream(&f.sender, &id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::RecipientPayoutFailed);
+    let stream = f.client.get_stream(&id);
+    assert_eq!(stream.status, StreamStatus::Active); // cancellation undone
+    assert_eq!(stream.withdrawn, 0);
+
+    // Nothing accrued → the recipient leg is skipped, the refund leg fails.
+    let not_started = f.create(DEPOSIT, DAY, 10 * DAY);
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_cancel_stream(&f.sender, &not_started)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::SenderRefundFailed);
+    assert_eq!(
+        f.client.get_stream(&not_started).status,
+        StreamStatus::Active
+    );
+
+    // Re-enabled asset: both streams cancel normally afterwards.
+    f.refuse(false, false);
+    f.client
+        .mock_all_auths()
+        .cancel_stream(&f.sender, &not_started);
+    assert_eq!(
+        f.client.get_stream(&not_started).status,
+        StreamStatus::Cancelled
+    );
+    assert_eq!(f.client.get_stream(&not_started).withdrawn, 0); // nothing accrued
+}
+
+/// A token that returns a non-`void` value from its transfer functions: not
+/// SEP-41 shaped. The failed return-value conversion must be reported as a
+/// transfer failure — not a panic and not a raw host error.
+#[contract]
+struct NonCompliantToken;
+
+#[contractimpl]
+impl NonCompliantToken {
+    pub fn transfer(_env: Env, _from: Address, _to: MuxedAddress, _amount: i128) -> bool {
+        true
+    }
+
+    pub fn transfer_from(
+        _env: Env,
+        _spender: Address,
+        _from: Address,
+        _to: Address,
+        _amount: i128,
+    ) -> bool {
+        true
+    }
+}
+
+#[test]
+fn non_sep41_token_return_reports_transfer_failure() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let token = env.register(NonCompliantToken, ());
+    let contract_id = env.register(StreamingPayments, (Address::generate(&env),));
+    let client = Client::new(&env, &contract_id);
+    let now = env.ledger().timestamp();
+
+    let err = client
+        .mock_all_auths()
+        .try_create_stream(
+            &Address::generate(&env),
+            &Address::generate(&env),
+            &token,
+            &DEPOSIT,
+            &(now + DAY),
+            &(now + 11 * DAY),
+            &false,
+        )
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::DepositTransferFailed);
+}
+
+// ------------------------------------------------ upgrade & migration tests --
+
+#[test]
+fn freeze_and_unfreeze_governor_controls_and_mutation_gates() {
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+    let stranger = Address::generate(&f.env);
+
+    // Initial state: not frozen, schema version 1.
+    assert!(!f.client.is_frozen());
+    assert_eq!(f.client.schema_version(), INITIAL_SCHEMA_VERSION);
+
+    // Create an active stream before freezing.
+    let id = f.create_stream(DEPOSIT, 0, 10 * DAY, true);
+    assert_eq!(f.client.get_stream(&id).status, StreamStatus::Active);
+
+    // Stranger cannot freeze.
+    let res = f.client.mock_all_auths().try_set_frozen(&stranger, &true);
+    assert_eq!(res.unwrap_err().unwrap(), StreamError::NotGovernor);
+
+    // Governor freezes the contract.
+    f.client.mock_all_auths().set_frozen(&f.governor, &true);
+    assert!(f.client.is_frozen());
+
+    // Advance time into the stream window so funds accrue.
+    f.advance_time(5 * DAY);
+
+    // All mutating entrypoints revert with ContractFrozen:
+    // 1. create_stream
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_create_stream(
+            &f.sender,
+            &f.recipient,
+            &f.token,
+            &DEPOSIT,
+            &(now + 6 * DAY),
+            &(now + 16 * DAY),
+            &false,
+        )
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::ContractFrozen);
+
+    // 2. withdraw
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_withdraw(&id, &100)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::ContractFrozen);
+
+    // 3. withdraw_max
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_withdraw_max(&id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::ContractFrozen);
+
+    // 4. cancel_stream
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_cancel_stream(&f.sender, &id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::ContractFrozen);
+
+    // 5. top_up
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_top_up(&id, &DEPOSIT)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::ContractFrozen);
+
+    // All read-only views remain completely functional while frozen:
+    let s = f.client.get_stream(&id);
+    assert_eq!(s.id, id);
+    let avail = f.client.available(&id);
+    assert!(avail > 0);
+    assert_eq!(f.client.recipient_streams(&f.recipient, &0, &10).len(), 1);
+    assert_eq!(f.client.sender_streams(&f.sender, &0, &10).len(), 1);
+    assert_eq!(f.client.total_streams(), 1);
+    assert_eq!(f.client.schema_version(), INITIAL_SCHEMA_VERSION);
+    let status = f.client.treasury_status(&f.token);
+    assert_eq!(status.governor, f.governor);
+    let progress = f.client.migration_progress();
+    assert_eq!(progress.current_version, INITIAL_SCHEMA_VERSION);
+    assert!(!progress.is_complete);
+
+    // Stranger cannot unfreeze.
+    let res = f.client.mock_all_auths().try_set_frozen(&stranger, &false);
+    assert_eq!(res.unwrap_err().unwrap(), StreamError::NotGovernor);
+
+    // Governor unfreezes the contract.
+    f.client.mock_all_auths().set_frozen(&f.governor, &false);
+    assert!(!f.client.is_frozen());
+
+    // Mutations succeed again after unfreeze.
+    let withdrawn = f.client.mock_all_auths().withdraw_max(&id);
+    assert!(withdrawn > 0);
+    assert_eq!(f.client.get_stream(&id).withdrawn, withdrawn);
+}
+
+#[test]
+fn upgrade_timelock_proposal_cancellation_and_execution() {
+    let f = Fixture::setup();
+    let stranger = Address::generate(&f.env);
+    #[rustfmt::skip]
+    const UPGRADE_WASM: &[u8] = &[
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x1b, 0x05, 0x60,
+        0x03, 0x7e, 0x7e, 0x7e, 0x01, 0x7e, 0x60, 0x02, 0x7e, 0x7e, 0x01, 0x7e,
+        0x60, 0x02, 0x7f, 0x7e, 0x00, 0x60, 0x01, 0x7e, 0x01, 0x7e, 0x60, 0x00,
+        0x00, 0x02, 0x19, 0x04, 0x01, 0x6c, 0x01, 0x5f, 0x00, 0x00, 0x01, 0x6c,
+        0x01, 0x30, 0x00, 0x01, 0x01, 0x6c, 0x01, 0x31, 0x00, 0x01, 0x01, 0x6c,
+        0x01, 0x32, 0x00, 0x01, 0x03, 0x06, 0x05, 0x01, 0x02, 0x03, 0x03, 0x04,
+        0x05, 0x03, 0x01, 0x00, 0x10, 0x06, 0x19, 0x03, 0x7f, 0x01, 0x41, 0x80,
+        0x80, 0xc0, 0x00, 0x0b, 0x7f, 0x00, 0x41, 0x80, 0x80, 0xc0, 0x00, 0x0b,
+        0x7f, 0x00, 0x41, 0x80, 0x80, 0xc0, 0x00, 0x0b, 0x07, 0x3b, 0x07, 0x06,
+        0x6d, 0x65, 0x6d, 0x6f, 0x72, 0x79, 0x02, 0x00, 0x03, 0x70, 0x75, 0x74,
+        0x00, 0x04, 0x03, 0x67, 0x65, 0x74, 0x00, 0x06, 0x03, 0x64, 0x65, 0x6c,
+        0x00, 0x07, 0x01, 0x5f, 0x00, 0x08, 0x0a, 0x5f, 0x5f, 0x64, 0x61, 0x74,
+        0x61, 0x5f, 0x65, 0x6e, 0x64, 0x03, 0x01, 0x0b, 0x5f, 0x5f, 0x68, 0x65,
+        0x61, 0x70, 0x5f, 0x62, 0x61, 0x73, 0x65, 0x03, 0x02, 0x0a, 0xd5, 0x02,
+        0x05, 0x66, 0x01, 0x01, 0x7f, 0x23, 0x80, 0x80, 0x80, 0x80, 0x00, 0x41,
+        0x20, 0x6b, 0x22, 0x02, 0x24, 0x80, 0x80, 0x80, 0x80, 0x00, 0x20, 0x02,
+        0x41, 0x10, 0x6a, 0x20, 0x00, 0x10, 0x85, 0x80, 0x80, 0x80, 0x00, 0x02,
+        0x40, 0x20, 0x02, 0x29, 0x03, 0x10, 0xa7, 0x0d, 0x00, 0x20, 0x02, 0x29,
+        0x03, 0x18, 0x21, 0x00, 0x20, 0x02, 0x20, 0x01, 0x10, 0x85, 0x80, 0x80,
+        0x80, 0x00, 0x20, 0x02, 0x29, 0x03, 0x00, 0xa7, 0x0d, 0x00, 0x20, 0x00,
+        0x20, 0x02, 0x29, 0x03, 0x08, 0x42, 0x01, 0x10, 0x80, 0x80, 0x80, 0x80,
+        0x00, 0x1a, 0x20, 0x02, 0x41, 0x20, 0x6a, 0x24, 0x80, 0x80, 0x80, 0x80,
+        0x00, 0x42, 0x02, 0x0f, 0x0b, 0x00, 0x00, 0x0b, 0x24, 0x01, 0x01, 0x7f,
+        0x20, 0x00, 0x20, 0x01, 0x37, 0x03, 0x08, 0x20, 0x00, 0x20, 0x01, 0xa7,
+        0x41, 0xff, 0x01, 0x71, 0x22, 0x02, 0x41, 0x0e, 0x47, 0x20, 0x02, 0x41,
+        0xca, 0x00, 0x47, 0x71, 0xad, 0x37, 0x03, 0x00, 0x0b, 0x7b, 0x02, 0x01,
+        0x7f, 0x01, 0x7e, 0x23, 0x80, 0x80, 0x80, 0x80, 0x00, 0x41, 0x20, 0x6b,
+        0x22, 0x01, 0x24, 0x80, 0x80, 0x80, 0x80, 0x00, 0x20, 0x01, 0x41, 0x10,
+        0x6a, 0x20, 0x00, 0x10, 0x85, 0x80, 0x80, 0x80, 0x00, 0x02, 0x40, 0x20,
+        0x01, 0x29, 0x03, 0x10, 0xa7, 0x0d, 0x00, 0x42, 0x02, 0x21, 0x00, 0x02,
+        0x40, 0x20, 0x01, 0x29, 0x03, 0x18, 0x22, 0x02, 0x42, 0x01, 0x10, 0x81,
+        0x80, 0x80, 0x80, 0x00, 0x42, 0x01, 0x52, 0x0d, 0x00, 0x20, 0x01, 0x20,
+        0x02, 0x42, 0x01, 0x10, 0x82, 0x80, 0x80, 0x80, 0x00, 0x10, 0x85, 0x80,
+        0x80, 0x80, 0x00, 0x20, 0x01, 0x29, 0x03, 0x00, 0xa7, 0x0d, 0x01, 0x20,
+        0x01, 0x29, 0x03, 0x08, 0x21, 0x00, 0x0b, 0x20, 0x01, 0x41, 0x20, 0x6a,
+        0x24, 0x80, 0x80, 0x80, 0x80, 0x00, 0x20, 0x00, 0x0f, 0x0b, 0x00, 0x00,
+        0x0b, 0x48, 0x01, 0x01, 0x7f, 0x23, 0x80, 0x80, 0x80, 0x80, 0x00, 0x41,
+        0x10, 0x6b, 0x22, 0x01, 0x24, 0x80, 0x80, 0x80, 0x80, 0x00, 0x20, 0x01,
+        0x20, 0x00, 0x10, 0x85, 0x80, 0x80, 0x80, 0x00, 0x02, 0x40, 0x20, 0x01,
+        0x29, 0x03, 0x00, 0xa7, 0x45, 0x0d, 0x00, 0x00, 0x00, 0x0b, 0x20, 0x01,
+        0x29, 0x03, 0x08, 0x42, 0x01, 0x10, 0x83, 0x80, 0x80, 0x80, 0x00, 0x1a,
+        0x20, 0x01, 0x41, 0x10, 0x6a, 0x24, 0x80, 0x80, 0x80, 0x80, 0x00, 0x42,
+        0x02, 0x0b, 0x02, 0x00, 0x0b, 0x00, 0x9f, 0x01, 0x0e, 0x63, 0x6f, 0x6e,
+        0x74, 0x72, 0x61, 0x63, 0x74, 0x73, 0x70, 0x65, 0x63, 0x76, 0x30, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x70,
+        0x75, 0x74, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x03, 0x6b, 0x65, 0x79, 0x00, 0x00, 0x00, 0x00, 0x11, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x76, 0x61, 0x6c, 0x00, 0x00,
+        0x00, 0x00, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x67, 0x65, 0x74, 0x00, 0x00,
+        0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x6b,
+        0x65, 0x79, 0x00, 0x00, 0x00, 0x00, 0x11, 0x00, 0x00, 0x00, 0x01, 0x00,
+        0x00, 0x03, 0xe8, 0x00, 0x00, 0x00, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x64, 0x65, 0x6c, 0x00, 0x00,
+        0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x6b,
+        0x65, 0x79, 0x00, 0x00, 0x00, 0x00, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x1e, 0x11, 0x63, 0x6f, 0x6e, 0x74, 0x72, 0x61, 0x63, 0x74, 0x65, 0x6e,
+        0x76, 0x6d, 0x65, 0x74, 0x61, 0x76, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x16, 0x00, 0x00, 0x00, 0x00, 0x00, 0x77, 0x0e, 0x63, 0x6f,
+        0x6e, 0x74, 0x72, 0x61, 0x63, 0x74, 0x6d, 0x65, 0x74, 0x61, 0x76, 0x30,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x72, 0x73, 0x76, 0x65,
+        0x72, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x31, 0x2e, 0x38, 0x31,
+        0x2e, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08,
+        0x72, 0x73, 0x73, 0x64, 0x6b, 0x76, 0x65, 0x72, 0x00, 0x00, 0x00, 0x35,
+        0x32, 0x32, 0x2e, 0x30, 0x2e, 0x32, 0x23, 0x64, 0x66, 0x65, 0x38, 0x39,
+        0x39, 0x62, 0x63, 0x31, 0x32, 0x63, 0x32, 0x32, 0x39, 0x37, 0x35, 0x35,
+        0x31, 0x30, 0x36, 0x33, 0x65, 0x33, 0x30, 0x31, 0x35, 0x31, 0x66, 0x66,
+        0x36, 0x35, 0x34, 0x66, 0x39, 0x37, 0x62, 0x38, 0x32, 0x65, 0x38, 0x2d,
+        0x64, 0x69, 0x72, 0x74, 0x79, 0x00, 0x00, 0x00,
+    ];
+    let wasm_hash = f.env.deployer().upload_contract_wasm(UPGRADE_WASM);
+
+    assert_eq!(f.client.pending_upgrade(), None);
+
+    // Non-governor cannot propose upgrade.
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_propose_upgrade(&stranger, &wasm_hash, &MIN_UPGRADE_DELAY_SECONDS)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::NotGovernor);
+
+    // Proposed delay below MIN_UPGRADE_DELAY_SECONDS is rejected.
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_propose_upgrade(&f.governor, &wasm_hash, &(MIN_UPGRADE_DELAY_SECONDS - 1))
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::UpgradeDelayTooShort);
+
+    // Governor proposes upgrade with valid timelock delay.
+    let now = f.env.ledger().timestamp();
+    f.client
+        .mock_all_auths()
+        .propose_upgrade(&f.governor, &wasm_hash, &MIN_UPGRADE_DELAY_SECONDS);
+
+    let pending = f
+        .client
+        .pending_upgrade()
+        .expect("pending upgrade expected");
+    assert_eq!(pending.new_wasm_hash, wasm_hash);
+    assert_eq!(pending.unlock_time, now + MIN_UPGRADE_DELAY_SECONDS);
+
+    // Non-governor cannot cancel or execute upgrade.
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_cancel_upgrade(&stranger)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::NotGovernor);
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_execute_upgrade(&stranger)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::NotGovernor);
+
+    // Governor cannot execute before timelock expires.
+    f.advance_time(MIN_UPGRADE_DELAY_SECONDS - 10);
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_execute_upgrade(&f.governor)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::TimelockNotExpired);
+
+    // Governor can cancel the upgrade.
+    f.client.mock_all_auths().cancel_upgrade(&f.governor);
+    assert_eq!(f.client.pending_upgrade(), None);
+
+    // Cannot execute after cancellation.
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_execute_upgrade(&f.governor)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::NoPendingUpgrade);
+
+    // Cannot cancel when nothing is pending.
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_cancel_upgrade(&f.governor)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::NoPendingUpgrade);
+
+    // Propose again and execute after timelock expires.
+    f.client
+        .mock_all_auths()
+        .propose_upgrade(&f.governor, &wasm_hash, &MIN_UPGRADE_DELAY_SECONDS);
+    f.advance_time(MIN_UPGRADE_DELAY_SECONDS + 1);
+
+    f.client.mock_all_auths().execute_upgrade(&f.governor);
+}
+
+#[test]
+fn storage_migration_lifecycle_and_invariants() {
+    let f = Fixture::setup();
+    let stranger = Address::generate(&f.env);
+
+    // Non-governor cannot migrate.
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_migrate_storage(&stranger, &0, &50)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::NotGovernor);
+
+    // Migration rejected when contract is not frozen.
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_migrate_storage(&f.governor, &0, &50)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::ContractNotFrozen);
+
+    // Freeze contract for migration.
+    f.client.mock_all_auths().set_frozen(&f.governor, &true);
+
+    // Empty contract migration completes immediately and sets schema to TARGET_SCHEMA_VERSION.
+    let status = f
+        .client
+        .mock_all_auths()
+        .migrate_storage(&f.governor, &0, &50);
+    assert_eq!(status.current_version, TARGET_SCHEMA_VERSION);
+    assert_eq!(status.target_version, TARGET_SCHEMA_VERSION);
+    assert_eq!(status.cursor, 0);
+    assert_eq!(status.total_streams, 0);
+    assert!(status.is_complete);
+    assert_eq!(f.client.schema_version(), TARGET_SCHEMA_VERSION);
+
+    // Calling migrate_storage when already migrated fails with AlreadyMigrated.
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_migrate_storage(&f.governor, &0, &50)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::AlreadyMigrated);
+}
+
+#[test]
+fn storage_migration_over_1000_synthetic_streams() {
+    let mut env = Env::default();
+    env.set_config(soroban_sdk::testutils::EnvTestConfig {
+        capture_snapshot_at_drop: false,
+    });
+    env.mock_all_auths();
+
+    let sac = env.register_stellar_asset_contract_v2(Address::generate(&env));
+    let token = sac.address();
+    let sender = Address::generate(&env);
+    let recipient_base = Address::generate(&env);
+    let governor = Address::generate(&env);
+
+    const NUM_STREAMS: usize = 1_000;
+    const STREAM_DEPOSIT: i128 = 100_000;
+    let total_mint = (NUM_STREAMS as i128) * STREAM_DEPOSIT * 2;
+    StellarAssetClient::new(&env, &token).mint(&sender, &total_mint);
+
+    let contract_id = env.register(StreamingPayments, (governor.clone(),));
+    let client = Client::new(&env, &contract_id);
+
+    StellarAssetClient::new(&env, &token).approve(
+        &sender,
+        &contract_id,
+        &total_mint,
+        &1_000_000u32,
+    );
+
+    let base_time = env.ledger().timestamp();
+
+    // Create 1,000 synthetic streams with diverse parameters and states:
+    // Some will remain Active, some partially withdrawn, some fully depleted, some cancelled.
+    for i in 1..=NUM_STREAMS {
+        let cancelable = (i % 2) == 0;
+        let duration = (10 + (i as u64 % 100)) * DAY;
+        let start_time = base_time + (i as u64 % 5) * DAY;
+        let end_time = start_time + duration;
+        let deposit = STREAM_DEPOSIT + (i as i128 * 10);
+
+        let id = client.mock_all_auths().create_stream(
+            &sender,
+            &recipient_base,
+            &token,
+            &deposit,
+            &start_time,
+            &end_time,
+            &cancelable,
+        );
+        assert_eq!(id, i as u64);
+    }
+
+    assert_eq!(client.total_streams(), NUM_STREAMS as u64);
+
+    // Advance time so some streams accrue funds.
+    env.ledger().with_mut(|li| li.timestamp += 15 * DAY);
+
+    // Mutate state of selected streams to exercise all lifecycle statuses before migration:
+    // Streams 1..=100: withdraw some accrued funds.
+    for i in 1..=100 {
+        let avail = client.available(&(i as u64));
+        if avail > 10 {
+            client.mock_all_auths().withdraw(&(i as u64), &(avail / 2));
+        }
+    }
+    // Streams 101..=150: cancel stream.
+    for i in 101..=150 {
+        let s = client.get_stream(&(i as u64));
+        if s.cancelable {
+            client.mock_all_auths().cancel_stream(&sender, &(i as u64));
+        }
+    }
+    // Advance time past end for streams 151..=200 and withdraw all to mark Depleted.
+    env.ledger().with_mut(|li| li.timestamp += 200 * DAY);
+    for i in 151..=200 {
+        let _ = client.mock_all_auths().try_withdraw_max(&(i as u64));
+    }
+
+    // --- SNAPSHOT PHASE: Snapshot all 1,000 streams ---
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct Snapshot {
+        id: u64,
+        sender: Address,
+        recipient: Address,
+        token: Address,
+        deposit: i128,
+        withdrawn: i128,
+        start_time: u64,
+        end_time: u64,
+        cancelable: bool,
+        status: StreamStatus,
+        available: i128,
+    }
+
+    let mut snapshots = std::vec::Vec::with_capacity(NUM_STREAMS);
+    for i in 1..=NUM_STREAMS {
+        let id = i as u64;
+        let s = client.get_stream(&id);
+        let avail = client.available(&id);
+        snapshots.push(Snapshot {
+            id: s.id,
+            sender: s.sender,
+            recipient: s.recipient,
+            token: s.token,
+            deposit: s.deposit,
+            withdrawn: s.withdrawn,
+            start_time: s.start_time,
+            end_time: s.end_time,
+            cancelable: s.cancelable,
+            status: s.status,
+            available: avail,
+        });
+    }
+
+    // --- MIGRATION PHASE ---
+    // 1. Freeze contract
+    client.mock_all_auths().set_frozen(&governor, &true);
+    assert!(client.is_frozen());
+    assert_eq!(client.schema_version(), INITIAL_SCHEMA_VERSION);
+
+    // 2. Perform resumable, batch migration in increments of 50
+    // Test mid-write interruption: migrate first 300 streams (6 batches of 50).
+    for _ in 0..6 {
+        let progress = client.mock_all_auths().migrate_storage(&governor, &0, &50);
+        assert!(!progress.is_complete);
+        assert_eq!(progress.current_version, INITIAL_SCHEMA_VERSION);
+    }
+    assert_eq!(client.migration_progress().cursor, 300);
+
+    // Test idempotency: re-run migration explicitly on streams 1..=50
+    let idempotent_res = client.mock_all_auths().migrate_storage(&governor, &1, &50);
+    assert_eq!(idempotent_res.cursor, 300); // Cursor does not regress!
+    assert!(!idempotent_res.is_complete);
+
+    // Resume from cursor to completion (remaining 700 streams: 14 batches of 50).
+    let mut finished = false;
+    while !finished {
+        let p = client.mock_all_auths().migrate_storage(&governor, &0, &50);
+        finished = p.is_complete;
+    }
+
+    // Verify migration completion state.
+    let final_progress = client.migration_progress();
+    assert!(final_progress.is_complete);
+    assert_eq!(final_progress.current_version, TARGET_SCHEMA_VERSION);
+    assert_eq!(final_progress.target_version, TARGET_SCHEMA_VERSION);
+    assert_eq!(final_progress.cursor, NUM_STREAMS as u64);
+    assert_eq!(client.schema_version(), TARGET_SCHEMA_VERSION);
+
+    // Attempting further migration returns AlreadyMigrated.
+    let err = client
+        .mock_all_auths()
+        .try_migrate_storage(&governor, &0, &50)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::AlreadyMigrated);
+
+    // --- VERIFICATION PHASE: Assert 100% data preservation across all 1,000 streams ---
+    for expected in &snapshots {
+        let actual = client.get_stream(&expected.id);
+        let actual_avail = client.available(&expected.id);
+
+        assert_eq!(actual.id, expected.id, "Stream {} id mismatch", expected.id);
+        assert_eq!(
+            actual.sender, expected.sender,
+            "Stream {} sender mismatch",
+            expected.id
+        );
+        assert_eq!(
+            actual.recipient, expected.recipient,
+            "Stream {} recipient mismatch",
+            expected.id
+        );
+        assert_eq!(
+            actual.token, expected.token,
+            "Stream {} token mismatch",
+            expected.id
+        );
+        assert_eq!(
+            actual.deposit, expected.deposit,
+            "Stream {} deposit mismatch",
+            expected.id
+        );
+        assert_eq!(
+            actual.withdrawn, expected.withdrawn,
+            "Stream {} withdrawn mismatch",
+            expected.id
+        );
+        assert_eq!(
+            actual.start_time, expected.start_time,
+            "Stream {} start_time mismatch",
+            expected.id
+        );
+        assert_eq!(
+            actual.end_time, expected.end_time,
+            "Stream {} end_time mismatch",
+            expected.id
+        );
+        assert_eq!(
+            actual.cancelable, expected.cancelable,
+            "Stream {} cancelable mismatch",
+            expected.id
+        );
+        assert_eq!(
+            actual.status, expected.status,
+            "Stream {} status mismatch",
+            expected.id
+        );
+        assert_eq!(
+            actual_avail, expected.available,
+            "Stream {} available mismatch",
+            expected.id
+        );
+    }
+
+    // 3. Unfreeze contract and verify subsequent mutations on migrated streams
+    client.mock_all_auths().set_frozen(&governor, &false);
+    assert!(!client.is_frozen());
+
+    // Top up an active stream post-migration (e.g. stream 500)
+    let s500_before = client.get_stream(&500);
+    client.mock_all_auths().top_up(&500, &10_000);
+    let s500_after = client.get_stream(&500);
+    assert_eq!(s500_after.deposit, s500_before.deposit + 10_000);
+
+    // Create a new stream post-migration (stream 1001)
+    let new_now = env.ledger().timestamp();
+    let new_id = client.mock_all_auths().create_stream(
+        &sender,
+        &recipient_base,
+        &token,
+        &STREAM_DEPOSIT,
+        &new_now,
+        &(new_now + 10 * DAY),
+        &true,
+    );
+    assert_eq!(new_id, 1001);
+    assert_eq!(client.total_streams(), 1001);
 }
