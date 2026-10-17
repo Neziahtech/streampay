@@ -16,9 +16,12 @@ import {
   type StreamView,
 } from "@/lib/stellar";
 import { loadStreamIds, saveStreamId } from "@/lib/storage";
+import { loadCachedStreams } from "@/lib/offline-storage";
 import StreamForm from "@/components/StreamForm";
 import BatchStreamForm from "@/components/BatchStreamForm";
 import StreamList from "@/components/StreamList";
+import PendingQueueDrawer from "@/components/PendingQueueDrawer";
+import PwaInstallPrompt from "@/components/PwaInstallPrompt";
 import { useToast } from "@/components/toast";
 
 export default function Home() {
@@ -47,15 +50,23 @@ export default function Home() {
       }
       setAddress(address);
       toast.success(`Connected as ${address.slice(0, 8)}…`);
+
+      // Rehydrate from offline cache first for instant display
+      const offlineCached = loadCachedStreams(address);
+      if (offlineCached && offlineCached.streams.length > 0) {
+        setStreams(offlineCached.streams);
+      }
+
       // Rehydrate the cached list (ids only; state is always read fresh).
       const cached = loadStreamIds(address);
       if (cached.length > 0) {
         const views = await Promise.all(
           cached.map((id) => readStream(id).catch(() => null))
         );
-        setStreams(
-          views.filter((s): s is StreamView => s !== null).reverse()
-        );
+        const fresh = views.filter((s): s is StreamView => s !== null).reverse();
+        if (fresh.length > 0) {
+          setStreams(fresh);
+        }
       }
     } catch (e) {
       toast.error(`Wallet connection failed: ${String(e)}`);
@@ -115,6 +126,7 @@ export default function Home() {
   if (!address) {
     return (
       <main className="wrap">
+        <PwaInstallPrompt />
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div className="kicker mono">SOROBAN · STELLAR</div>
           <Link href="/docs" style={{ color: "#38bdf8", fontSize: "0.85rem", textDecoration: "none" }}>
@@ -152,6 +164,7 @@ export default function Home() {
 
   return (
     <main className="wrap">
+      <PwaInstallPrompt />
       <h1>⚡ StreamPay</h1>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
         <p className="muted">
@@ -169,6 +182,8 @@ export default function Home() {
           Accrual Simulator →
         </a>
       </div>
+
+      <PendingQueueDrawer address={address} onTxConfirmed={() => discover()} />
 
       <StreamForm
         onCreate={async (args) => {

@@ -9,7 +9,8 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "node --test",
+    "test": "node --experimental-strip-types --test test/pending-queue.test.ts",
+    "test:pwa": "node --experimental-strip-types --test test/pending-queue.test.ts",
     "test:a11y": "node --experimental-strip-types --test test/a11y.test.ts",
     "generate:openapi": "npx tsx scripts/generate-openapi.ts"
   },

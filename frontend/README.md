@@ -65,3 +65,13 @@ For a one-command deployed contract + demo stream, see
 - The stream list persists per-address cache in `localStorage` (scoped by
   network); on-chain indexes are the source for discovery, cache is only a
   convenience.
+
+## PWA & Offline Support
+
+StreamPay is installable as a Progressive Web App (PWA) and remains useful in the field without network connectivity:
+
+- **Offline Reads**: Cached stream state and continuous per-second accrual math run locally on device in the field.
+- **Service Worker (SWR)**: Stale-While-Revalidate caching for chain reads, with automatic cache invalidation whenever `NEXT_PUBLIC_STREAMING_CONTRACT_ID` changes.
+- **Pending Transaction Queue**: Preserves signed transactions if connectivity drops. Refuses stale submissions (sequence drift, expired timebounds) with clear UX before sending, guaranteeing zero silent resubmissions.
+- **Mobile Sandbox Quirks**: Documented platform constraints for iOS Safari standalone WebKit and mobile Chrome extension sandboxing (see [`../docs/PWA_OFFLINE_QUEUE.md`](../docs/PWA_OFFLINE_QUEUE.md)).
+

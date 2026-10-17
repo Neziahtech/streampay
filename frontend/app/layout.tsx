@@ -1,11 +1,23 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { ToastProvider } from "@/components/toast";
+import RegisterServiceWorker from "@/components/RegisterServiceWorker";
+import OfflineBanner from "@/components/OfflineBanner";
 
 export const metadata: Metadata = {
   title: "StreamPay — streaming payments on Stellar",
   description:
     "Create, withdraw, top up and cancel continuous per-second payment streams on the Stellar network.",
+  manifest: "/manifest.webmanifest",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent",
+    title: "StreamPay",
+  },
+  icons: {
+    icon: "/icons/icon-192.png",
+    apple: "/icons/icon-192.png",
+  },
 };
 
 export default function RootLayout({
@@ -18,6 +30,8 @@ export default function RootLayout({
         <a href="#main-content" className="skip-link">
           Skip to main content
         </a>
+        <RegisterServiceWorker />
+        <OfflineBanner />
         <ToastProvider>
           <div id="main-content">{children}</div>
         </ToastProvider>
@@ -25,3 +39,4 @@ export default function RootLayout({
     </html>
   );
 }
+

@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#111725"/>
+      <stop offset="100%" stop-color="#0a0e16"/>
+    </linearGradient>
+    <linearGradient id="accentGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#8b7cff"/>
+      <stop offset="50%" stop-color="#6b5ce7"/>
+      <stop offset="100%" stop-color="#39c5ff"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="16" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+
+  <!-- Background base -->
+  <rect width="512" height="512" rx="112" fill="url(#bgGrad)"/>
+  <rect width="504" height="504" x="4" y="4" rx="108" fill="none" stroke="#22304a" stroke-width="6"/>
+
+  <!-- Glowing outer stream ring -->
+  <circle cx="256" cy="256" r="190" fill="none" stroke="url(#accentGrad)" stroke-width="8" stroke-dasharray="14 10" opacity="0.4"/>
+
+  <!-- Payment stream waves -->
+  <path d="M 120 320 C 180 320, 180 230, 240 230 C 300 230, 300 320, 360 320 C 400 320, 420 280, 430 256" fill="none" stroke="#39c5ff" stroke-width="14" stroke-linecap="round" opacity="0.6"/>
+  <path d="M 82 256 C 120 256, 140 192, 200 192 C 260 192, 260 280, 320 280 C 360 280, 380 240, 410 210" fill="none" stroke="#8b7cff" stroke-width="12" stroke-linecap="round" opacity="0.5"/>
+
+  <!-- Central lightning stream bolt -->
+  <path d="M 276 96 L 166 266 L 246 266 L 226 416 L 356 236 L 276 236 Z" fill="url(#accentGrad)" filter="url(#glow)"/>
+</svg>

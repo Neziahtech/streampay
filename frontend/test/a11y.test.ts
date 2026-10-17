@@ -586,3 +586,34 @@ describe("BatchStreamForm", () => {
     assertNoViolations(violations, "BatchStreamForm");
   });
 });
+
+// ===========================================================================
+// 9. PendingQueueDrawer and OfflineBanner
+// ===========================================================================
+describe("PendingQueueDrawer and OfflineBanner", () => {
+  test("passes WCAG 2.1 AA", async () => {
+    const html = withLayout(`
+<main class="wrap">
+  <div role="status" aria-live="polite" class="offline-banner" style="background: rgba(245, 158, 11, 0.12); color: #e8eefb; padding: 10px 16px;">
+    <span><strong>Offline Mode:</strong> You are browsing cached stream state.</span>
+    <button type="button" aria-label="Dismiss offline banner">×</button>
+  </div>
+  <section class="card" aria-labelledby="pending-queue-title">
+    <h2 id="pending-queue-title">Pending Transaction Queue</h2>
+    <p class="muted">Signed-but-unsent transactions saved for submission.</p>
+    <button type="button" aria-expanded="true">View Queue (1)</button>
+    <ul style="list-style: none; padding: 0;">
+      <li>
+        <strong>Withdraw 100 XLM from stream #1</strong>
+        <span class="status-badge">Ready to Submit</span>
+        <button type="button">Review &amp; Submit</button>
+      </li>
+    </ul>
+  </section>
+</main>`);
+
+    const violations = await runAxe(html);
+    assertNoViolations(violations, "PendingQueueDrawer and OfflineBanner");
+  });
+});
+

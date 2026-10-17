@@ -764,3 +764,22 @@ stellar-cli v28.1.0) with the `wasm32v1-none` target installed
 Wasm build fails at a `build-script-build` step before compiling a single
 line of contract code, you're hitting this — check `stellar --version`
 first.
+
+## 15. Frontend PWA, Offline Reads & Pending Transaction Queue
+
+The frontend supports installation as a Progressive Web App (PWA) with offline
+read resilience and a safe pending transaction queue. See [`docs/PWA_OFFLINE_QUEUE.md`](PWA_OFFLINE_QUEUE.md)
+for the full specification:
+
+- **Service Worker Strategy**: Stale-While-Revalidate (SWR) for chain data,
+  cache-first for static application bundles, and versioned data cache
+  invalidation on streaming contract ID changes (`streampay-data-${CONTRACT_ID}-v1`).
+- **Offline Stream State**: Local snapshot persistence of discovered streams and
+  real-time mathematical accrual calculation in the field without network.
+- **Pending Transaction Queue**: Safe handling of signed-but-unsent Soroban
+  transactions. Refuses stale submissions on sequence number drift (`tx_bad_seq`)
+  or expired timebounds (`tx_too_late`) with explicit user-facing UX. Zero
+  silent resubmissions.
+- **Mobile Sandbox Quirks**: Documented platform constraints for iOS Safari
+  standalone WebKit and mobile Chrome extension sandboxing.
+
