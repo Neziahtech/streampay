@@ -8,10 +8,18 @@ Every expected failure is a `StreamError` with a stable numeric code. This docum
 
 | Code | Variant | Status | Processed by | Meaning |
 | ---: | --- | --- | --- | --- |
-| 1 | `StreamNotFound` | reachable (1 branch(es)) | `available`, `cancel_stream`, `get_stream`, `top_up`, `withdraw`, `withdraw_max` | no stream is stored under the id |
+| 1 | `StreamNotFound` | reachable (1 branch(es)) | `available`, `cancel_stream`, `expire_dispute`, `get_stream`, `raise_dispute`, `required_dispute_bond`, `resolve_dispute`, `top_up`, `withdraw`, `withdraw_max` | no stream is stored under the id |
 | 2 | `NotStreamSender` | **retired** (unreachable) | — | Reserved role check from the original draft. The contract authorizes sender-only actions by comparing the caller address directly and uses `NotAuthorized` (#12) otherwise, so this variant is never returned. Retained for wire compatibility. |
 | 3 | `NotStreamRecipient` | **retired** (unreachable) | — | Reserved role check from the original draft. Recipient-only actions require the recipient's authorization (`require_auth`) and use `NotAuthorized` (#12) for business-rule rejections, so this variant is never returned. Retained for wire compatibility. |
 | 4 | `StreamNotCancellable` | reachable (1 branch(es)) | `cancel_stream` | the recipient calls cancel_stream on a stream created non-cancelable |
+| 5 | `StreamNotActive` | reachable (1 branch(es)) | `cancel_stream`, `raise_dispute`, `top_up`, `withdraw`, `withdraw_max` | the stream status is Cancelled or Depleted |
+| 6 | `StartTimeInPast` | reachable (1 branch(es)) | `create_stream` | start_time is before the current ledger timestamp |
+| 7 | `InvalidTimeRange` | reachable (1 branch(es)) | `create_stream` | end_time is not strictly after start_time (zero or negative duration) |
+| 8 | `DurationTooLong` | reachable (1 branch(es)) | `create_stream` | duration exceeds MAX_DURATION_SECONDS (100 years) |
+| 9 | `ZeroAmount` | reachable (4 branch(es)) | `create_stream`, `top_up`, `withdraw`, `withdraw_treasury` | deposit_amount is zero or negative; withdraw amount is zero or negative; top-up amount is zero or negative; treasury withdrawal amount is zero or negative |
+| 10 | `AmountExceedsAvailable` | reachable (1 branch(es)) | `withdraw` | amount exceeds the accrued-but-unwithdrawn balance |
+| 11 | `MathOverflow` | reachable (6 branch(es)) | `available`, `cancel_stream`, `create_stream`, `streamed_at`, `top_up`, `withdraw`, `withdraw_max` | deposit + amount would overflow i128; deposit * duration would overflow u128; deposit * elapsed would overflow u128; withdrawn exceeds streamed (an invariant-violating stored stream); the cancel pro-rata split would underflow; withdrawn + amount would overflow i128 |
+| 12 | `NotAuthorized` | reachable (2 branch(es)) | `cancel_stream`, `resolve_dispute` | the caller is neither the sender nor the recipient; resolve_dispute called by a non-sender |
 | 5 | `StreamNotActive` | reachable (1 branch(es)) | `cancel_stream`, `top_up`, `withdraw`, `withdraw_max` | the stream status is Cancelled or Depleted |
 | 6 | `StartTimeInPast` | reachable (1 branch(es)) | `create_stream`, `create_streams` | start_time is before the current ledger timestamp |
 | 7 | `InvalidTimeRange` | reachable (1 branch(es)) | `create_stream`, `create_streams` | end_time is not strictly after start_time (zero or negative duration) |
@@ -25,6 +33,9 @@ Every expected failure is a `StreamError` with a stable numeric code. This docum
 | 15 | `NotGovernor` | reachable (2 branch(es)) | `accept_governor`, `cancel_upgrade`, `execute_upgrade`, `migrate_storage`, `nominate_governor`, `propose_upgrade`, `set_fee_bps`, `set_frozen`, `withdraw_treasury` | the caller is not the treasury governor; the caller is not the nominated governor |
 | 16 | `NoPendingGovernor` | reachable (1 branch(es)) | `accept_governor` | accept_governor with no nomination pending |
 | 17 | `InsufficientTreasuryBalance` | reachable (1 branch(es)) | `withdraw_treasury` | amount exceeds fees collected minus fees already withdrawn |
+| 18 | `DisputeActive` | reachable (3 branch(es)) | `cancel_stream`, `raise_dispute`, `top_up` | an open dispute freezes cancel_stream; an open dispute freezes top_up; raise_dispute called while a dispute is open |
+| 19 | `DisputeNotFound` | reachable (1 branch(es)) | `expire_dispute`, `get_dispute`, `resolve_dispute` | no open dispute exists on the stream |
+| 20 | `DisputeNotExpired` | reachable (1 branch(es)) | `expire_dispute` | expire_dispute called before the dispute timelock elapsed |
 | 18 | `IntentNotFound` | reachable (1 branch(es)) | `cancel_scheduled`, `execute_scheduled`, `get_intent`, `reclaim_expired` | no scheduled intent is stored under the id |
 | 19 | `IntentNotPending` | reachable (1 branch(es)) | `cancel_scheduled`, `execute_scheduled`, `reclaim_expired` | the intent is already executed, cancelled, or expired |
 | 20 | `IntentNotYetExecutable` | reachable (1 branch(es)) | `execute_scheduled` | the next occurrence has not reached execute_after |
@@ -65,6 +76,15 @@ Every expected failure is a `StreamError` with a stable numeric code. This docum
 | `CancelStreamNotAuthorized` | `cancel_stream` | `NotAuthorized` | 12 | the caller is neither the sender nor the recipient | reachable |
 | `TopUpAmountNonPositive` | `top_up` | `ZeroAmount` | 9 | top-up amount is zero or negative | reachable |
 | `TopUpDepositOverflow` | `top_up` | `MathOverflow` | 11 | deposit + amount would overflow i128 | reachable |
+| `CancelDuringDispute` | `cancel_stream` | `DisputeActive` | 18 | an open dispute freezes cancel_stream | reachable |
+| `TopUpDuringDispute` | `top_up` | `DisputeActive` | 18 | an open dispute freezes top_up | reachable |
+| `RaiseDisputeAlreadyActive` | `raise_dispute` | `DisputeActive` | 18 | raise_dispute called while a dispute is open | reachable |
+| `DisputeNotOpen` | `get_dispute`, `resolve_dispute`, `expire_dispute` | `DisputeNotFound` | 19 | no open dispute exists on the stream | reachable |
+| `ExpireDisputeTooEarly` | `expire_dispute` | `DisputeNotExpired` | 20 | expire_dispute called before the dispute timelock elapsed | reachable |
+| `ResolveCallerNotSender` | `resolve_dispute` | `NotAuthorized` | 12 | resolve_dispute called by a non-sender | reachable |
+| `StreamNotFound` | `get_stream`, `available`, `withdraw`, `withdraw_max`, `cancel_stream`, `top_up`, `raise_dispute`, `expire_dispute`, `resolve_dispute`, `required_dispute_bond` | `StreamNotFound` | 1 | no stream is stored under the id | reachable |
+| `StreamNotActive` | `withdraw`, `withdraw_max`, `cancel_stream`, `top_up`, `raise_dispute` | `StreamNotActive` | 5 | the stream status is Cancelled or Depleted | reachable |
+| `CapacityOverflow` | `create_stream`, `top_up` | `MathOverflow` | 11 | deposit * duration would overflow u128 | reachable |
 | `StreamNotFound` | `get_stream`, `available`, `withdraw`, `withdraw_max`, `cancel_stream`, `top_up` | `StreamNotFound` | 1 | no stream is stored under the id | reachable |
 | `StreamNotActive` | `withdraw`, `withdraw_max`, `cancel_stream`, `top_up` | `StreamNotActive` | 5 | the stream status is Cancelled or Depleted | reachable |
 | `CapacityOverflow` | `create_stream`, `create_streams`, `top_up` | `MathOverflow` | 11 | deposit * duration would overflow u128 | reachable |

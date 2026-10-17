@@ -179,6 +179,50 @@ fn probe(branch: Branch) -> Option<StreamError> {
                 .mock_all_auths()
                 .try_top_up(&id, &i128::MAX)))
         }
+        // ------------------------------------------------------------ disputes
+        Branch::CancelDuringDispute => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, true);
+            f.raise_dispute(id);
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_cancel_stream(&f.sender, &id)))
+        }
+        Branch::TopUpDuringDispute => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            f.raise_dispute(id);
+            Some(rejected!(f.client.mock_all_auths().try_top_up(&id, &1)))
+        }
+        Branch::RaiseDisputeAlreadyActive => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            f.raise_dispute(id);
+            Some(rejected!(f.client.mock_all_auths().try_raise_dispute(&id)))
+        }
+        Branch::DisputeNotOpen => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            Some(rejected!(f.client.mock_all_auths().try_get_dispute(&id)))
+        }
+        Branch::ExpireDisputeTooEarly => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            f.raise_dispute(id);
+            Some(rejected!(f.client.mock_all_auths().try_expire_dispute(&id)))
+        }
+        Branch::ResolveCallerNotSender => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            f.raise_dispute(id);
+            // The recipient is not the sender: only senders resolve.
+            Some(rejected!(f.client.mock_all_auths().try_resolve_dispute(
+                &f.recipient,
+                &id,
+                &false
+            )))
+        }
         // --------------------------------------------- shared storage / math
         Branch::StreamNotFound => {
             let f = Fixture::setup_quiet();
@@ -661,6 +705,9 @@ fn stream_error_variant_list_is_exhaustive() {
             | StreamError::NotGovernor
             | StreamError::NoPendingGovernor
             | StreamError::InsufficientTreasuryBalance
+            | StreamError::DisputeActive
+            | StreamError::DisputeNotFound
+            | StreamError::DisputeNotExpired => StreamError::ALL.contains(&e),
             | StreamError::IntentNotFound
             | StreamError::IntentNotPending
             | StreamError::IntentNotYetExecutable

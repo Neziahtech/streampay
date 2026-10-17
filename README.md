@@ -73,7 +73,12 @@ Metrics, alerting stack, and operational diagnosis: [`docs/RUNBOOK.md`](./docs/R
 | `withdraw_max(stream_id) → i128` | recipient | pays out all accrued, atomically | `Withdrawn` |
 | `cancel_stream(caller, stream_id)` | sender; recipient iff `cancelable` | pro-rata split, atomic | `StreamCancelled` |
 | `top_up(stream_id, amount)` | sender | pulls added funds | `StreamToppedUp` |
+| `raise_dispute(stream_id)` | recipient | pulls escalating anti-griefing bond in | `DisputeRaised` |
+| `resolve_dispute(caller, stream_id, accept)` | sender | accept: bond back + pro-rata unwind; reject: bond slashed to sender | `DisputeResolved` (+ `StreamCancelled` on accept) |
+| `expire_dispute(stream_id)` | anyone after 7 d | bond split 50/50 (sender rounds up), stream resumes | `DisputeExpired` |
 | `get_stream(stream_id) → Stream` | — (read-only) | — | — |
+| `get_dispute(stream_id) → Dispute` | — (read-only) | — | — |
+| `required_dispute_bond(stream_id) → i128` | — (read-only) | — | — |
 | `available(stream_id) → i128` | — (read-only) | — | — |
 | `recipient_streams(address, offset, limit) → Vec<u64>` | — (read-only) | — | — |
 | `sender_streams(address, offset, limit) → Vec<u64>` | — (read-only) | — | — |
@@ -156,6 +161,19 @@ npm run verify-fees -- --contract <C…> --token <C…> --start-ledger <deploy l
 
 Design details, the cancel-refund decision table, and rejected
 alternatives: [`docs/ARCHITECTURE.md` §11](./docs/ARCHITECTURE.md).
+
+**Disputes.** A recipient who was paid to the wrong address — or coerced into
+being a stream's recipient — can `raise_dispute` for a bond (5 % of the
+deposit, scaling linearly with every dispute round on that stream) and freeze
+the stream's cancel/top-up controls for one week while the sender decides:
+accept (bond back, stream unwound pro-rata) or reject as bad faith (bond
+slashed to the sender, stream resumes). If the sender never acts, the
+timelock expires and the bond is split 50/50. Accrued funds stay withdrawable
+throughout — a dispute never confiscates earnings. The bond makes serial
+griefing escalate: blocking the stream costs the recipient ~2.5 % of the
+deposit per week, growing every round (`docs/ARCHITECTURE.md` has the full
+threshold math). Raising a dispute needs a prior `token.approve(recipient,
+<contract id>, bond, exp)`.
 
 ## Getting started (clean machine)
 

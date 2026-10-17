@@ -102,6 +102,20 @@ interface: they are only ever appended to, never renumbered or reused.
   branches or any branch without a code.
 - Generated [`docs/ERRORS.md`](./docs/ERRORS.md) (entrypoint × branch → code
   table) with a CI step that regenerates it and diffs the committed artifact.
+- Recipient-initiated dispute flow (#55): `raise_dispute` (bonded flag that
+  freezes `cancel_stream`/`top_up` for a 7-day timelock), sender-only
+  `resolve_dispute` (accept: bond refunded + pro-rata unwind; reject: bond
+  slashed to the sender, stream resumes), permissionless `expire_dispute`
+  (bond split 50/50, stream resumes), plus `get_dispute` /
+  `required_dispute_bond` views. Anti-griefing bond = 5% of the deposit
+  scaling linearly per dispute round on the stream; accrued withdrawals and
+  accrual are never frozen. New events `DisputeRaised` / `DisputeResolved` /
+  `DisputeExpired`; new `StreamError` codes `DisputeActive` (18),
+  `DisputeNotFound` (19), `DisputeNotExpired` (20), each wired into the
+  `surface.rs` branch registry with matrix probes. Covered by unit/property
+  tests (incl. the locks-plus-outstanding-bonds balance invariant) and a new
+  `dispute_bond` fuzz target. `docs/ARCHITECTURE.md` §8 documents the freeze
+  policy and griefing-threshold math.
 - Distinct `StreamError` codes for token-transfer failures, appended after
   the scheduled-intent codes (18–25): `DepositTransferFailed` (26),
   `TopUpTransferFailed` (27), `RecipientPayoutFailed` (28),

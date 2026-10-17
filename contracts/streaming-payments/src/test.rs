@@ -35,6 +35,9 @@ use soroban_sdk::{
 use crate::stream::streamed_at;
 use crate::test_client::StreamingPaymentsClient as Client;
 use crate::{
+    bond_shares, required_bond, StreamError, StreamStatus, StreamingPayments, MAX_DURATION_SECONDS,
+};
+use crate::{StreamError, StreamInput, StreamStatus, StreamingPayments, MAX_DURATION_SECONDS};
     StreamError, StreamInput, StreamStatus, StreamingPayments, INITIAL_SCHEMA_VERSION,
     MAX_DURATION_SECONDS, MIN_UPGRADE_DELAY_SECONDS, TARGET_SCHEMA_VERSION,
 };
@@ -3202,6 +3205,136 @@ fn run_fee_property(seed: u64, steps: usize) {
         }
     }
 }
+// ------------------------------------------------------------ disputes ------
+
+/// Base dispute bond for `DEPOSIT`: 5% (the first round; later rounds scale
+/// linearly with the stream's dispute count).
+const BOND: i128 = DEPOSIT / 20;
+const DISPUTE_TIMEOUT: u64 = crate::DISPUTE_TIMEOUT_SECONDS;
+
+impl Fixture {
+    /// Gives the recipient `amount` tokens and approves the contract to pull
+    /// it: dispute bonds are pulled with `transfer_from`, exactly like
+    /// `create_stream` pulls the deposit from the sender.
+    pub(crate) fn fund_recipient(&self, amount: i128) {
+        let sac = StellarAssetClient::new(&self.env, &self.token);
+        sac.mint(&self.recipient, &amount);
+        sac.approve(
+            &self.recipient,
+            &self.client.address,
+            &amount,
+            &1_000_000u32,
+        );
+    }
+
+    /// Funds the bond and raises a dispute on `id`, returning the recorded
+    /// dispute.
+    pub(crate) fn raise_dispute(&self, id: u64) -> crate::Dispute {
+        let bond = self.client.required_dispute_bond(&id);
+        self.fund_recipient(bond);
+        self.client.mock_all_auths().raise_dispute(&id)
+    }
+
+    fn contract_balance(&self) -> i128 {
+        TokenClient::new(&self.env, &self.token).balance(&self.client.address)
+    }
+
+    fn recipient_balance(&self) -> i128 {
+        TokenClient::new(&self.env, &self.token).balance(&self.recipient)
+    }
+
+    fn sender_balance(&self) -> i128 {
+        TokenClient::new(&self.env, &self.token).balance(&self.sender)
+    }
+}
+
+#[test]
+fn dispute_raise_pulls_bond_and_stores_state() {
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+
+    // The view agrees with the on-chain bond actually posted.
+    assert_eq!(f.client.required_dispute_bond(&id), BOND);
+
+    let d = f.raise_dispute(id);
+    assert_eq!(d.stream_id, id);
+    assert_eq!(d.raised_by, f.recipient);
+    assert_eq!(d.bond, BOND);
+    assert_eq!(d.started_at, now);
+    assert_eq!(d.expires_at, now + DISPUTE_TIMEOUT);
+    assert_eq!(f.client.get_dispute(&id), d);
+
+    // Bond moved from the recipient into the contract, on top of the deposit.
+    assert_eq!(f.recipient_balance(), 0);
+    assert_eq!(f.contract_balance(), DEPOSIT + BOND);
+}
+
+#[test]
+fn dispute_freezes_cancel_and_top_up() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, true);
+    let d = f.raise_dispute(id);
+    assert_eq!(d.bond, BOND);
+
+    // Neither the sender nor the recipient can cancel while disputed.
+    for caller in [&f.sender, &f.recipient] {
+        let err = f
+            .client
+            .mock_all_auths()
+            .try_cancel_stream(caller, &id)
+            .unwrap_err()
+            .unwrap();
+        assert_eq!(err, StreamError::DisputeActive);
+    }
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_top_up(&id, &1000)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::DisputeActive);
+}
+
+#[test]
+fn dispute_keeps_accrual_and_withdrawals_alive() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, 0, 10 * DAY, false);
+    f.advance_time(2 * DAY);
+    f.raise_dispute(id);
+
+    // Time keeps streaming while the dispute is open.
+    f.advance_time(DAY);
+    assert_eq!(f.client.available(&id), DEPOSIT * 3 / 10);
+
+    // The recipient can still claim what they earned during the dispute.
+    f.client.mock_all_auths().withdraw(&id, &1000);
+    let rest = f.client.mock_all_auths().withdraw_max(&id);
+    assert_eq!(f.recipient_balance(), 1000 + rest);
+    assert_eq!(rest, DEPOSIT * 3 / 10 - 1000);
+}
+
+#[test]
+fn dispute_raise_requires_recipient_authorization() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+
+    let attacker = Address::generate(&f.env);
+    f.env.mock_auths(&[MockAuth {
+        address: &attacker,
+        invoke: &MockAuthInvoke {
+            contract: &f.client.address,
+            fn_name: "raise_dispute",
+            args: (id,).into_val(&f.env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(f.client.try_raise_dispute(&id).is_err());
+}
+
+#[test]
+fn dispute_raise_rejections() {
+    let f = Fixture::setup();
 
 // ------------------------------------------------------------ policy tests --
 
@@ -3791,6 +3924,500 @@ fn create_stream_without_balance_reports_deposit_transfer_failed() {
     let err = f
         .client
         .mock_all_auths()
+        .try_raise_dispute(&999)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::StreamNotFound);
+
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let d = f.raise_dispute(id);
+    assert_eq!(d.bond, BOND);
+
+    // One open dispute at a time.
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_raise_dispute(&id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::DisputeActive);
+
+    // Terminal streams cannot be disputed.
+    let ended = f.create_stream(DEPOSIT, DAY, 10 * DAY, true);
+    f.advance_time(20 * DAY);
+    f.client.mock_all_auths().withdraw(&ended, &DEPOSIT);
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_raise_dispute(&ended)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::StreamNotActive);
+}
+
+#[test]
+fn dispute_resolve_reject_slashes_bond_and_resumes_stream() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    f.raise_dispute(id);
+
+    // Only the sender resolves; the recipient calling it is rejected.
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_resolve_dispute(&f.recipient, &id, &false)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::NotAuthorized);
+
+    f.client
+        .mock_all_auths()
+        .resolve_dispute(&f.sender, &id, &false);
+
+    // The bond compensates the sender; the stream keeps running.
+    assert_eq!(f.sender_balance(), DEPOSIT + BOND);
+    assert_eq!(f.recipient_balance(), 0);
+    assert_eq!(f.contract_balance(), DEPOSIT);
+    assert_eq!(
+        f.client.mock_all_auths().get_stream(&id).status,
+        StreamStatus::Active,
+    );
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_get_dispute(&id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::DisputeNotFound);
+
+    // Mutations are live again.
+    f.client.mock_all_auths().top_up(&id, &1000);
+    f.client.mock_all_auths().cancel_stream(&f.sender, &id);
+}
+
+#[test]
+fn dispute_resolve_accept_refunds_bond_and_unwinds_stream() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, 0, 10 * DAY, false);
+    f.advance_time(3 * DAY);
+    f.raise_dispute(id);
+
+    f.client
+        .mock_all_auths()
+        .resolve_dispute(&f.sender, &id, &true);
+
+    // Recipient: bond back + everything accrued. Sender: the unaccrued
+    // remainder. Contract holds nothing.
+    let accrued = DEPOSIT * 3 / 10;
+    assert_eq!(f.recipient_balance(), BOND + accrued);
+    assert_eq!(f.sender_balance(), DEPOSIT + (DEPOSIT - accrued));
+    assert_eq!(f.contract_balance(), 0);
+
+    let stream = f.client.mock_all_auths().get_stream(&id);
+    assert_eq!(stream.status, StreamStatus::Cancelled);
+    assert_eq!(stream.withdrawn, accrued);
+}
+
+#[test]
+fn dispute_expire_requires_full_timelock_then_splits_bond() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    f.raise_dispute(id);
+
+    // One second shy of the timelock: nobody can expire it yet.
+    f.advance_time(DISPUTE_TIMEOUT - 1);
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_expire_dispute(&id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::DisputeNotExpired);
+
+    // At `expires_at` exactly, anyone can.
+    f.advance_time(1);
+    f.client.mock_all_auths().expire_dispute(&id);
+
+    assert_eq!(f.sender_balance(), DEPOSIT + BOND / 2);
+    assert_eq!(f.recipient_balance(), BOND / 2);
+    assert_eq!(f.contract_balance(), DEPOSIT);
+
+    // The stream resumed normally.
+    f.client.mock_all_auths().top_up(&id, &1000);
+    f.client.mock_all_auths().cancel_stream(&f.sender, &id);
+}
+
+#[test]
+fn serial_disputes_escalate_the_bond_and_the_attacker_cost() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+
+    let mut sender_gains = 0i128;
+    let mut posted = [0i128; 3];
+    for round in 1..=3i128 {
+        // The required bond scales linearly with the dispute count: the
+        // same recipient griefing week after week pays more each time.
+        let required = BOND * round;
+        assert_eq!(f.client.required_dispute_bond(&id), required);
+        let d = f.raise_dispute(id);
+        assert_eq!(d.bond, required);
+        posted[(round - 1) as usize] = required;
+
+        // Frozen the whole window, every round.
+        let err = f
+            .client
+            .mock_all_auths()
+            .try_top_up(&id, &1000)
+            .unwrap_err()
+            .unwrap();
+        assert_eq!(err, StreamError::DisputeActive);
+
+        // The passive sender lets it expire: the attacker loses half the
+        // (escalating) bond per blocked week.
+        f.advance_time(DISPUTE_TIMEOUT);
+        f.client.mock_all_auths().expire_dispute(&id);
+        sender_gains += (required + 1) / 2;
+        assert_eq!(f.sender_balance(), DEPOSIT + sender_gains);
+    }
+    assert_eq!(posted, [BOND, 2 * BOND, 3 * BOND]);
+
+    // Cumulative attacker loss over three griefing weeks: Σ ceil(n·BOND/2),
+    // against a stream that only pays out 100% of DEPOSIT over its window.
+    let attacker_loss = (BOND + 1) / 2 + BOND + (3 * BOND + 1) / 2;
+    assert_eq!(attacker_loss, 3 * BOND);
+    assert_eq!(f.recipient_balance(), 6 * BOND - attacker_loss);
+    assert_eq!(f.contract_balance(), DEPOSIT);
+}
+
+#[test]
+fn dispute_expired_after_recipient_drained_stream_in_dispute() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, 0, 2 * DAY, false);
+    f.raise_dispute(id);
+
+    // The stream completes *during* the dispute and the recipient withdraws
+    // everything — the dispute entry and bond survive independently.
+    f.advance_time(3 * DAY);
+    let paid = f.client.mock_all_auths().withdraw_max(&id);
+    assert_eq!(paid, DEPOSIT);
+    assert_eq!(
+        f.client.mock_all_auths().get_stream(&id).status,
+        StreamStatus::Depleted,
+    );
+    assert_eq!(f.contract_balance(), BOND);
+
+    f.advance_time(DISPUTE_TIMEOUT);
+    f.client.mock_all_auths().expire_dispute(&id);
+    assert_eq!(f.sender_balance(), DEPOSIT + BOND / 2);
+    assert_eq!(f.recipient_balance(), DEPOSIT + BOND / 2);
+    assert_eq!(f.contract_balance(), 0);
+}
+
+#[test]
+fn dispute_accept_on_stream_depleted_during_dispute_only_refunds_bond() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, 0, 2 * DAY, false);
+    f.raise_dispute(id);
+    f.advance_time(3 * DAY);
+    f.client.mock_all_auths().withdraw_max(&id);
+
+    f.client
+        .mock_all_auths()
+        .resolve_dispute(&f.sender, &id, &true);
+
+    // Bond back to the recipient; the depleted stream is left as-is (no
+    // cancel split, no `StreamCancelled` event).
+    assert_eq!(f.recipient_balance(), DEPOSIT + BOND);
+    assert_eq!(f.sender_balance(), DEPOSIT);
+    assert_eq!(f.contract_balance(), 0);
+    assert_eq!(
+        f.client.mock_all_auths().get_stream(&id).status,
+        StreamStatus::Depleted,
+    );
+}
+
+#[test]
+fn dispute_events_are_emitted_with_expected_payloads() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+
+    // Drain StreamCreated.
+    let _ = f.env.events().all();
+
+    let d = f.raise_dispute(id);
+    let raised = crate::DisputeRaised {
+        stream_id: id,
+        recipient: f.recipient.clone(),
+        bond: BOND,
+        expires_at: d.expires_at,
+    };
+    assert_eq!(
+        f.env.events().all().filter_by_contract(&f.client.address),
+        [raised.to_xdr(&f.env, &f.client.address)],
+    );
+
+    let resolved = crate::DisputeResolved {
+        stream_id: id,
+        sender: f.sender.clone(),
+        accept: false,
+        bond: BOND,
+    };
+    f.client
+        .mock_all_auths()
+        .resolve_dispute(&f.sender, &id, &false);
+    assert_eq!(
+        f.env.events().all().filter_by_contract(&f.client.address),
+        [resolved.to_xdr(&f.env, &f.client.address)],
+    );
+
+    let d2 = f.raise_dispute(id);
+    assert_eq!(d2.bond, 2 * BOND);
+    let expired = crate::DisputeExpired {
+        stream_id: id,
+        recipient: f.recipient.clone(),
+        bond: 2 * BOND,
+        sender_share: BOND,
+        recipient_share: BOND,
+    };
+    f.advance_time(3 * DISPUTE_TIMEOUT);
+    f.client.mock_all_auths().expire_dispute(&id);
+    assert_eq!(
+        f.env.events().all().filter_by_contract(&f.client.address),
+        [expired.to_xdr(&f.env, &f.client.address)],
+    );
+}
+
+#[test]
+fn dispute_resolve_accept_emits_cancelled_then_resolved() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, 0, 10 * DAY, false);
+    f.advance_time(2 * DAY);
+    f.raise_dispute(id);
+    let _ = f.env.events().all(); // drain through DisputeRaised
+
+    f.client
+        .mock_all_auths()
+        .resolve_dispute(&f.sender, &id, &true);
+
+    let accrued = DEPOSIT * 2 / 10;
+    let cancelled = crate::StreamCancelled {
+        stream_id: id,
+        cancelled_by: f.sender.clone(),
+        recipient_amount: accrued,
+        sender_amount: DEPOSIT - accrued,
+    };
+    let resolved = crate::DisputeResolved {
+        stream_id: id,
+        sender: f.sender.clone(),
+        accept: true,
+        bond: BOND,
+    };
+    assert_eq!(
+        f.env.events().all().filter_by_contract(&f.client.address),
+        [
+            cancelled.to_xdr(&f.env, &f.client.address),
+            resolved.to_xdr(&f.env, &f.client.address),
+        ],
+    );
+}
+
+// ------------------------------------------------- dispute math (pure) ----
+
+#[test]
+fn required_bond_is_escalating_floored_and_checked() {
+    // 5% of the deposit, scaled by the dispute round.
+    assert_eq!(required_bond(20_000, 0).unwrap(), 1_000);
+    assert_eq!(required_bond(20_000, 2).unwrap(), 3_000);
+    // Floored at one token unit — disputes on dust streams are never free.
+    assert_eq!(required_bond(7, 0).unwrap(), 1);
+    assert_eq!(required_bond(0, 0).unwrap(), 1);
+    // Monotonic in both inputs.
+    let mut prev = 0;
+    for n in 0..16 {
+        let b = required_bond(123_456_789, n).unwrap();
+        assert!(b > prev);
+        prev = b;
+    }
+    // Overflow is reported, never panicked.
+    assert_eq!(
+        required_bond(i128::MAX, 0).unwrap_err(),
+        StreamError::MathOverflow
+    );
+}
+
+#[test]
+fn bond_shares_always_sum_to_the_bond_and_favor_the_sender() {
+    for bond in [1i128, 2, 3, 999, 1_000_000, i128::MAX] {
+        let (sender, recipient) = bond_shares(bond);
+        assert_eq!(sender + recipient, bond);
+        assert!(sender >= recipient);
+        assert!(sender - recipient <= 1);
+    }
+}
+
+#[test]
+fn raise_dispute_reports_bond_overflow_without_touching_state() {
+    let f = Fixture::setup();
+    // A deposit just past the `u128::MAX / BPS` boundary: `create_stream`
+    // admits it (duration 1 keeps the accrual product in range), but the
+    // bond computation must error, never panic, and pull nothing in.
+    let big = (u128::MAX / crate::DISPUTE_BOND_BPS + 1) as i128;
+    let now = f.env.ledger().timestamp();
+    let sac = StellarAssetClient::new(&f.env, &f.token);
+    sac.mint(&f.sender, &big);
+    sac.approve(&f.sender, &f.client.address, &big, &1_000_000u32);
+    let id = f.client.mock_all_auths().create_stream(
+        &f.sender,
+        &f.recipient,
+        &f.token,
+        &big,
+        &now,
+        &(now + 1),
+        &false,
+    );
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_raise_dispute(&id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::MathOverflow);
+    assert_eq!(
+        f.client
+            .mock_all_auths()
+            .try_get_dispute(&id)
+            .unwrap_err()
+            .unwrap(),
+        StreamError::DisputeNotFound,
+    );
+}
+
+// --------------------------------------------------- bond invariant -------
+
+/// Tiny deterministic PRNG (xorshift64) so the invariant scenario below is
+/// reproducible — and snapshot-stable.
+struct BondRng(u64);
+impl BondRng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+    fn below(&mut self, n: u64) -> u64 {
+        self.next() % n
+    }
+}
+
+/// Invariant (extends the fuzz oracle to the dispute bonds): after *every*
+/// random operation, the contract's token balance must equal
+/// `sum(deposit - withdrawn)` over all streams **plus the sum of the
+/// outstanding dispute bonds**.
+#[test]
+fn property_contract_balance_equals_locks_plus_outstanding_bonds() {
+    let f = Fixture::setup();
+    let mut rng = BondRng(0x9E37_79B9_7F4A_7C15);
+
+    let mut ids = [0u64; 4];
+    for (i, slot) in ids.iter_mut().enumerate() {
+        *slot = f.create_stream(DEPOSIT / 2, i as u64, 30 * DAY, true);
+    }
+
+    // Per-stream model of the bonds the contract should be holding.
+    struct Open {
+        bond: i128,
+        expires_at: u64,
+    }
+    let mut open: [Option<Open>; 4] = Default::default();
+
+    for step in 0..60 {
+        let k = rng.below(4) as usize;
+        let id = ids[k];
+        match rng.below(7) {
+            0 => {
+                let _ = f
+                    .client
+                    .mock_all_auths()
+                    .try_withdraw(&id, &(step as i128 + 1));
+            }
+            1 => {
+                let _ = f.client.mock_all_auths().try_withdraw_max(&id);
+            }
+            2 => {
+                let _ = f.client.mock_all_auths().try_top_up(&id, &1000);
+            }
+            3 => {
+                if let Ok(Ok(r)) = f.client.try_required_dispute_bond(&id) {
+                    // Fund exactly this round's bond (approve overwrites).
+                    f.fund_recipient(r);
+                    if let Ok(Ok(d)) = f.client.mock_all_auths().try_raise_dispute(&id) {
+                        open[k] = Some(Open {
+                            bond: d.bond,
+                            expires_at: d.expires_at,
+                        });
+                    }
+                }
+            }
+            4 => {
+                if open[k].is_some() {
+                    let accept = rng.below(2) == 0;
+                    if f.client
+                        .mock_all_auths()
+                        .try_resolve_dispute(&f.sender, &id, &accept)
+                        .is_ok()
+                    {
+                        open[k] = None;
+                    }
+                }
+            }
+            5 => {
+                if open[k]
+                    .as_ref()
+                    .is_some_and(|o| f.env.ledger().timestamp() >= o.expires_at)
+                    && f.client.mock_all_auths().try_expire_dispute(&id).is_ok()
+                {
+                    open[k] = None;
+                }
+            }
+            _ => {
+                // Random walk through the clock: small ticks, occasionally a
+                // full dispute window so expiry paths actually get hit.
+                let jump = if rng.below(3) == 0 {
+                    DISPUTE_TIMEOUT
+                } else {
+                    6 * 60 * 60
+                };
+                f.advance_time(jump);
+            }
+        }
+
+        // The invariant, recomputed from on-chain state + the bond model.
+        // Cancelled streams hold nothing: their cancel split paid the
+        // sender the unaccrued remainder already, so only Active/Depleted
+        // streams still lock `deposit - withdrawn`.
+        let mut expected_locks = 0i128;
+        for (i, slot) in ids.iter().enumerate() {
+            let s = f.client.get_stream(slot);
+            if s.status != StreamStatus::Cancelled {
+                expected_locks += s.deposit - s.withdrawn;
+            }
+            if let Some(o) = &open[i] {
+                let d = f.client.get_dispute(slot);
+                assert_eq!(d.bond, o.bond, "stale bond model at step {step}");
+                expected_locks += o.bond;
+            } else {
+                assert!(
+                    f.client.try_get_dispute(slot).is_err(),
+                    "phantom dispute at step {step}"
+                );
+            }
+        }
+        assert_eq!(
+            f.contract_balance(),
+            expected_locks,
+            "lock invariant broken at step {step}"
+        );
+    }
         .try_create_stream(
             &broke,
             &f.recipient,

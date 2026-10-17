@@ -70,6 +70,13 @@ pub enum StreamError {
     /// A treasury withdrawal exceeds the fees collected minus fees already
     /// withdrawn for that token.
     InsufficientTreasuryBalance = 17,
+    /// A dispute is open on the stream: `cancel_stream` and `top_up` are
+    /// frozen until the sender resolves it or the timelock expires.
+    DisputeActive = 18,
+    /// No open dispute exists on the stream.
+    DisputeNotFound = 19,
+    /// The dispute's timelock has not elapsed yet.
+    DisputeNotExpired = 20,
     /// No scheduled intent exists with the provided id.
     IntentNotFound = 18,
     /// The scheduled intent is not pending (already executed, cancelled, or
@@ -161,6 +168,9 @@ impl StreamError {
         StreamError::NotGovernor,
         StreamError::NoPendingGovernor,
         StreamError::InsufficientTreasuryBalance,
+        StreamError::DisputeActive,
+        StreamError::DisputeNotFound,
+        StreamError::DisputeNotExpired,
         StreamError::IntentNotFound,
         StreamError::IntentNotPending,
         StreamError::IntentNotYetExecutable,

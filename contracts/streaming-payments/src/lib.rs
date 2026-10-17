@@ -17,8 +17,17 @@
 //! - [`StreamingPayments::cancel_stream`] — sender (or recipient, if the
 //!   stream is `cancelable`) closes the stream with a pro-rata split
 //! - [`StreamingPayments::top_up`] — add funds to a running stream
+//! - [`StreamingPayments::raise_dispute`] — recipient flags the stream
+//!   (wrong address, coerced creation) for a bond; cancel/top-up are frozen
+//!   until the sender resolves or the timelock expires
+//! - [`StreamingPayments::resolve_dispute`] — sender accepts (unwind +
+//!   refund bond) or rejects as bad-faith (bond slashed, stream resumes)
+//! - [`StreamingPayments::expire_dispute`] — anyone, after the timelock:
+//!   bond split, stream resumes
 //! - [`StreamingPayments::get_stream`] / [`StreamingPayments::available`] —
 //!   read-only views
+//! - [`StreamingPayments::get_dispute`] /
+//!   [`StreamingPayments::required_dispute_bond`] — dispute read-only views
 //! - [`StreamingPayments::recipient_streams`] /
 //!   [`StreamingPayments::sender_streams`] — paginated on-chain discovery
 //!   indexes per address
@@ -30,8 +39,10 @@
 //!
 //! - `0 <= withdrawn <= streamed <= deposit` for every stored stream.
 //! - The contract's token balance always covers `sum(deposit - withdrawn)`
-//!   over all streams plus `charged_total - withdrawn_total` over all
-//!   token treasuries (funds are only ever moved by these entry points).
+//!   over live (non-cancelled) streams, plus all outstanding dispute bonds,
+//!   plus `charged_total - withdrawn_total` over all token treasuries (funds
+//!   are only ever moved by these entry points; a cancelled stream holds
+//!   nothing once its split was paid).
 //! - All state changes happen *before* token transfers (checks-effects-
 //!   interactions), so reentrant token callbacks cannot over-withdraw.
 //! - Every token call goes through the SDK's fallible (`try_`) client and a
@@ -43,6 +54,8 @@
 //!   written before the transfer — rolls back atomically.
 //! - `treasury.charged_total == sum of FeeCharged events == sum of stored
 //!   per-stream fees`, provable from public reads (see `treasury.rs`).
+//! - A dispute freezes cancel/top-up only: accrual keeps running and the
+//!   recipient can always withdraw accrued funds, dispute or not.
 
 #[cfg(test)]
 extern crate std;
@@ -53,6 +66,8 @@ mod differential_harness;
 mod differential_test;
 #[cfg(test)]
 mod error_surface_test;
+
+mod dispute;
 mod errors;
 mod events;
 mod policy;
@@ -75,8 +90,21 @@ use soroban_sdk::{
 
 use surface::Branch;
 
+pub use dispute::{
+    bond_shares, required_bond, Dispute, DISPUTE_BOND_BPS, DISPUTE_TIMEOUT_SECONDS,
+    MIN_DISPUTE_BOND,
+};
 pub use errors::StreamError;
 pub use events::{
+    DisputeExpired, DisputeRaised, DisputeResolved, FeeCharged, FeeWithdrawn, StreamCancelled,
+    StreamCreated, StreamToppedUp, Withdrawn,
+    FeeCharged, FeeWithdrawn, ScheduledIntentCancelled, ScheduledIntentExpired,
+    ScheduledStreamExecuted, StreamCancelled, StreamCreated, StreamScheduled, StreamToppedUp,
+    StreamsCreated, Withdrawn,
+    FeeCharged, FeeWithdrawn, PolicyAssetExecuted, PolicyAssetQueued, PolicyHandoffAccepted,
+    PolicyHandoffCancelled, PolicyHandoffProposed, PolicyInitialized, ScheduledIntentCancelled,
+    ScheduledIntentExpired, ScheduledStreamExecuted, StreamCancelled, StreamCreated,
+    StreamScheduled, StreamToppedUp, StreamsCreated, Withdrawn,
     ContractFrozenStateChanged, ContractUpgraded, FeeCharged, FeeWithdrawn, PolicyAssetExecuted,
     PolicyAssetQueued, PolicyHandoffAccepted, PolicyHandoffCancelled, PolicyHandoffProposed,
     PolicyInitialized, ScheduledIntentCancelled, ScheduledIntentExpired, ScheduledStreamExecuted,
@@ -643,6 +671,9 @@ impl StreamingPayments {
     ///
     /// Callable by the sender always, and by the recipient only if the stream
     /// was created with `cancelable = true`. Cancelling an already-cancelled
+    /// or depleted stream reverts with [`StreamError::StreamNotActive`];
+    /// cancelling while a dispute is open reverts with
+    /// [`StreamError::DisputeActive`] until the dispute is resolved or expires.
     /// or depleted stream reverts with [`StreamError::StreamNotActive`].
     ///
     /// Each payout leg maps a token-side failure to its own code —
@@ -677,6 +708,9 @@ impl StreamingPayments {
         let mut s = stream::get_stream(&env, stream_id)?;
         if s.status != StreamStatus::Active {
             return Err(surface::reject(Branch::StreamNotActive));
+        }
+        if dispute::get_dispute_opt(&env, stream_id).is_some() {
+            return Err(surface::reject(Branch::CancelDuringDispute));
         }
         if caller != s.sender {
             if caller == s.recipient {
@@ -743,7 +777,8 @@ impl StreamingPayments {
     /// amount increases pro-rata immediately (Sablier-v1 `increaseAmount`
     /// semantics).
     ///
-    /// Top-ups are rejected on cancelled or depleted streams. Topping up a
+    /// Top-ups are rejected on cancelled or depleted streams, and frozen
+    /// ([`StreamError::DisputeActive`]) while a dispute is open. Topping up a
     /// stream that has already passed `end_time` adds fully-accrued funds the
     /// recipient can withdraw immediately.
     ///
@@ -763,6 +798,9 @@ impl StreamingPayments {
             return Err(surface::reject(Branch::StreamNotActive));
         }
         s.sender.require_auth();
+        if dispute::get_dispute_opt(&env, stream_id).is_some() {
+            return Err(surface::reject(Branch::TopUpDuringDispute));
+        }
 
         let new_deposit = s
             .deposit
@@ -796,9 +834,211 @@ impl StreamingPayments {
         Ok(())
     }
 
+    /// Recipient-initiated dispute: flags this stream (wrong address,
+    /// coerced creation) and freezes its cancel/top-up mutations until the
+    /// sender calls [`StreamingPayments::resolve_dispute`] or the timelock
+    /// elapses and anyone calls [`StreamingPayments::expire_dispute`].
+    ///
+    /// Only the stream's recipient can raise it (their authorization is
+    /// required), only on an active, undisputed stream. Anti-griefing: the
+    /// recipient posts a bond ([`StreamingPayments::required_dispute_bond`],
+    /// a share of the deposit that escalates with every dispute round on
+    /// the stream) via a prior token approval, held by the contract until
+    /// resolution. Accrual keeps running and accrued funds stay withdrawable
+    /// throughout — the freeze targets the stream's lifecycle, not the
+    /// recipient's earned balance.
+    ///
+    /// Returns the recorded dispute (bond, window, expiry timestamp).
+    pub fn raise_dispute(env: Env, stream_id: u64) -> Result<Dispute, StreamError> {
+        let s = stream::get_stream(&env, stream_id)?;
+        if s.status != StreamStatus::Active {
+            return Err(surface::reject(Branch::StreamNotActive));
+        }
+        if dispute::get_dispute_opt(&env, stream_id).is_some() {
+            return Err(surface::reject(Branch::RaiseDisputeAlreadyActive));
+        }
+        s.recipient.require_auth();
+
+        let bond = dispute::required_bond(s.deposit, dispute::dispute_count(&env, stream_id))?;
+
+        // Interaction: pull the bond from the recipient (a prior approval is
+        // required, like `create_stream`'s deposit pull).
+        TokenClient::new(&env, &s.token).transfer_from(
+            &env.current_contract_address(),
+            &s.recipient,
+            &env.current_contract_address(),
+            &bond,
+        );
+
+        // Effects: open the dispute and record the round (escalating bond).
+        let now = env.ledger().timestamp();
+        let d = Dispute {
+            stream_id,
+            raised_by: s.recipient.clone(),
+            bond,
+            started_at: now,
+            expires_at: now.saturating_add(dispute::DISPUTE_TIMEOUT_SECONDS),
+        };
+        dispute::put_dispute(&env, &d);
+        dispute::bump_dispute_count(&env, stream_id);
+
+        DisputeRaised {
+            stream_id,
+            recipient: s.recipient,
+            bond,
+            expires_at: d.expires_at,
+        }
+        .publish(&env);
+
+        Ok(d)
+    }
+
+    /// Sender-only resolution of an open dispute:
+    ///
+    /// * `accept = true` — the dispute is legitimate: the bond is refunded
+    ///   to the recipient and the stream is unwound with the standard
+    ///   pro-rata cancel split (a `StreamCancelled` event accompanies the
+    ///   `DisputeResolved`). If the stream already depleted during the
+    ///   dispute (the recipient withdrew everything), only the bond is
+    ///   refunded.
+    /// * `accept = false` — bad faith: the bond is slashed to the sender as
+    ///   compensation for the frozen window, and the stream resumes normal
+    ///   operation immediately.
+    pub fn resolve_dispute(
+        env: Env,
+        caller: Address,
+        stream_id: u64,
+        accept: bool,
+    ) -> Result<(), StreamError> {
+        caller.require_auth();
+
+        let mut s = stream::get_stream(&env, stream_id)?;
+        let d = dispute::get_dispute(&env, stream_id)?;
+        if caller != s.sender {
+            return Err(surface::reject(Branch::ResolveCallerNotSender));
+        }
+
+        // Effects: close the dispute, then optionally unwind the stream.
+        dispute::delete_dispute(&env, stream_id);
+
+        let (recipient_settlement, sender_settlement) =
+            if accept && s.status == StreamStatus::Active {
+                let amounts = stream::cancel_amounts(&env, &s)?;
+                s.status = StreamStatus::Cancelled;
+                s.withdrawn = s
+                    .withdrawn
+                    .checked_add(amounts.0)
+                    .ok_or(StreamError::MathOverflow)?;
+                stream::put_stream(&env, &s);
+
+                StreamCancelled {
+                    stream_id,
+                    cancelled_by: caller.clone(),
+                    recipient_amount: amounts.0,
+                    sender_amount: amounts.1,
+                }
+                .publish(&env);
+                amounts
+            } else {
+                (0, 0)
+            };
+
+        DisputeResolved {
+            stream_id,
+            sender: s.sender.clone(),
+            accept,
+            bond: d.bond,
+        }
+        .publish(&env);
+
+        // Interactions last (CEI): bond refund/slash plus settlement.
+        let token = TokenClient::new(&env, &s.token);
+        let bond_to_recipient = if accept { d.bond } else { 0 };
+        let bond_to_sender = if accept { 0 } else { d.bond };
+        if bond_to_recipient + recipient_settlement > 0 {
+            token.transfer(
+                &env.current_contract_address(),
+                stream::muxed(&s.recipient),
+                &(bond_to_recipient + recipient_settlement),
+            );
+        }
+        if bond_to_sender + sender_settlement > 0 {
+            token.transfer(
+                &env.current_contract_address(),
+                stream::muxed(&s.sender),
+                &(bond_to_sender + sender_settlement),
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Closes a dispute whose timelock has fully elapsed: the bond is split
+    /// (sender receives the upper half as compensation for the frozen
+    /// window, the recipient the remainder) and the stream resumes normally.
+    ///
+    /// Callable by anyone once `now >= expires_at` — no authorization is
+    /// involved and no funds ever move to the trigger. Reverting the split
+    /// to a full bond refund would make serial disputes free for a patient
+    /// griefer; see `docs/ARCHITECTURE.md` for the griefing-threshold math.
+    pub fn expire_dispute(env: Env, stream_id: u64) -> Result<(), StreamError> {
+        let s = stream::get_stream(&env, stream_id)?;
+        let d = dispute::get_dispute(&env, stream_id)?;
+        if env.ledger().timestamp() < d.expires_at {
+            return Err(surface::reject(Branch::ExpireDisputeTooEarly));
+        }
+
+        // Effects: close the dispute; the stream entry was never touched.
+        dispute::delete_dispute(&env, stream_id);
+        let (sender_share, recipient_share) = dispute::bond_shares(d.bond);
+
+        DisputeExpired {
+            stream_id,
+            recipient: s.recipient.clone(),
+            bond: d.bond,
+            sender_share,
+            recipient_share,
+        }
+        .publish(&env);
+
+        // Interactions last (CEI).
+        let token = TokenClient::new(&env, &s.token);
+        if recipient_share > 0 {
+            token.transfer(
+                &env.current_contract_address(),
+                stream::muxed(&s.recipient),
+                &recipient_share,
+            );
+        }
+        if sender_share > 0 {
+            token.transfer(
+                &env.current_contract_address(),
+                stream::muxed(&s.sender),
+                &sender_share,
+            );
+        }
+
+        Ok(())
+    }
+
     /// Read-only view of a stream's full state.
     pub fn get_stream(env: Env, stream_id: u64) -> Result<Stream, StreamError> {
         stream::get_stream(&env, stream_id)
+    }
+
+    /// Read-only view of a stream's open dispute. Reverts with
+    /// [`StreamError::DisputeNotFound`] when the stream is undisputed
+    /// (disputes exist only while open; resolution and expiry remove them).
+    pub fn get_dispute(env: Env, stream_id: u64) -> Result<Dispute, StreamError> {
+        dispute::get_dispute(&env, stream_id)
+    }
+
+    /// The bond a recipient must post (and pre-approve) to raise the next
+    /// dispute on this stream: 5% of the deposit, multiplied by the number
+    /// of disputes already raised on it, floored at one token unit.
+    pub fn required_dispute_bond(env: Env, stream_id: u64) -> Result<i128, StreamError> {
+        let s = stream::get_stream(&env, stream_id)?;
+        dispute::required_bond(s.deposit, dispute::dispute_count(&env, stream_id))
     }
 
     /// Read-only view of the accrued-but-unwithdrawn balance at the current

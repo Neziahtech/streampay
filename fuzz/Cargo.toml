@@ -22,6 +22,8 @@ doc = false
 bench = false
 
 [[bin]]
+name = "dispute_bond"
+path = "fuzz_targets/dispute_bond.rs"
 name = "differential"
 path = "fuzz_targets/differential.rs"
 test = false
