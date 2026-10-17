@@ -827,6 +827,208 @@ fn withdraw_unknown_stream_reverts() {
     assert_eq!(err, StreamError::StreamNotFound);
 }
 
+#[test]
+fn payout_binding_requires_delay_then_confirmation() {
+    let f = Fixture::setup();
+    let payout = Address::generate(&f.env);
+    let activates_at = f.client.mock_all_auths().bind_payout(&f.recipient, &payout);
+    let bound = crate::PayoutBound {
+        recipient: f.recipient.clone(),
+        payout_address: payout.clone(),
+        activates_at,
+    };
+    assert_eq!(
+        f.env.events().all().filter_by_contract(&f.client.address),
+        [bound.to_xdr(&f.env, &f.client.address)],
+    );
+
+    let pending = f
+        .client
+        .mock_all_auths()
+        .pending_payout(&f.recipient)
+        .unwrap();
+    assert_eq!(pending.payout_address, payout);
+    assert_eq!(pending.activates_at, activates_at);
+    assert_eq!(
+        f.client.mock_all_auths().payout_address(&f.recipient),
+        f.recipient
+    );
+    assert_eq!(
+        f.client
+            .mock_all_auths()
+            .try_confirm_payout(&f.recipient)
+            .unwrap_err()
+            .unwrap(),
+        StreamError::PayoutBindingNotReady
+    );
+
+    f.advance_time(crate::PAYOUT_BINDING_DELAY_SECONDS);
+    f.client.mock_all_auths().confirm_payout(&f.recipient);
+    let active = crate::PayoutActive {
+        recipient: f.recipient.clone(),
+        payout_address: pending.payout_address.clone(),
+    };
+    assert_eq!(
+        f.env.events().all().filter_by_contract(&f.client.address),
+        [active.to_xdr(&f.env, &f.client.address)],
+    );
+    assert_eq!(
+        f.client.mock_all_auths().payout_address(&f.recipient),
+        payout
+    );
+    assert!(f
+        .client
+        .mock_all_auths()
+        .pending_payout(&f.recipient)
+        .is_none());
+}
+
+#[test]
+fn payout_binding_replacement_restarts_delay_and_cancellation_preserves_active() {
+    let f = Fixture::setup();
+    let active = Address::generate(&f.env);
+    let first_proposal = Address::generate(&f.env);
+    let replacement = Address::generate(&f.env);
+    f.client.mock_all_auths().bind_payout(&f.recipient, &active);
+    f.advance_time(crate::PAYOUT_BINDING_DELAY_SECONDS);
+    f.client.mock_all_auths().confirm_payout(&f.recipient);
+
+    f.client
+        .mock_all_auths()
+        .bind_payout(&f.recipient, &first_proposal);
+    f.advance_time(crate::PAYOUT_BINDING_DELAY_SECONDS / 2);
+    let replacement_deadline = f
+        .client
+        .mock_all_auths()
+        .bind_payout(&f.recipient, &replacement);
+    assert_eq!(
+        f.client
+            .mock_all_auths()
+            .pending_payout(&f.recipient)
+            .unwrap()
+            .activates_at,
+        replacement_deadline
+    );
+    f.client.mock_all_auths().cancel_payout(&f.recipient);
+    assert_eq!(
+        f.env.events().all().filter_by_contract(&f.client.address),
+        [crate::PayoutBindingCancelled {
+            recipient: f.recipient.clone(),
+            payout_address: replacement.clone(),
+        }
+        .to_xdr(&f.env, &f.client.address)],
+    );
+    assert_eq!(
+        f.client.mock_all_auths().payout_address(&f.recipient),
+        active
+    );
+    assert!(f
+        .client
+        .mock_all_auths()
+        .pending_payout(&f.recipient)
+        .is_none());
+}
+
+#[test]
+fn withdrawals_route_to_binding_and_still_require_original_recipient_auth() {
+    let f = Fixture::setup();
+    let payout = Address::generate(&f.env);
+    let id = f.create_stream(DEPOSIT, 0, 10 * DAY, false);
+    f.client.mock_all_auths().bind_payout(&f.recipient, &payout);
+    f.advance_time(crate::PAYOUT_BINDING_DELAY_SECONDS);
+    f.client.mock_all_auths().confirm_payout(&f.recipient);
+    f.advance_time(2 * DAY);
+
+    let first_claim = f.client.mock_all_auths().available(&id);
+    f.client.mock_all_auths().withdraw(&id, &first_claim);
+    f.advance_time(DAY);
+    let remaining = f.client.mock_all_auths().available(&id);
+    let second_claim = f.client.mock_all_auths().withdraw_max(&id);
+    assert_eq!(second_claim, remaining);
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&payout),
+        first_claim + second_claim
+    );
+    assert_eq!(TokenClient::new(&f.env, &f.token).balance(&f.recipient), 0);
+
+    f.env.mock_auths(&[MockAuth {
+        address: &payout,
+        invoke: &MockAuthInvoke {
+            contract: &f.client.address,
+            fn_name: "withdraw_max",
+            args: (id,).into_val(&f.env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(f.client.try_withdraw_max(&id).is_err());
+}
+
+#[test]
+fn pending_payout_does_not_route_claims_before_confirmation() {
+    let f = Fixture::setup();
+    let payout = Address::generate(&f.env);
+    let id = f.create_stream(DEPOSIT, 0, 10 * DAY, false);
+    f.client.mock_all_auths().bind_payout(&f.recipient, &payout);
+
+    f.advance_time(crate::PAYOUT_BINDING_DELAY_SECONDS / 2);
+    let first_claim = f.client.mock_all_auths().available(&id);
+    f.client.mock_all_auths().withdraw(&id, &first_claim);
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.recipient),
+        first_claim
+    );
+    assert_eq!(TokenClient::new(&f.env, &f.token).balance(&payout), 0);
+
+    f.advance_time(crate::PAYOUT_BINDING_DELAY_SECONDS / 2);
+    f.client.mock_all_auths().confirm_payout(&f.recipient);
+    f.advance_time(DAY);
+    let second_claim = f.client.mock_all_auths().withdraw_max(&id);
+    assert!(second_claim > 0);
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&payout),
+        second_claim
+    );
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.recipient),
+        first_claim
+    );
+}
+
+#[test]
+fn payout_binding_actions_require_the_original_recipient() {
+    let f = Fixture::setup();
+    let payout = Address::generate(&f.env);
+    let attacker = Address::generate(&f.env);
+
+    f.env.mock_auths(&[MockAuth {
+        address: &attacker,
+        invoke: &MockAuthInvoke {
+            contract: &f.client.address,
+            fn_name: "bind_payout",
+            args: (f.recipient.clone(), payout.clone()).into_val(&f.env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(f.client.try_bind_payout(&f.recipient, &payout).is_err());
+
+    f.client.mock_all_auths().bind_payout(&f.recipient, &payout);
+    f.env.mock_auths(&[MockAuth {
+        address: &payout,
+        invoke: &MockAuthInvoke {
+            contract: &f.client.address,
+            fn_name: "confirm_payout",
+            args: (f.recipient.clone(),).into_val(&f.env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(f.client.try_confirm_payout(&f.recipient).is_err());
+    assert!(f
+        .client
+        .mock_all_auths()
+        .pending_payout(&f.recipient)
+        .is_some());
+}
+
 // ------------------------------------------------------------ cancellation --
 
 #[test]

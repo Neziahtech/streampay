@@ -529,6 +529,23 @@ fn probe(branch: Branch) -> Option<StreamError> {
                 &50
             )))
         }
+        Branch::PayoutBindingMissing => {
+            let f = Fixture::setup_quiet();
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_confirm_payout(&f.recipient)))
+        }
+        Branch::PayoutBindingNotReady => {
+            let f = Fixture::setup_quiet();
+            f.client
+                .mock_all_auths()
+                .bind_payout(&f.recipient, &soroban_sdk::Address::generate(&f.env));
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_confirm_payout(&f.recipient)))
+        }
         // Invariant-protected: a stored stream always satisfies
         // `0 <= withdrawn <= streamed <= deposit <= i128::MAX`, so these
         // checked subtractions/addition can never cross an i128 boundary —
@@ -684,7 +701,9 @@ fn stream_error_variant_list_is_exhaustive() {
             | StreamError::NoPendingUpgrade
             | StreamError::TimelockNotExpired
             | StreamError::UpgradeDelayTooShort
-            | StreamError::AlreadyMigrated => StreamError::ALL.contains(&e),
+            | StreamError::AlreadyMigrated
+            | StreamError::NoPendingPayoutBinding
+            | StreamError::PayoutBindingNotReady => StreamError::ALL.contains(&e),
         }
     }
 

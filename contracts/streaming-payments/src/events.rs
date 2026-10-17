@@ -41,6 +41,34 @@ pub struct Withdrawn {
     pub withdrawn_total: i128,
 }
 
+/// Emitted when a recipient proposes or replaces a payout destination.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PayoutBound {
+    #[topic]
+    pub recipient: Address,
+    pub payout_address: Address,
+    pub activates_at: u64,
+}
+
+/// Emitted when a recipient confirms a matured payout destination.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PayoutActive {
+    #[topic]
+    pub recipient: Address,
+    pub payout_address: Address,
+}
+
+/// Emitted when a recipient cancels a pending payout destination.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PayoutBindingCancelled {
+    #[topic]
+    pub recipient: Address,
+    pub payout_address: Address,
+}
+
 /// Emitted when a stream is cancelled. The recipient's accrued balance and
 /// the sender's refund are both paid atomically in the same transaction.
 #[contractevent]

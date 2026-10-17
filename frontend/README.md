@@ -1,15 +1,16 @@
 # StreamPay frontend
 
 Minimal Next.js (App Router, TypeScript) UI for the StreamPay contract:
-connect Freighter, create streams, withdraw accrued funds (single amount or
-atomic **withdraw max**), top up, cancel — with on-chain discovery so the
-list survives reloads and shows streams you didn't create in this session.
+connect Freighter, create streams, route claims to a delayed alternate payout
+address, withdraw accrued funds (single amount or atomic **withdraw max**),
+top up, cancel — with on-chain discovery so the list survives reloads and
+shows streams you didn't create in this session.
 
 ## Routes
 
 | Route | What it does |
 |---|---|
-| `/` | Connect, single and CSV batch creation forms (asset selector: **native XLM** or an entered token contract id), stream list with per-row actions and a **Discover on-chain** button (scans the contract's `recipient_streams` / `sender_streams` indexes for your address) |
+| `/` | Connect, single and CSV batch creation forms (asset selector: **native XLM** or an entered token contract id), payout destination proposal with a live confirmation countdown, stream list with per-row actions and a **Discover on-chain** button (scans the contract's `recipient_streams` / `sender_streams` indexes for your address) |
 | `/stream/[id]` | Stream detail: progress bar, live `available` poll (15 s), withdraw form with over-withdrawal guard, **Withdraw max** (`withdraw_max`), cancel. Read-only-safe without a wallet; contract errors decode to `StreamError` names |
 | `GET /accrual/[id]` | Computed accrual curve time-series API (`?from&to&step`) with ETag/304 caching, honest staleness headers, and shared RPC rate budgets |
 | `/docs` | Public interactive API documentation page (Swagger UI) rendering OpenAPI 3.1 spec |
@@ -50,7 +51,12 @@ For a one-command deployed contract + demo stream, see
 - Contract errors decode to `StreamError` names, including the scheduled-intent
   codes (18–25) and the transfer-failure codes: `DepositTransferFailed` (26),
   `TopUpTransferFailed` (27), `RecipientPayoutFailed` (28),
-  `SenderRefundFailed` (29), `TreasuryPayoutFailed` (30).
+  `SenderRefundFailed` (29), `TreasuryPayoutFailed` (30), policy/upgrade codes
+  (31–41), and payout-binding errors (42–43).
+- A payout change needs a second recipient signature after 24 hours; the active
+  destination is used by `withdraw` and `withdraw_max`, never by cancellation.
+- Payout binding errors are appended as `NoPendingPayoutBinding` (42) and
+  `PayoutBindingNotReady` (43), after the policy and upgrade errors.
 - Amounts are **smallest token units** (stroops for classic assets).
 - The batch form accepts `address,rate,duration` CSV rows. Rate is an integer
   in smallest token units per second; duration is integer seconds. Each
