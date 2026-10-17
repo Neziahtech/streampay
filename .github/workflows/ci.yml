@@ -241,3 +241,16 @@ jobs:
           wasm=target/wasm32v1-none/release/streampay_contract.wasm
           [ -s "$wasm" ] || { echo "wasm missing or empty"; exit 1; }
           echo "OK: $(ls -sh "$wasm")"
+
+  adr-integrity:
+    name: Docs — ADR numbering / link integrity / template
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Validate ADRs
+        run: node scripts/check-adrs.mjs
