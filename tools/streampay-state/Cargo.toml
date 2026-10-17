@@ -1,0 +1,30 @@
+[package]
+name = "streampay-state"
+version = "0.1.0"
+edition = "2021"
+description = "StreamPay state backup, verification, and sandbox-replay CLI tool."
+license = "Apache-2.0"
+
+[[bin]]
+name = "streampay-state"
+path = "src/main.rs"
+
+[dependencies]
+# Soroban XDR types
+stellar-xdr = { version = "0.0.21", features = ["std", "curr"] }
+# Stellar StrKey (G…/C… address encoding)
+stellar-strkey = "0.0.9"
+# HTTP client for Soroban RPC calls (blocking)
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+# JSON serialisation
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# CLI argument parsing
+clap = { version = "4", features = ["derive"] }
+# Base64 / hex utilities
+base64 = "0.22"
+hex = "0.4"
+# SHA-256 for schema fingerprint
+sha2 = "0.10"
+# Error handling
+anyhow = "1"

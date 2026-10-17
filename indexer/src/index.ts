@@ -3,6 +3,9 @@ import { nativeToScVal } from "@stellar/stellar-sdk";
 import { decodeEvent } from "./decoder.js";
 import { StreamStore } from "./store.js";
 import type { RpcEvent } from "./types.js";
+import { getGlobalRpcManager } from "./rpc-manager.js";
+
+export function createApp(store: StreamStore, rpcHealth?: () => import("./rpc-manager.js").EndpointHealth[]): express.Express {
 import { WebhookDispatcher } from "./webhooks/dispatcher.js";
 import { validateWebhookUrl } from "./webhooks/ssrf.js";
 
@@ -16,6 +19,7 @@ export function createApp(store: StreamStore, dispatcher?: WebhookDispatcher): e
       status: "ok",
       lastLedger: store.getState("lastLedger") ?? null,
       cursor: store.getState("cursor") ?? null,
+      rpcEndpoints: rpcHealth?.() ?? [],
     });
   });
 
@@ -135,26 +139,35 @@ export async function run(): Promise<void> {
   if (!Number.isFinite(pollInterval) || pollInterval < 250) throw new Error("POLL_INTERVAL_MS must be at least 250");
 
   const store = new StreamStore(dbPath);
+
+  // ── RPC manager: shared across the indexer, replaces the ad-hoc fetch helper.
+  // Additional endpoints can be added via RPC_URL_FALLBACK_1, RPC_URL_FALLBACK_2 env vars.
+  const rpcEndpoints = [{ url: rpcUrl }];
+  for (let i = 1; i <= 5; i++) {
+    const extra = process.env[`RPC_URL_FALLBACK_${i}`];
+    if (extra) rpcEndpoints.push({ url: extra });
+  }
+  const manager = getGlobalRpcManager({
+    endpoints: rpcEndpoints,
+    maxRps: Number(process.env.RPC_MAX_RPS ?? "10"),
+    failureThreshold: 3,
+    lagThresholdSeconds: 60,
+    hedgeDelayMs: 300,
+    healthCheckIntervalMs: 15_000,
+    timeoutMs: 20_000,
+  });
+
+  const app = createApp(store, () => manager.getHealth());
+    hedgeDelayMs: 300,
+    healthCheckIntervalMs: 15_000,
+    timeoutMs: 20_000,
+  });
   const dispatcher = new WebhookDispatcher(store.webhooks);
   dispatcher.start();
   const app = createApp(store, dispatcher);
 
   const eventNames = ["stream_created", "withdrawn", "stream_cancelled", "stream_topped_up", "stream_paused", "stream_resumed"];
   const topicFilters = eventNames.map((name) => [nativeToScVal(name, { type: "symbol" }).toXDR("base64")]);
-  let rpcId = 0;
-
-  async function rpc<T>(method: string, params: unknown): Promise<T> {
-    const response = await fetch(rpcUrl, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: ++rpcId, method, params }),
-    });
-    if (!response.ok) throw new Error(`RPC HTTP ${response.status}: ${await response.text()}`);
-    const body = (await response.json()) as { result?: T; error?: { message: string } };
-    if (body.error) throw new Error(`RPC ${method}: ${body.error.message}`);
-    if (!body.result) throw new Error(`RPC ${method} returned no result`);
-    return body.result;
-  }
 
   interface EventsResult {
     events: RpcEvent[];
@@ -168,7 +181,7 @@ export async function run(): Promise<void> {
     if (!cursor) {
       const configured = process.env.START_LEDGER;
       if (configured && !/^\d+$/.test(configured)) throw new Error("START_LEDGER must be an integer ledger sequence");
-      startLedger = configured ? Number(configured) : (await rpc<{ sequence: number }>("getLatestLedger", {})).sequence;
+      startLedger = configured ? Number(configured) : (await manager.getLatestLedger()).sequence;
     }
     for (;;) {
       const params = {
@@ -177,7 +190,7 @@ export async function run(): Promise<void> {
         pagination: { limit: 1000 },
         xdrFormat: "base64",
       };
-      const page = await rpc<EventsResult>("getEvents", params);
+      const page = await manager.getEvents(params) as EventsResult;
       const nextCursor = page.cursor || cursor;
       store.ingestPage(page.events.map(decodeEvent), nextCursor, page.latestLedger);
       cursor = nextCursor;
