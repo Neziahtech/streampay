@@ -42,7 +42,7 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Unit + property tests
-        run: cargo test -p streampay-contract --locked
+        run: cargo test --workspace --locked
 
       - name: Reference model + differential tests
         run: cargo test -p streampay-model --locked
@@ -62,7 +62,7 @@ jobs:
           tool: cargo-llvm-cov
 
       - name: llvm-cov (summary)
-        run: cargo llvm-cov -p streampay-contract --summary-only
+        run: cargo llvm-cov --workspace --summary-only
 
       # soroban-sdk 28 rejects a plain `cargo build --target wasm32v1-none`
       # (its build script requires the stellar-cli >= 25.2 spec-shaking v2
