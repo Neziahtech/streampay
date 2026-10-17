@@ -33,7 +33,7 @@ const CONTRACT_ID = process.env.NEXT_PUBLIC_STREAMING_CONTRACT_ID || "";
 function contract(): Contract {
   if (!CONTRACT_ID) {
     throw new Error(
-      "NEXT_PUBLIC_STREAMING_CONTRACT_ID is not set — deploy the contract and put its id in frontend/.env.local"
+      "NEXT_PUBLIC_STREAMING_CONTRACT_ID is not set — deploy the contract and put its id in frontend/.env.local",
     );
   }
   return new Contract(CONTRACT_ID);
@@ -111,7 +111,7 @@ export function tokenContractId(asset: string): string {
   if (asset !== NATIVE_XLM) {
     if (!StrKey.isValidContract(asset)) {
       throw new Error(
-        `"${asset}" is not a token contract id (expected a C… address).`
+        `"${asset}" is not a token contract id (expected a C… address).`,
       );
     }
     return asset;
@@ -196,7 +196,7 @@ export function describeError(err: unknown): string {
 /** The ed25519 all-zero key: a syntactically valid source for simulations. */
 const DUMMY_SOURCE = new Account(
   "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-  "0"
+  "0",
 );
 
 /**
@@ -206,7 +206,7 @@ const DUMMY_SOURCE = new Account(
 async function send<T>(
   source: string,
   operation: xdr.Operation,
-  decode: (v: xdr.ScVal) => T
+  decode: (v: xdr.ScVal) => T,
 ): Promise<T> {
   const { result } = await sendWithTx(source, operation, decode);
   return result;
@@ -265,7 +265,7 @@ async function sendWithTx<T>(
 async function readAllowance(
   token: string,
   from: string,
-  spender: string
+  spender: string,
 ): Promise<bigint | null> {
   const retval = await simulateRead(token, "allowance", [
     scAddr(from),
@@ -292,7 +292,7 @@ async function readAllowance(
 async function ensureAllowance(
   sender: string,
   token: string,
-  amount: string
+  amount: string,
 ): Promise<void> {
   const current = await readAllowance(token, sender, CONTRACT_ID);
   if (current === null || current >= BigInt(amount)) return;
@@ -309,15 +309,15 @@ async function ensureAllowance(
       scAddr(sender),
       scAddr(CONTRACT_ID),
       i128(amount),
-      u32(liveUntilLedger)
+      u32(liveUntilLedger),
     ),
-    () => undefined
+    () => undefined,
   );
 }
 
 export async function createStream(
   sender: string,
-  args: StreamArgs
+  args: StreamArgs,
 ): Promise<bigint> {
   const token = tokenContractId(args.token); // "native" → the network's XLM SAC
   const start = Math.floor(Date.now() / 1000) + 1;
@@ -334,7 +334,7 @@ export async function createStream(
     i128(args.deposit),
     u64(start),
     u64(end),
-    nativeToScVal(args.cancelable)
+    nativeToScVal(args.cancelable),
   );
   // create_stream returns the new stream id (u64).
   return send(sender, op, (v) => BigInt(scValToNative(v) as bigint));
@@ -345,7 +345,7 @@ export async function createStreams(
   sender: string,
   token: string,
   entries: BatchStreamEntry[],
-  cancelable: boolean
+  cancelable: boolean,
 ): Promise<bigint[]> {
   if (entries.length === 0) {
     throw new Error("Add at least one stream to the batch.");
@@ -373,14 +373,14 @@ export async function createStreams(
           new xdr.ScMapEntry({
             key: xdr.ScVal.scvSymbol(name),
             val: value,
-          })
-      )
+          }),
+      ),
     );
   });
   const op = contract().call(
     "create_streams",
     scAddr(sender),
-    xdr.ScVal.scvVec(inputs)
+    xdr.ScVal.scvVec(inputs),
   );
   return send(sender, op, (v) => {
     const decoded = scValToNative(v);
@@ -394,12 +394,12 @@ export async function createStreams(
 export async function withdrawFromStream(
   recipient: string,
   streamId: string,
-  amount: string
+  amount: string,
 ): Promise<void> {
   await send(
     recipient,
     contract().call("withdraw", u64(streamId), i128(amount)),
-    () => undefined
+    () => undefined,
   );
 }
 
@@ -409,12 +409,10 @@ export async function withdrawFromStream(
  */
 export async function withdrawMaxFromStream(
   recipient: string,
-  streamId: string
+  streamId: string,
 ): Promise<bigint> {
-  return send(
-    recipient,
-    contract().call("withdraw_max", u64(streamId)),
-    (v) => BigInt(scValToNative(v) as bigint)
+  return send(recipient, contract().call("withdraw_max", u64(streamId)), (v) =>
+    BigInt(scValToNative(v) as bigint),
   );
 }
 
@@ -446,7 +444,7 @@ export async function claimStreamWithReceipt(
 export async function topUpStream(
   sender: string,
   streamId: string,
-  amount: string
+  amount: string,
 ): Promise<void> {
   // Top-ups pull through the same token allowance as the deposit. If the
   // stream cannot be read, skip the pre-check and let `top_up` simulation
@@ -456,18 +454,18 @@ export async function topUpStream(
   await send(
     sender,
     contract().call("top_up", u64(streamId), i128(amount)),
-    () => undefined
+    () => undefined,
   );
 }
 
 export async function cancelStream(
   caller: string,
-  streamId: string
+  streamId: string,
 ): Promise<void> {
   await send(
     caller,
     contract().call("cancel_stream", scAddr(caller), u64(streamId)),
-    () => undefined
+    () => undefined,
   );
 }
 
@@ -477,20 +475,16 @@ export async function cancelStream(
  */
 export async function sweepStream(
   caller: string,
-  streamId: string
+  streamId: string,
 ): Promise<void> {
-  await send(
-    caller,
-    contract().call("sweep", u64(streamId)),
-    () => undefined
-  );
+  await send(caller, contract().call("sweep", u64(streamId)), () => undefined);
 }
 
 /** Read-only contract call on any contract: simulated, never signed. */
 async function simulateRead(
   contractId: string,
   method: string,
-  args: xdr.ScVal[]
+  args: xdr.ScVal[],
 ): Promise<xdr.ScVal | null> {
   // Reads run on whichever contract the caller names (the streaming contract
   // or, for the allowance pre-check, a token).
@@ -548,7 +542,7 @@ const MAX_PAGE_SIZE = 50; // mirrors the contract's MAX_PAGE_SIZE
 async function readStreamIdsPage(
   view: "recipient_streams" | "sender_streams",
   address: string,
-  offset: number
+  offset: number,
 ): Promise<string[]> {
   const retval = await simulateRead(CONTRACT_ID, view, [
     scAddr(address),
@@ -568,7 +562,7 @@ async function readStreamIdsPage(
  */
 export async function fetchStreamsFor(
   address: string,
-  role: "recipient" | "sender"
+  role: "recipient" | "sender",
 ): Promise<StreamView[]> {
   const view = role === "recipient" ? "recipient_streams" : "sender_streams";
   const ids: string[] = [];
@@ -578,7 +572,7 @@ export async function fetchStreamsFor(
     if (page.length < MAX_PAGE_SIZE) break;
   }
   const streams = await Promise.all(
-    ids.map((id) => readStream(id).catch(() => null))
+    ids.map((id) => readStream(id).catch(() => null)),
   );
   return streams.filter((s): s is StreamView => s !== null);
 }
@@ -604,7 +598,7 @@ export {
  */
 export async function fetchAddressStreamsPage(
   address: string,
-  options: CursorPaginationOptions = {}
+  options: CursorPaginationOptions = {},
 ): Promise<PaginatedStreamsResponse> {
   const asOfTimestamp = Math.floor(Date.now() / 1000);
   const role = options.role || "all";
@@ -632,4 +626,3 @@ export async function fetchAddressStreamsPage(
 
   return paginateStreamsByCursor(streams, options, asOfTimestamp);
 }
-

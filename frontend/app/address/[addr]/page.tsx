@@ -7,7 +7,9 @@ import {
   type PaginationDirection,
   type StreamView,
 } from "@/lib/stellar";
-import AddressExplorerClient, { type AddressStats } from "./AddressExplorerClient";
+import AddressExplorerClient, {
+  type AddressStats,
+} from "./AddressExplorerClient";
 
 interface AddressPageProps {
   params: Promise<{ addr: string }>;
@@ -18,7 +20,10 @@ export async function generateMetadata({
   params,
 }: AddressPageProps): Promise<Metadata> {
   const { addr } = await params;
-  const shortAddr = addr && addr.length > 12 ? `${addr.slice(0, 6)}…${addr.slice(-6)}` : addr || "Address";
+  const shortAddr =
+    addr && addr.length > 12
+      ? `${addr.slice(0, 6)}…${addr.slice(-6)}`
+      : addr || "Address";
 
   return {
     title: `Address ${shortAddr} | StreamPay Explorer`,
@@ -101,11 +106,11 @@ export default async function AddressPage({
     activeStreams: allStreams.filter((s) => s.status === "Active").length,
     totalDeposited: allStreams.reduce(
       (sum, s) => sum + (BigInt(s.deposit) || 0n),
-      0n
+      0n,
     ),
     totalWithdrawn: allStreams.reduce(
       (sum, s) => sum + (BigInt(s.withdrawn) || 0n),
-      0n
+      0n,
     ),
   };
 

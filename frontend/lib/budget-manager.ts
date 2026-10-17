@@ -76,7 +76,7 @@ export class RpcBudgetManager {
     bucket: RateBucket,
     maxLimit: number,
     windowSeconds: number,
-    now: number
+    now: number,
   ): void {
     if (bucket.lastRefill < 0) {
       bucket.lastRefill = now;
@@ -84,20 +84,32 @@ export class RpcBudgetManager {
     }
     const elapsedSeconds = Math.max(0, (now - bucket.lastRefill) / 1000);
     const refillRate = maxLimit / windowSeconds;
-    bucket.tokens = Math.min(maxLimit, bucket.tokens + elapsedSeconds * refillRate);
+    bucket.tokens = Math.min(
+      maxLimit,
+      bucket.tokens + elapsedSeconds * refillRate,
+    );
     bucket.lastRefill = now;
   }
 
   /**
    * Check and consume client budget.
    */
-  public consumeClientBudget(clientId: string, cost = 1, now = Date.now()): BudgetDecision {
+  public consumeClientBudget(
+    clientId: string,
+    cost = 1,
+    now = Date.now(),
+  ): BudgetDecision {
     let bucket = this.clientBuckets.get(clientId);
     if (!bucket) {
       bucket = { tokens: this.clientLimit, lastRefill: now };
       this.clientBuckets.set(clientId, bucket);
     } else {
-      this.refillBucket(bucket, this.clientLimit, this.clientWindowSeconds, now);
+      this.refillBucket(
+        bucket,
+        this.clientLimit,
+        this.clientWindowSeconds,
+        now,
+      );
     }
 
     if (bucket.tokens < cost) {
@@ -128,7 +140,7 @@ export class RpcBudgetManager {
       this.nodeRpcBucket,
       this.nodeRpcLimit,
       this.nodeRpcWindowSeconds,
-      now
+      now,
     );
 
     if (this.nodeRpcBucket.tokens < cost) {
@@ -162,7 +174,7 @@ export class RpcBudgetManager {
    */
   public getStaleSnapshot(
     streamId: string,
-    now = Math.floor(Date.now() / 1000)
+    now = Math.floor(Date.now() / 1000),
   ): CachedStreamState | null {
     const cached = this.snapshotCache.get(streamId);
     if (!cached) return null;

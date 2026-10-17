@@ -49,7 +49,11 @@ export class ValidationError extends Error {
   public statusCode: number;
   public code: string;
 
-  constructor(message: string, code = "INVALID_QUERY_PARAMS", statusCode = 400) {
+  constructor(
+    message: string,
+    code = "INVALID_QUERY_PARAMS",
+    statusCode = 400,
+  ) {
     super(message);
     this.name = "ValidationError";
     this.code = code;
@@ -68,35 +72,45 @@ export function validateQueryParams(
     to?: string | null;
     step?: string | null;
   },
-  maxPoints = MAX_POINTS_LIMIT
+  maxPoints = MAX_POINTS_LIMIT,
 ): ValidatedQueryParams {
   const { id, from, to, step } = raw;
 
   if (!id || typeof id !== "string" || !/^\d+$/.test(id.trim())) {
     throw new ValidationError(
       "Query parameter 'id' must be a valid positive integer stream ID.",
-      "INVALID_STREAM_ID"
+      "INVALID_STREAM_ID",
     );
   }
 
-  if (from === undefined || from === null || from === "" || !/^-?\d+$/.test(from)) {
+  if (
+    from === undefined ||
+    from === null ||
+    from === "" ||
+    !/^-?\d+$/.test(from)
+  ) {
     throw new ValidationError(
       "Query parameter 'from' must be an integer Unix timestamp (in seconds).",
-      "INVALID_FROM_PARAM"
+      "INVALID_FROM_PARAM",
     );
   }
 
   if (to === undefined || to === null || to === "" || !/^-?\d+$/.test(to)) {
     throw new ValidationError(
       "Query parameter 'to' must be an integer Unix timestamp (in seconds).",
-      "INVALID_TO_PARAM"
+      "INVALID_TO_PARAM",
     );
   }
 
-  if (step === undefined || step === null || step === "" || !/^-?\d+$/.test(step)) {
+  if (
+    step === undefined ||
+    step === null ||
+    step === "" ||
+    !/^-?\d+$/.test(step)
+  ) {
     throw new ValidationError(
       "Query parameter 'step' must be an integer (in seconds).",
-      "INVALID_STEP_PARAM"
+      "INVALID_STEP_PARAM",
     );
   }
 
@@ -107,28 +121,28 @@ export function validateQueryParams(
   if (fromNum < 0) {
     throw new ValidationError(
       "Query parameter 'from' must be a non-negative timestamp.",
-      "NEGATIVE_FROM"
+      "NEGATIVE_FROM",
     );
   }
 
   if (toNum < 0) {
     throw new ValidationError(
       "Query parameter 'to' must be a non-negative timestamp.",
-      "NEGATIVE_TO"
+      "NEGATIVE_TO",
     );
   }
 
   if (stepNum <= 0) {
     throw new ValidationError(
       "Query parameter 'step' must be greater than zero.",
-      "INVALID_STEP_POSITIVE"
+      "INVALID_STEP_POSITIVE",
     );
   }
 
   if (fromNum > toNum) {
     throw new ValidationError(
       `Query parameter 'from' (${fromNum}) must be less than or equal to 'to' (${toNum}).`,
-      "FROM_GREATER_THAN_TO"
+      "FROM_GREATER_THAN_TO",
     );
   }
 
@@ -136,7 +150,7 @@ export function validateQueryParams(
   if (pointCount > maxPoints) {
     throw new ValidationError(
       `Requested range yields ${pointCount} points, which exceeds the maximum allowed limit of ${maxPoints} points. Increase step size or reduce range.`,
-      "POINT_LIMIT_EXCEEDED"
+      "POINT_LIMIT_EXCEEDED",
     );
   }
 
@@ -176,7 +190,7 @@ export function computeStateHash(stream: StreamData): string {
  */
 export function computeETag(
   stateHash: string,
-  params: ValidatedQueryParams
+  params: ValidatedQueryParams,
 ): string {
   const input = `${stateHash}:${params.id}:${params.from}:${params.to}:${params.step}`;
   const hash = createHash("sha256").update(input).digest("hex");
@@ -189,7 +203,7 @@ export function computeETag(
  */
 export function matchesIfNoneMatch(
   ifNoneMatchHeader: string | null | undefined,
-  computedETag: string
+  computedETag: string,
 ): boolean {
   if (!ifNoneMatchHeader) return false;
   const targetTag = computedETag.replace(/^W\//, "").replace(/"/g, "").trim();
@@ -197,7 +211,10 @@ export function matchesIfNoneMatch(
   const candidates = ifNoneMatchHeader.split(",").map((s) => s.trim());
   for (const candidate of candidates) {
     if (candidate === "*") return true;
-    const cleanCandidate = candidate.replace(/^W\//, "").replace(/"/g, "").trim();
+    const cleanCandidate = candidate
+      .replace(/^W\//, "")
+      .replace(/"/g, "")
+      .trim();
     if (cleanCandidate === targetTag) return true;
   }
   return false;
@@ -209,7 +226,7 @@ export function matchesIfNoneMatch(
  */
 export function computeCurve(
   stream: StreamData,
-  params: ValidatedQueryParams
+  params: ValidatedQueryParams,
 ): CurvePoint[] {
   const { from, to, step } = params;
   const points: CurvePoint[] = [];
@@ -219,7 +236,7 @@ export function computeCurve(
       stream.deposit,
       stream.startTime,
       stream.endTime,
-      BigInt(t)
+      BigInt(t),
     );
     points.push({
       timestamp: t,
