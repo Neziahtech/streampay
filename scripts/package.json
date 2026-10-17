@@ -9,6 +9,7 @@
   "scripts": {
     "verify-fees": "node verify-fees.ts",
     "demo-anchor": "node anchor_offramp_demo.js",
+    "check-adrs": "node check-adrs.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
