@@ -16,6 +16,7 @@ import {
 } from "@/lib/stellar";
 import { computeAvailable, StreamSnapshot } from "@/lib/accrual";
 import { useToast } from "@/components/toast";
+import DiscoveryConsentModal from "@/components/DiscoveryConsentModal";
 
 function fmtUnits(v: bigint): string {
   return v.toString();
@@ -35,6 +36,7 @@ export default function StreamDetail() {
   const [amount, setAmount] = useState<string>("");
   const [address, setAddress] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string>("");
+  const [discoveryModalOpen, setDiscoveryModalOpen] = useState<boolean>(false);
 
   const reload = useCallback(async () => {
     if (!id) return;
@@ -261,8 +263,36 @@ export default function StreamDetail() {
           </section>
         )}
 
-      <p>
+      {(isSender || isRecipient) && (
+        <section className="card">
+          <h2>Anonymized Discovery Listing</h2>
+          <p className="muted">
+            Opt into publishing an anonymized, verifiable listing for this stream to the public directory.
+            Requires cryptographic consent from both parties. No addresses are shared by default.
+          </p>
+          <button
+            type="button"
+            onClick={() => setDiscoveryModalOpen(true)}
+          >
+            Manage Discovery Listing
+          </button>
+        </section>
+      )}
+
+      {discoveryModalOpen && address && stream && (
+        <DiscoveryConsentModal
+          stream={stream}
+          currentUserAddress={address}
+          isOpen={discoveryModalOpen}
+          onClose={() => setDiscoveryModalOpen(false)}
+        />
+      )}
+
+      <p style={{ display: "flex", gap: "16px" }}>
         <Link href="/">← All streams</Link>
+        <Link href="/listings" style={{ color: "var(--accent2)" }}>
+          Browse Discovery Directory →
+        </Link>
       </p>
     </main>
   );

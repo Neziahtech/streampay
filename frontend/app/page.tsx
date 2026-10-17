@@ -115,13 +115,20 @@ export default function Home() {
   if (!address) {
     return (
       <main className="wrap">
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div className="kicker mono">SOROBAN · STELLAR</div>
-          <Link href="/docs" style={{ color: "#38bdf8", fontSize: "0.85rem", textDecoration: "none" }}>
-            API Docs ↗
-          </Link>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap" }}>
+          <div>
+            <div className="kicker mono">SOROBAN · STELLAR</div>
+            <h1>⚡ StreamPay</h1>
+          </div>
+          <div style={{ display: "flex", gap: "16px", alignItems: "center" }}>
+            <Link href="/docs" style={{ color: "#38bdf8", fontSize: "0.85rem", textDecoration: "none" }}>
+              API Docs ↗
+            </Link>
+            <Link href="/listings" style={{ color: "var(--accent2)", fontSize: "14px", textDecoration: "none" }}>
+              Browse Discovery Directory →
+            </Link>
+          </div>
         </div>
-        <h1>⚡ StreamPay</h1>
         <p className="muted">
           Continuous, per-second payment streams — payroll, vesting,
           subscriptions. Connect Freighter to begin.
@@ -152,23 +159,28 @@ export default function Home() {
 
   return (
     <main className="wrap">
-      <h1>⚡ StreamPay</h1>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-        <p className="muted">
-          Connected: <code>{address}</code>
-        </p>
-        <a
-          href="/simulator"
-          style={{
-            color: "var(--accent2)",
-            textDecoration: "none",
-            fontSize: "13px",
-            fontWeight: 600,
-          }}
-        >
-          Accrual Simulator →
-        </a>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap" }}>
+        <h1>⚡ StreamPay</h1>
+        <div style={{ display: "flex", gap: "16px", alignItems: "baseline" }}>
+          <a
+            href="/simulator"
+            style={{
+              color: "var(--accent2)",
+              textDecoration: "none",
+              fontSize: "13px",
+              fontWeight: 600,
+            }}
+          >
+            Accrual Simulator →
+          </a>
+          <Link href="/listings" style={{ color: "var(--accent2)", fontSize: "14px", textDecoration: "none" }}>
+            Browse Discovery Directory →
+          </Link>
+        </div>
       </div>
+      <p className="muted">
+        Connected: <code>{address}</code>
+      </p>
 
       <StreamForm
         onCreate={async (args) => {
