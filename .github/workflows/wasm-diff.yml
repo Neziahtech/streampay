@@ -15,10 +15,6 @@ concurrency:
   group: wasm-diff-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-permissions:
-  contents: read
-  pull-requests: write
-
 # ==============================================================================
 # DISASSEMBLY TOOL CHOICE & JUSTIFICATION:
 #
@@ -51,6 +47,9 @@ jobs:
   wasm-diff:
     name: Function-level Wasm binary diff
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - name: Checkout Head (PR)
         uses: actions/checkout@v7
@@ -63,24 +62,37 @@ jobs:
           ref: ${{ github.base_ref || 'main' }}
           path: base-repo
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust toolchain (pinned rustc 1.99.1)
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.99.1"
           targets: wasm32v1-none
 
       - name: Install stellar-cli
         run: |
           curl -fsSL https://github.com/stellar/stellar-cli/releases/download/v28.1.0/stellar-cli-28.1.0-x86_64-unknown-linux-gnu.tar.gz | tar xz
           sudo install stellar /usr/local/bin/stellar
-          stellar --version
 
-      - name: Install disassembly tools (wabt & binaryen)
-        # wabt provides wasm-objdump (primary tool); binaryen provides wasm-dis (fallback)
+      - name: Install wabt (wasm-objdump)
         run: |
           sudo apt-get update
-          sudo apt-get install -y wabt binaryen
+          sudo apt-get install -y wabt
+
+      - name: Install pinned wasm-opt and wasm-dis (Binaryen version_116)
+        run: |
+          curl -fsSL https://github.com/WebAssembly/binaryen/releases/download/version_116/binaryen-version_116-x86_64-linux.tar.gz | tar xz
+          sudo install binaryen-version_116/bin/wasm-opt /usr/local/bin/wasm-opt
+          sudo install binaryen-version_116/bin/wasm-dis /usr/local/bin/wasm-dis
+          rm -rf binaryen-version_116
+
+      - name: Verify pinned toolchain versions (rustc & wasm-opt)
+        run: |
+          echo "=== Pinned Toolchain Version Verification ==="
+          rustc --version
+          wasm-opt --version
           wasm-objdump --version
-          wasm-dis --version
+          stellar --version
+          echo "============================================="
 
       - name: Cache cargo
         uses: actions/cache@v4

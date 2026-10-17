@@ -450,10 +450,12 @@ def diff_wasm_functions(
             pct = ((delta / matched_base.size) * 100.0) if matched_base.size > 0 else 0.0
 
             if delta == 0:
-                # Same size. Did offset or index shift?
-                is_churn = (h.offset != matched_base.offset or h.index != matched_base.index)
-                status = "CHURN" if is_churn else "UNCHANGED"
-                notes = "Identical logic (offset/index shifted)" if is_churn else "Identical"
+                is_churn = True
+                status = "CHURN"
+                if h.offset != matched_base.offset or h.index != matched_base.index or h.name != matched_base.name:
+                    notes = "Identical logic (offset/index/symbol shifted)"
+                else:
+                    notes = "Identical logic (0 B delta)"
             elif delta > 0:
                 status = "GROWN"
                 is_churn = False
@@ -548,6 +550,9 @@ def diff_wasm_functions(
         "churn": sum(1 for d in diffs if d.status == "CHURN"),
     }
 
+    # Sort all diffs deterministically by delta descending, then demangled name
+    diffs.sort(key=lambda d: (-abs(d.delta), d.demangled_signature, d.name))
+
     return diffs, counts
 
 
@@ -612,9 +617,9 @@ def run_wasm_diff(
 
     diffs, counts = diff_wasm_functions(base_funcs, head_funcs)
 
-    # Sort movers by absolute byte delta descending
+    # Sort movers by absolute byte delta descending, breaking ties deterministically by symbol name
     movers = [d for d in diffs if d.status in ("NEW", "REMOVED", "GROWN", "SHRUNK")]
-    movers.sort(key=lambda d: abs(d.delta), reverse=True)
+    movers.sort(key=lambda d: (-abs(d.delta), d.demangled_signature, d.name))
     top_movers = movers[:top_limit]
 
     total_delta = head_stats["total_size"] - base_stats["total_size"]

@@ -235,6 +235,82 @@ class TestWasmDiff(unittest.TestCase):
             self.assertIn("streampay_contract::helpers::to_remove", content)
             self.assertIn("filtered offset/symbol churn", content)
 
+    def test_diff_stability_against_function_ordering(self):
+        """Verifies report and top movers remain deterministic when functions appear in different orders."""
+        body_a = b"\x00\x41\x05\x0b"
+        body_b = b"\x00\x41\x0a\x0b"
+        body_c = b"\x00\x41\x14\x0b"
+
+        base_wasm = build_test_wasm(
+            functions=[body_a, body_b, body_c],
+            names={
+                0: "streampay_contract::fn_alpha",
+                1: "streampay_contract::fn_beta",
+                2: "streampay_contract::fn_gamma",
+            },
+        )
+
+        # Order 1: alpha expanded, beta unchanged, gamma removed, delta added
+        body_a_grown = b"\x00\x41\x05\x41\x02\x6c\x0b"
+        body_d_new = b"\x00\x41\x63\x0b"
+
+        head_wasm_order1 = build_test_wasm(
+            functions=[body_a_grown, body_b, body_d_new],
+            names={
+                0: "streampay_contract::fn_alpha",
+                1: "streampay_contract::fn_beta",
+                2: "streampay_contract::fn_delta",
+            },
+        )
+
+        # Order 2: reversed function order in head binary
+        head_wasm_order2 = build_test_wasm(
+            functions=[body_d_new, body_b, body_a_grown],
+            names={
+                0: "streampay_contract::fn_delta",
+                1: "streampay_contract::fn_beta",
+                2: "streampay_contract::fn_alpha",
+            },
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base_p = os.path.join(tmpdir, "base.wasm")
+            head_p1 = os.path.join(tmpdir, "head1.wasm")
+            head_p2 = os.path.join(tmpdir, "head2.wasm")
+            md_p1 = os.path.join(tmpdir, "report1.md")
+            md_p2 = os.path.join(tmpdir, "report2.md")
+
+            with open(base_p, "wb") as f:
+                f.write(base_wasm)
+            with open(head_p1, "wb") as f:
+                f.write(head_wasm_order1)
+            with open(head_p2, "wb") as f:
+                f.write(head_wasm_order2)
+
+            res1 = run_wasm_diff(base_wasm=base_p, head_wasm=head_p1, output_markdown=md_p1)
+            res2 = run_wasm_diff(base_wasm=base_p, head_wasm=head_p2, output_markdown=md_p2)
+
+            # Summaries and counts must match identically
+            self.assertEqual(res1["summary"]["counts"], res2["summary"]["counts"])
+
+            # Top movers must match identically (same order, same contents)
+            self.assertEqual(
+                [m["demangled_signature"] for m in res1["top_movers"]],
+                [m["demangled_signature"] for m in res2["top_movers"]],
+            )
+            self.assertEqual(
+                [m["delta"] for m in res1["top_movers"]],
+                [m["delta"] for m in res2["top_movers"]],
+            )
+
+            # Markdown reports must be identical
+            with open(md_p1, "r", encoding="utf-8") as f:
+                md1_content = f.read()
+            with open(md_p2, "r", encoding="utf-8") as f:
+                md2_content = f.read()
+
+            self.assertEqual(md1_content, md2_content, "Reports must be identical regardless of function ordering")
+
 
 if __name__ == "__main__":
     unittest.main()
