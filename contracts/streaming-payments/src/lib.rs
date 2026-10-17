@@ -77,19 +77,19 @@ use surface::Branch;
 
 pub use errors::StreamError;
 pub use events::{
-    ContractFrozenStateChanged, ContractUpgraded, FeeCharged, FeeWithdrawn, PolicyAssetExecuted,
-    PolicyAssetQueued, PolicyHandoffAccepted, PolicyHandoffCancelled, PolicyHandoffProposed,
-    PolicyInitialized, PayoutActive, PayoutBindingCancelled, PayoutBound, ScheduledIntentCancelled,
-    ScheduledIntentExpired, ScheduledStreamExecuted, StorageMigrated, StreamCancelled,
-    StreamCreated, StreamScheduled, StreamToppedUp, StreamsCreated, UpgradeCancelled,
-    UpgradeProposed, Withdrawn,
+    ContractFrozenStateChanged, ContractUpgraded, FeeCharged, FeeWithdrawn, PayoutActive,
+    PayoutBindingCancelled, PayoutBound, PolicyAssetExecuted, PolicyAssetQueued,
+    PolicyHandoffAccepted, PolicyHandoffCancelled, PolicyHandoffProposed, PolicyInitialized,
+    ScheduledIntentCancelled, ScheduledIntentExpired, ScheduledStreamExecuted, StorageMigrated,
+    StreamCancelled, StreamCreated, StreamScheduled, StreamToppedUp, StreamsCreated,
+    UpgradeCancelled, UpgradeProposed, Withdrawn,
 };
 pub use policy::QueuedAssetChange;
 pub use schedule::{IntentStatus, ScheduledIntent, MAX_OCCURRENCES};
 // `streamed_at` is re-exported for the fuzz target and downstream rate
 // calculators: it is a pure function requiring no `Env`.
 pub use stream::{
-    streamed_at, MigrationStatus, PendingUpgrade, PayoutProposal, Stream, StreamStatus,
+    streamed_at, MigrationStatus, PayoutProposal, PendingUpgrade, Stream, StreamStatus,
     INITIAL_SCHEMA_VERSION, MAX_DURATION_SECONDS, MAX_MIGRATION_BATCH_SIZE, MAX_PAGE_SIZE,
     MIN_UPGRADE_DELAY_SECONDS, PAYOUT_BINDING_DELAY_SECONDS, TARGET_SCHEMA_VERSION,
 };

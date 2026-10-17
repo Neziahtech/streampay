@@ -528,7 +528,7 @@ fn probe(branch: Branch) -> Option<StreamError> {
                 &0,
                 &50
             )))
-            }
+        }
         Branch::PayoutBindingMissing => {
             let f = Fixture::setup_quiet();
             Some(rejected!(f
