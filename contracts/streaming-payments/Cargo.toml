@@ -17,5 +17,14 @@ soroban-sdk.workspace = true
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
-proptest = "1.6"
-streampay-model = { version = "0.1.0", path = "../../model" }
+
+[features]
+# Enables the schema-fingerprint generator (and its spec / storage probes)
+# for host builds only. Never enabled for the release Wasm build, so none of
+# the diagnostic code below ends up on-chain.
+schema-fingerprint = ["soroban-sdk/testutils"]
+
+[[example]]
+name = "schema_fingerprint"
+required-features = ["schema-fingerprint"]
+

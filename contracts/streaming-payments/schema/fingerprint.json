@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "description": "Append-only fingerprint of the StreamPay public interface. Regenerate with `cargo run -p streampay-contract --example schema_fingerprint --features schema-fingerprint`; never edit by hand.",
+  "errors": [
+    { "code": 1, "name": "StreamNotFound" },
+    { "code": 2, "name": "NotStreamSender" },
+    { "code": 3, "name": "NotStreamRecipient" },
+    { "code": 4, "name": "StreamNotCancellable" },
+    { "code": 5, "name": "StreamNotActive" },
+    { "code": 6, "name": "StartTimeInPast" },
+    { "code": 7, "name": "InvalidTimeRange" },
+    { "code": 8, "name": "DurationTooLong" },
+    { "code": 9, "name": "ZeroAmount" },
+    { "code": 10, "name": "AmountExceedsAvailable" },
+    { "code": 11, "name": "MathOverflow" },
+    { "code": 12, "name": "NotAuthorized" },
+    { "code": 13, "name": "NothingToWithdraw" },
+    { "code": 14, "name": "FeeRateTooHigh" },
+    { "code": 15, "name": "NotGovernor" },
+    { "code": 16, "name": "NoPendingGovernor" },
+    { "code": 17, "name": "InsufficientTreasuryBalance" }
+  ],
+  "storage_keys": [
+    { "variant": "NextStreamId", "encoded": "0000001000000001000000010000000f0000000c4e65787453747265616d4964" },
+    { "variant": "Stream(u64)", "encoded": "0000001000000001000000020000000f0000000653747265616d0000000000050000000000000001" },
+    { "variant": "RecipientStreams(Address)", "encoded": "0000001000000001000000020000000f00000010526563697069656e7453747265616d7300000012000000010000000000000000000000000000000000000000000000000000000000000000" },
+    { "variant": "SenderStreams(Address)", "encoded": "0000001000000001000000020000000f0000000d53656e64657253747265616d7300000000000012000000010000000000000000000000000000000000000000000000000000000000000000" },
+    { "variant": "Governor", "encoded": "0000001000000001000000010000000f00000008476f7665726e6f72" },
+    { "variant": "PendingGovernor", "encoded": "0000001000000001000000010000000f0000000f50656e64696e67476f7665726e6f7200" },
+    { "variant": "FeeBps", "encoded": "0000001000000001000000010000000f000000064665654270730000" },
+    { "variant": "Treasury(Address)", "encoded": "0000001000000001000000020000000f00000008547265617375727900000012000000010000000000000000000000000000000000000000000000000000000000000000" },
+    { "variant": "StreamFee(u64)", "encoded": "0000001000000001000000020000000f0000000953747265616d466565000000000000050000000000000001" }
+  ],
+  "storage_records": [
+    { "kind": "union", "name": "DataKey", "cases": ["NextStreamId", { "case": "Stream", "types": ["u64"] }, { "case": "RecipientStreams", "types": ["Address"] }, { "case": "SenderStreams", "types": ["Address"] }, "Governor", "PendingGovernor", "FeeBps", { "case": "Treasury", "types": ["Address"] }, { "case": "StreamFee", "types": ["u64"] }] },
+    { "kind": "struct", "name": "Stream", "fields": ["cancelable: bool", "deposit: i128", "end_time: u64", "id: u64", "recipient: Address", "sender: Address", "start_time: u64", "status: StreamStatus", "token: Address", "withdrawn: i128"] },
+    { "kind": "union", "name": "StreamStatus", "cases": ["Active", "Cancelled", "Depleted"] },
+    { "kind": "struct", "name": "Treasury", "fields": ["charged_total: i128", "withdrawn_total: i128"] },
+    { "kind": "struct", "name": "StreamFeeRecord", "fields": ["amount: i128", "token: Address"] },
+    { "kind": "struct", "name": "TreasuryStatus", "fields": ["charged_total: i128", "collectible: i128", "fee_bps: u32", "governor: Address", "max_fee_bps: u32", "pending_governor: Option<Address>", "token: Address", "withdrawn_total: i128"] },
+    { "kind": "struct", "name": "FeeScan", "fields": ["done: bool", "fees_in_range: i128", "next_start: u64", "scanned_count: u32", "start_id: u64", "token: Address"] }
+  ],
+  "events": [
+    { "name": "StreamCreated", "topics": ["stream_id: u64"], "data": ["sender: Address", "recipient: Address", "token: Address", "deposit: i128", "start_time: u64", "end_time: u64", "cancelable: bool"] },
+    { "name": "Withdrawn", "topics": ["stream_id: u64"], "data": ["recipient: Address", "amount: i128", "withdrawn_total: i128"] },
+    { "name": "StreamCancelled", "topics": ["stream_id: u64"], "data": ["cancelled_by: Address", "recipient_amount: i128", "sender_amount: i128"] },
+    { "name": "StreamToppedUp", "topics": ["stream_id: u64"], "data": ["sender: Address", "amount: i128", "new_deposit: i128"] },
+    { "name": "FeeCharged", "topics": ["stream_id: u64"], "data": ["token: Address", "payer: Address", "amount: i128", "fee_bps: u32"] },
+    { "name": "FeeWithdrawn", "topics": ["token: Address"], "data": ["governor: Address", "recipient: Address", "amount: i128", "withdrawn_total: i128"] }
+  ]
+}

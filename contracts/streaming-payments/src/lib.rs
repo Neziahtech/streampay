@@ -44,7 +44,7 @@
 //! - `treasury.charged_total == sum of FeeCharged events == sum of stored
 //!   per-stream fees`, provable from public reads (see `treasury.rs`).
 
-#[cfg(test)]
+#[cfg(any(test, feature = "schema-fingerprint"))]
 extern crate std;
 
 #[cfg(test)]
@@ -55,10 +55,10 @@ mod differential_test;
 mod error_surface_test;
 mod errors;
 mod events;
-mod policy;
-mod schedule;
+#[cfg(any(test, feature = "schema-fingerprint"))]
+pub mod schema_fingerprint;
 #[cfg(test)]
-mod schedule_test;
+mod schema_fingerprint_test;
 mod stream;
 pub mod surface;
 #[cfg(test)]

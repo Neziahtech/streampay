@@ -56,6 +56,17 @@ jobs:
           cargo run -p streampay-contract --example error_surface_doc
           git diff --exit-code docs/ERRORS.md
 
+      # The schema fingerprint is the append-only record of the public
+      # interface (storage keys, record/event shapes, error codes). Regenerate
+      # it and fail if the committed artifact has drifted. The
+      # `schema_fingerprint_matches_stored` test asserts the same equality from
+      # inside the test suite; this step catches drift even if that test were
+      # skipped and makes the required regeneration explicit in the log.
+      - name: Schema fingerprint is up to date
+        run: |
+          cargo run -p streampay-contract --example schema_fingerprint --features schema-fingerprint
+          git diff --exit-code contracts/streaming-payments/schema/fingerprint.json
+
       - name: Coverage
         uses: taiki-e/install-action@cargo-llvm-cov
         with:
