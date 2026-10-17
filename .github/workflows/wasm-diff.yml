@@ -1,0 +1,183 @@
+name: Wasm Function Diff
+
+on:
+  pull_request:
+    paths:
+      - 'contracts/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/wasm-diff.yml'
+      - '.github/actions/**'
+      - '.github/scripts/**'
+  workflow_dispatch:
+
+concurrency:
+  group: wasm-diff-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# ==============================================================================
+# DISASSEMBLY TOOL CHOICE & JUSTIFICATION:
+#
+# We select `wasm-objdump` (WebAssembly Binary Toolkit - WABT) combined with a
+# dedicated bytecode parser as our primary disassembly and analysis tooling.
+#
+# Why `wasm-objdump` over `wasm-dis` (Binaryen):
+# 1. Byte-level granularity: `wasm-objdump -d` parses the Wasm Code section and
+#    explicitly annotates each function body with its exact size in bytes (`size=N`)
+#    and binary file offset. In contrast, `wasm-dis` transforms bytecode into
+#    high-level S-expression WebAssembly Text (WAT), stripping section boundaries
+#    and function byte sizes.
+# 2. Stable, comparable function-level output: `wasm-objdump` outputs linear
+#    instruction streams with machine opcodes and operands, allowing direct,
+#    deterministic function-by-function comparison.
+# 3. Churn Normalization:
+#    NOTE ON NORMALIZATION ("SAME FUNCTIONS, OFFSET SHIFT" VS "NEW ROUTINE ADDED"):
+#    When an upstream routine is added or edited, downstream functions experience
+#    "offset and index churn" — their file offsets shift, function indices are
+#    renumbered, and compiler-generated mangled symbol hashes (`::h[0-9a-f]{16}`)
+#    change, despite their functional bytecode being 100% identical.
+#    Our diff action normalizes call target operands and strips compiler hash suffixes
+#    to fingerprint function bodies. Functions with shifted offsets but identical
+#    normalized bodies are classified as filtered churn (0 B delta) and omitted from
+#    the Top Movers table to prevent review fatigue. Only genuine function additions,
+#    removals, or byte growth/shrinkage are reported as true movers.
+# ==============================================================================
+
+jobs:
+  wasm-diff:
+    name: Function-level Wasm binary diff
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout Head (PR)
+        uses: actions/checkout@v7
+        with:
+          path: head-repo
+
+      - name: Checkout Base Branch
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.base_ref || 'main' }}
+          path: base-repo
+
+      - name: Install Rust toolchain (pinned rustc 1.99.1)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
+          targets: wasm32v1-none
+
+      - name: Install stellar-cli
+        run: |
+          curl -fsSL https://github.com/stellar/stellar-cli/releases/download/v28.1.0/stellar-cli-28.1.0-x86_64-unknown-linux-gnu.tar.gz | tar xz
+          sudo install stellar /usr/local/bin/stellar
+
+      - name: Install wabt (wasm-objdump)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wabt
+
+      - name: Install pinned wasm-opt and wasm-dis (Binaryen version_116)
+        run: |
+          curl -fsSL https://github.com/WebAssembly/binaryen/releases/download/version_116/binaryen-version_116-x86_64-linux.tar.gz | tar xz
+          sudo install binaryen-version_116/bin/wasm-opt /usr/local/bin/wasm-opt
+          sudo install binaryen-version_116/bin/wasm-dis /usr/local/bin/wasm-dis
+          rm -rf binaryen-version_116
+
+      - name: Verify pinned toolchain versions (rustc & wasm-opt)
+        run: |
+          echo "=== Pinned Toolchain Version Verification ==="
+          rustc --version
+          wasm-opt --version
+          wasm-objdump --version
+          stellar --version
+          echo "============================================="
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            head-repo/target
+            base-repo/target
+          key: ${{ runner.os }}-wasm-diff-${{ hashFiles('head-repo/Cargo.lock', 'base-repo/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-wasm-diff-
+
+      - name: Create artifacts directory
+        run: mkdir -p artifacts/base artifacts/head
+
+      - name: Build Base Wasm
+        working-directory: base-repo/contracts/streaming-payments
+        run: |
+          stellar contract build
+          cp ../../target/wasm32v1-none/release/streampay_contract.wasm ../../../artifacts/base/streampay_contract.wasm
+          sha256sum ../../../artifacts/base/streampay_contract.wasm
+
+      - name: Build Head Wasm
+        working-directory: head-repo/contracts/streaming-payments
+        run: |
+          stellar contract build
+          cp ../../target/wasm32v1-none/release/streampay_contract.wasm ../../../artifacts/head/streampay_contract.wasm
+          sha256sum ../../../artifacts/head/streampay_contract.wasm
+
+      # Invoke the composite action: .github/actions/wasm-diff
+      - name: Run Wasm Function Diff Action
+        id: diff
+        uses: ./head-repo/.github/actions/wasm-diff
+        with:
+          base_wasm: artifacts/base/streampay_contract.wasm
+          head_wasm: artifacts/head/streampay_contract.wasm
+          output_dir: artifacts
+
+      - name: Display Report in CI Summary
+        run: |
+          cat artifacts/wasm_diff_report.md >> $GITHUB_STEP_SUMMARY
+
+      - name: Post or Update PR Comment
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request'
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const reportPath = 'artifacts/wasm_diff_report.md';
+            if (!fs.existsSync(reportPath)) {
+              core.setFailed(`Report file ${reportPath} not found`);
+              return;
+            }
+            const reportBody = fs.readFileSync(reportPath, 'utf8');
+            const botMarker = '<!-- wasm-diff-report -->';
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const existingComment = comments.find(c => c.body && c.body.includes(botMarker));
+            if (existingComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existingComment.id,
+                body: reportBody,
+              });
+              console.log(`Updated existing PR comment ID: ${existingComment.id}`);
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: reportBody,
+              });
+              console.log('Created new PR comment');
+            }
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wasm-diff-results
+          path: artifacts/
