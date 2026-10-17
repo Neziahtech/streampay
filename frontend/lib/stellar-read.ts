@@ -11,7 +11,7 @@ import {
   Contract,
   xdr,
 } from "@stellar/stellar-sdk";
-import type { StreamView } from "@/lib/stream-types";
+import type { StreamPolicyView, StreamView } from "@/lib/stream-types";
 
 const RPC_URL =
   process.env.NEXT_PUBLIC_SOROBAN_RPC_URL ||
@@ -112,4 +112,27 @@ export async function fetchStreamIdsPage(
     ids,
     hasMore: ids.length === MAX_PAGE_SIZE,
   };
+}
+
+export async function readStreamPolicy(
+  token?: string
+): Promise<StreamPolicyView | null> {
+  try {
+    const arg = token
+      ? nativeToScVal(new Address(token), { type: "address" })
+      : nativeToScVal(null);
+    const retval = await simulateRead("get_stream_policy", [arg]);
+    if (!retval) return null;
+    const raw = scValToNative(retval) as Record<string, unknown> | null;
+    if (!raw) return null;
+    return {
+      minDeposit: String(raw.min_deposit ?? "0"),
+      minDuration: Number(raw.min_duration ?? 0),
+      maxDuration: Number(raw.max_duration ?? 0),
+      minRate: String(raw.min_rate ?? "0"),
+      maxRate: String(raw.max_rate ?? "0"),
+    };
+  } catch {
+    return null;
+  }
 }

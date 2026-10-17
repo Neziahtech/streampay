@@ -145,13 +145,19 @@ pub enum Branch {
     UpgradeDelayTooShort,
     /// `migrate_storage`: the schema has already been migrated to the target version.
     AlreadyMigrated,
+    // ------------------------------------------------ stream policy floors
+    PolicyRateBelowFloor,
+    PolicyRateAboveCeiling,
+    PolicyDurationBelowFloor,
+    PolicyDurationAboveCeiling,
+    PolicyDepositBelowFloor,
 }
 
 impl Branch {
     /// Every branch, in declaration order. The matrix test walks this list and
     /// the coverage test requires each [`StreamError`] variant to be produced by
     /// one of these (or retired).
-    pub const ALL: [Branch; 49] = [
+    pub const ALL: [Branch; 54] = [
         Branch::CreateDepositNonPositive,
         Branch::CreateStartTimeInPast,
         Branch::CreateInvalidTimeRange,
@@ -201,6 +207,11 @@ impl Branch {
         Branch::TimelockNotExpired,
         Branch::UpgradeDelayTooShort,
         Branch::AlreadyMigrated,
+        Branch::PolicyRateBelowFloor,
+        Branch::PolicyRateAboveCeiling,
+        Branch::PolicyDurationBelowFloor,
+        Branch::PolicyDurationAboveCeiling,
+        Branch::PolicyDepositBelowFloor,
     ];
 
     /// The entrypoint(s) through which this branch can fire. Shared helpers
@@ -250,6 +261,7 @@ impl Branch {
                 "cancel_upgrade",
                 "execute_upgrade",
                 "migrate_storage",
+                "set_stream_policy",
             ],
             Branch::AcceptGovernorNoPending | Branch::AcceptGovernorNotNominee => {
                 &["accept_governor"]
@@ -302,6 +314,11 @@ impl Branch {
             Branch::ExecuteUpgradeNoPending | Branch::TimelockNotExpired => &["execute_upgrade"],
             Branch::CancelUpgradeNoPending => &["cancel_upgrade"],
             Branch::UpgradeDelayTooShort => &["propose_upgrade"],
+            Branch::PolicyDepositBelowFloor
+            | Branch::PolicyRateBelowFloor
+            | Branch::PolicyRateAboveCeiling => &["create_stream", "create_streams", "top_up"],
+            Branch::PolicyDurationBelowFloor
+            | Branch::PolicyDurationAboveCeiling => &["create_stream", "create_streams"],
         }
     }
 
@@ -361,6 +378,11 @@ impl Branch {
             Branch::TimelockNotExpired => StreamError::TimelockNotExpired,
             Branch::UpgradeDelayTooShort => StreamError::UpgradeDelayTooShort,
             Branch::AlreadyMigrated => StreamError::AlreadyMigrated,
+            Branch::PolicyRateBelowFloor => StreamError::PolicyRateBelowFloor,
+            Branch::PolicyRateAboveCeiling => StreamError::PolicyRateAboveCeiling,
+            Branch::PolicyDurationBelowFloor => StreamError::PolicyDurationBelowFloor,
+            Branch::PolicyDurationAboveCeiling => StreamError::PolicyDurationAboveCeiling,
+            Branch::PolicyDepositBelowFloor => StreamError::PolicyDepositBelowFloor,
         }
     }
 
@@ -451,6 +473,17 @@ impl Branch {
             }
             Branch::AlreadyMigrated => {
                 "storage has already been migrated to the target schema version"
+            }
+            Branch::PolicyRateBelowFloor => "stream rate is below the governance policy floor",
+            Branch::PolicyRateAboveCeiling => "stream rate exceeds the governance policy ceiling",
+            Branch::PolicyDurationBelowFloor => {
+                "stream duration is below the governance policy floor"
+            }
+            Branch::PolicyDurationAboveCeiling => {
+                "stream duration exceeds the governance policy ceiling"
+            }
+            Branch::PolicyDepositBelowFloor => {
+                "stream deposit is below the governance policy floor"
             }
         }
     }

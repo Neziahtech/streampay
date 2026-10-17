@@ -137,6 +137,16 @@ pub enum StreamError {
     UpgradeDelayTooShort = 40,
     /// The storage migration has already been completed.
     AlreadyMigrated = 41,
+    /// Stream rate is below the governance policy floor.
+    PolicyRateBelowFloor = 42,
+    /// Stream rate exceeds the governance policy ceiling.
+    PolicyRateAboveCeiling = 43,
+    /// Stream duration is below the governance policy floor.
+    PolicyDurationBelowFloor = 44,
+    /// Stream duration exceeds the governance policy ceiling.
+    PolicyDurationAboveCeiling = 45,
+    /// Stream deposit is below the governance policy floor.
+    PolicyDepositBelowFloor = 46,
 }
 
 impl StreamError {
@@ -185,6 +195,11 @@ impl StreamError {
         StreamError::TimelockNotExpired,
         StreamError::UpgradeDelayTooShort,
         StreamError::AlreadyMigrated,
+        StreamError::PolicyRateBelowFloor,
+        StreamError::PolicyRateAboveCeiling,
+        StreamError::PolicyDurationBelowFloor,
+        StreamError::PolicyDurationAboveCeiling,
+        StreamError::PolicyDepositBelowFloor,
     ];
 
     /// The stable numeric value carried across the contract boundary

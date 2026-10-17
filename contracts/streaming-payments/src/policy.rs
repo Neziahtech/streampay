@@ -59,6 +59,21 @@ pub enum PolicyDataKey {
     Asset(Address),
     /// Queued allowlist change for an asset (persistent storage).
     QueuedAsset(Address),
+    /// Stream policy for a specific asset (persistent storage).
+    StreamPolicy(Address),
+    /// Default global stream policy (instance storage).
+    GlobalStreamPolicy,
+}
+
+/// Governance-managed policy floors and ceilings for streams.
+#[contracttype]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct StreamPolicy {
+    pub min_rate: i128,
+    pub max_rate: i128,
+    pub min_duration: u64,
+    pub max_duration: u64,
+    pub min_deposit: i128,
 }
 
 /// Queued policy change for an asset awaiting timelock expiry.
@@ -303,3 +318,109 @@ pub fn cancel_handoff(env: &Env) -> Result<(), StreamError> {
 
     Ok(())
 }
+
+/// Loads the effective stream policy for `token`, falling back to global policy.
+pub fn get_stream_policy(env: &Env, token: Option<Address>) -> Option<StreamPolicy> {
+    if let Some(token_addr) = token {
+        let key = PolicyDataKey::StreamPolicy(token_addr);
+        if let Some(policy) = env.storage().persistent().get::<_, StreamPolicy>(&key) {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+            return Some(policy);
+        }
+    }
+    env.storage()
+        .instance()
+        .get(&PolicyDataKey::GlobalStreamPolicy)
+}
+
+/// Sets the stream policy for `token` (or default global policy if `token` is None).
+pub fn set_stream_policy(
+    env: &Env,
+    token: Option<Address>,
+    new_policy: StreamPolicy,
+) -> Result<(), StreamError> {
+    let old_policy = get_stream_policy(env, token.clone());
+    if let Some(ref token_addr) = token {
+        let key = PolicyDataKey::StreamPolicy(token_addr.clone());
+        env.storage().persistent().set(&key, &new_policy);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+    } else {
+        env.storage()
+            .instance()
+            .set(&PolicyDataKey::GlobalStreamPolicy, &new_policy);
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+    }
+
+    crate::events::StreamPolicySet {
+        token,
+        old_policy,
+        new_policy,
+    }
+    .publish(env);
+
+    Ok(())
+}
+
+/// Pure validation of stream creation arguments against policy floors and ceilings.
+///
+/// Returns typed append-only errors ([`StreamError::PolicyDepositBelowFloor`],
+/// [`StreamError::PolicyDurationBelowFloor`], [`StreamError::PolicyDurationAboveCeiling`],
+/// [`StreamError::PolicyRateBelowFloor`], [`StreamError::PolicyRateAboveCeiling`]).
+pub fn validate_stream_args(
+    policy: Option<&StreamPolicy>,
+    deposit: i128,
+    duration: u64,
+) -> Result<(), StreamError> {
+    if let Some(p) = policy {
+        if p.min_deposit > 0 && deposit < p.min_deposit {
+            return Err(surface::reject(Branch::PolicyDepositBelowFloor));
+        }
+        if p.min_duration > 0 && duration < p.min_duration {
+            return Err(surface::reject(Branch::PolicyDurationBelowFloor));
+        }
+        if p.max_duration > 0 && duration > p.max_duration {
+            return Err(surface::reject(Branch::PolicyDurationAboveCeiling));
+        }
+        let rate = deposit / (duration.max(1) as i128);
+        if p.min_rate > 0 && rate < p.min_rate {
+            return Err(surface::reject(Branch::PolicyRateBelowFloor));
+        }
+        if p.max_rate > 0 && rate > p.max_rate {
+            return Err(surface::reject(Branch::PolicyRateAboveCeiling));
+        }
+    }
+    Ok(())
+}
+
+/// Grandfather-aware validation for stream top-ups.
+///
+/// Existing streams grandfather: policy changes to duration do not block top-ups
+/// on already-running streams. Only mutations that would cause the stream itself
+/// to violate deposit or rate limits (e.g. rate ceiling exceeded or rate below floor)
+/// are rejected.
+pub fn validate_top_up_args(
+    policy: Option<&StreamPolicy>,
+    new_deposit: i128,
+    duration: u64,
+) -> Result<(), StreamError> {
+    if let Some(p) = policy {
+        if p.min_deposit > 0 && new_deposit < p.min_deposit {
+            return Err(surface::reject(Branch::PolicyDepositBelowFloor));
+        }
+        let rate = new_deposit / (duration.max(1) as i128);
+        if p.min_rate > 0 && rate < p.min_rate {
+            return Err(surface::reject(Branch::PolicyRateBelowFloor));
+        }
+        if p.max_rate > 0 && rate > p.max_rate {
+            return Err(surface::reject(Branch::PolicyRateAboveCeiling));
+        }
+    }
+    Ok(())
+}
+

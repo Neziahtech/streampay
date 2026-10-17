@@ -278,3 +278,12 @@ pub struct StorageMigrated {
     pub end_id: u64,
     pub is_complete: bool,
 }
+
+/// Emitted when a stream policy floor/ceiling configuration is updated.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamPolicySet {
+    pub token: Option<Address>,
+    pub old_policy: Option<crate::policy::StreamPolicy>,
+    pub new_policy: crate::policy::StreamPolicy,
+}

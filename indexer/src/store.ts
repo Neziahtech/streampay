@@ -2,9 +2,11 @@ import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { DecodedEvent, Stream } from "./types.js";
+import { WebhookStore } from "./webhooks/store.js";
 
 export class StreamStore {
   readonly db: Database.Database;
+  readonly webhooks: WebhookStore;
 
   constructor(path: string) {
     if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
@@ -27,6 +29,7 @@ export class StreamStore {
       CREATE INDEX IF NOT EXISTS events_stream ON events(stream_id, ledger);
       CREATE TABLE IF NOT EXISTS indexer_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     `);
+    this.webhooks = new WebhookStore(this.db);
   }
 
   close(): void { this.db.close(); }
@@ -55,6 +58,19 @@ export class StreamStore {
       (id, stream_id, name, ledger, ledger_closed_at, payload) VALUES (?, ?, ?, ?, ?, ?)`)
       .run(event.id, event.streamId, event.name, event.ledger, event.ledgerClosedAt, JSON.stringify(event.data, (_key, value: unknown) => typeof value === "bigint" ? value.toString() : value));
     if (inserted.changes === 0) return;
+
+    // Queue webhook deliveries for subscribers
+    try {
+      this.webhooks.queueDeliveriesForEvent({
+        id: event.id,
+        name: event.name,
+        streamId: event.streamId,
+        ledgerClosedAt: event.ledgerClosedAt,
+        data: event.data as Record<string, unknown>,
+      });
+    } catch (err) {
+      console.error("Failed to queue webhook delivery for event:", err);
+    }
 
     const d = event.data;
     const existing = this.db.prepare("SELECT * FROM streams WHERE stream_id = ?").get(event.streamId) as Record<string, unknown> | undefined;

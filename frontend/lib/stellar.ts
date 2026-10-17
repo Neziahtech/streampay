@@ -199,6 +199,15 @@ async function send<T>(
   operation: xdr.Operation,
   decode: (v: xdr.ScVal) => T
 ): Promise<T> {
+  const { result } = await sendWithTx(source, operation, decode);
+  return result;
+}
+
+async function sendWithTx<T>(
+  source: string,
+  operation: xdr.Operation,
+  decode: (v: xdr.ScVal) => T
+): Promise<{ result: T; txHash: string }> {
   const server = new rpc.Server(RPC_URL);
   const account = await server.getAccount(source);
   const tx = new TransactionBuilder(account, {
@@ -236,7 +245,7 @@ async function send<T>(
     }
     if (res.status === rpc.Api.GetTransactionStatus.SUCCESS) {
       const successful = res as { returnValue: xdr.ScVal };
-      return decode(successful.returnValue);
+      return { result: decode(successful.returnValue), txHash: sent.hash };
     }
     // PENDING / DUPLICATE / TRY_AGAIN_LATER — keep polling.
   }
@@ -398,6 +407,31 @@ export async function withdrawMaxFromStream(
     contract().call("withdraw_max", u64(streamId)),
     (v) => BigInt(scValToNative(v) as bigint)
   );
+}
+
+export interface ClaimReceipt {
+  txHash: string;
+  amount: bigint;
+  streamId: string;
+}
+
+/**
+ * Claims full accrued balance via `withdraw_max` and returns both transaction hash and amount paid.
+ */
+export async function claimStreamWithReceipt(
+  recipient: string,
+  streamId: string
+): Promise<ClaimReceipt> {
+  const { result, txHash } = await sendWithTx(
+    recipient,
+    contract().call("withdraw_max", u64(streamId)),
+    (v) => BigInt(scValToNative(v) as bigint)
+  );
+  return {
+    txHash,
+    amount: result,
+    streamId,
+  };
 }
 
 export async function topUpStream(

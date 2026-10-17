@@ -529,6 +529,126 @@ fn probe(branch: Branch) -> Option<StreamError> {
                 &50
             )))
         }
+        Branch::PolicyDepositBelowFloor => {
+            let f = Fixture::setup_quiet();
+            let now = f.env.ledger().timestamp();
+            f.client.mock_all_auths().set_stream_policy(
+                &f.governor,
+                &Some(f.token.clone()),
+                &crate::StreamPolicy {
+                    min_deposit: 1_000,
+                    min_duration: 0,
+                    max_duration: 0,
+                    min_rate: 0,
+                    max_rate: 0,
+                },
+            );
+            Some(rejected!(f.client.mock_all_auths().try_create_stream(
+                &f.sender,
+                &f.recipient,
+                &f.token,
+                &500,
+                &(now + DAY),
+                &(now + 2 * DAY),
+                &false,
+            )))
+        }
+        Branch::PolicyDurationBelowFloor => {
+            let f = Fixture::setup_quiet();
+            let now = f.env.ledger().timestamp();
+            f.client.mock_all_auths().set_stream_policy(
+                &f.governor,
+                &Some(f.token.clone()),
+                &crate::StreamPolicy {
+                    min_deposit: 0,
+                    min_duration: 2 * DAY,
+                    max_duration: 0,
+                    min_rate: 0,
+                    max_rate: 0,
+                },
+            );
+            Some(rejected!(f.client.mock_all_auths().try_create_stream(
+                &f.sender,
+                &f.recipient,
+                &f.token,
+                &DEPOSIT,
+                &(now + DAY),
+                &(now + DAY + 3600),
+                &false,
+            )))
+        }
+        Branch::PolicyDurationAboveCeiling => {
+            let f = Fixture::setup_quiet();
+            let now = f.env.ledger().timestamp();
+            f.client.mock_all_auths().set_stream_policy(
+                &f.governor,
+                &Some(f.token.clone()),
+                &crate::StreamPolicy {
+                    min_deposit: 0,
+                    min_duration: 0,
+                    max_duration: DAY,
+                    min_rate: 0,
+                    max_rate: 0,
+                },
+            );
+            Some(rejected!(f.client.mock_all_auths().try_create_stream(
+                &f.sender,
+                &f.recipient,
+                &f.token,
+                &DEPOSIT,
+                &(now + DAY),
+                &(now + 3 * DAY),
+                &false,
+            )))
+        }
+        Branch::PolicyRateBelowFloor => {
+            let f = Fixture::setup_quiet();
+            let now = f.env.ledger().timestamp();
+            f.client.mock_all_auths().set_stream_policy(
+                &f.governor,
+                &Some(f.token.clone()),
+                &crate::StreamPolicy {
+                    min_deposit: 0,
+                    min_duration: 0,
+                    max_duration: 0,
+                    min_rate: 1_000,
+                    max_rate: 0,
+                },
+            );
+            Some(rejected!(f.client.mock_all_auths().try_create_stream(
+                &f.sender,
+                &f.recipient,
+                &f.token,
+                &100,
+                &(now + DAY),
+                &(now + 2 * DAY),
+                &false,
+            )))
+        }
+        Branch::PolicyRateAboveCeiling => {
+            let f = Fixture::setup_quiet();
+            let now = f.env.ledger().timestamp();
+            f.client.mock_all_auths().set_stream_policy(
+                &f.governor,
+                &Some(f.token.clone()),
+                &crate::StreamPolicy {
+                    min_deposit: 0,
+                    min_duration: 0,
+                    max_duration: 0,
+                    min_rate: 0,
+                    max_rate: 10,
+                },
+            );
+            Some(rejected!(f.client.mock_all_auths().try_create_stream(
+                &f.sender,
+                &f.recipient,
+                &f.token,
+                &DEPOSIT,
+                &(now + DAY),
+                &(now + 2 * DAY),
+                &false,
+            )))
+        }
         // Invariant-protected: a stored stream always satisfies
         // `0 <= withdrawn <= streamed <= deposit <= i128::MAX`, so these
         // checked subtractions/addition can never cross an i128 boundary —
@@ -684,7 +804,12 @@ fn stream_error_variant_list_is_exhaustive() {
             | StreamError::NoPendingUpgrade
             | StreamError::TimelockNotExpired
             | StreamError::UpgradeDelayTooShort
-            | StreamError::AlreadyMigrated => StreamError::ALL.contains(&e),
+            | StreamError::AlreadyMigrated
+            | StreamError::PolicyRateBelowFloor
+            | StreamError::PolicyRateAboveCeiling
+            | StreamError::PolicyDurationBelowFloor
+            | StreamError::PolicyDurationAboveCeiling
+            | StreamError::PolicyDepositBelowFloor => StreamError::ALL.contains(&e),
         }
     }
 

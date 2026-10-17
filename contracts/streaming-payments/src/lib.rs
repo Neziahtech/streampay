@@ -63,8 +63,8 @@ mod stream;
 pub mod surface;
 #[cfg(test)]
 mod test;
-#[cfg(test)]
-mod test_client;
+#[cfg(any(test, feature = "testutils"))]
+pub mod test_client;
 mod treasury;
 pub mod verification;
 
@@ -80,10 +80,12 @@ pub use events::{
     ContractFrozenStateChanged, ContractUpgraded, FeeCharged, FeeWithdrawn, PolicyAssetExecuted,
     PolicyAssetQueued, PolicyHandoffAccepted, PolicyHandoffCancelled, PolicyHandoffProposed,
     PolicyInitialized, ScheduledIntentCancelled, ScheduledIntentExpired, ScheduledStreamExecuted,
-    StorageMigrated, StreamCancelled, StreamCreated, StreamScheduled, StreamToppedUp,
-    StreamsCreated, UpgradeCancelled, UpgradeProposed, Withdrawn,
+    StorageMigrated, StreamCancelled, StreamCreated, StreamPolicySet, StreamScheduled,
+    StreamToppedUp, StreamsCreated, UpgradeCancelled, UpgradeProposed, Withdrawn,
 };
-pub use policy::QueuedAssetChange;
+pub use policy::{
+    validate_stream_args, validate_top_up_args, QueuedAssetChange, StreamPolicy,
+};
 pub use schedule::{IntentStatus, ScheduledIntent, MAX_OCCURRENCES};
 // `streamed_at` is re-exported for the fuzz target and downstream rate
 // calculators: it is a pure function requiring no `Env`.
@@ -244,6 +246,10 @@ impl StreamingPayments {
         // Policy check: if the policy module is active, the asset must be on
         // the allowlist. Uninitialized policy permits all assets (opt-in).
         policy::check_asset_allowed(&env, &token)?;
+
+        let stream_policy = policy::get_stream_policy(&env, Some(token.clone()));
+        let duration = end_time - start_time;
+        policy::validate_stream_args(stream_policy.as_ref(), deposit_amount, duration)?;
 
         // Protocol fee, computed at the deposit boundary only. The accrual
         // math (`deposit`, `streamed_at`, cancel splits) never sees it.
@@ -419,6 +425,10 @@ impl StreamingPayments {
                 input.end_time,
             )?;
             policy::check_asset_allowed(&env, &input.token)?;
+
+            let stream_policy = policy::get_stream_policy(&env, Some(input.token.clone()));
+            let duration = input.end_time - input.start_time;
+            policy::validate_stream_args(stream_policy.as_ref(), input.deposit_amount, duration)?;
 
             let fee = treasury::fee_amount(input.deposit_amount, fee_bps)?;
             let pull_amount = input
@@ -769,6 +779,9 @@ impl StreamingPayments {
             .checked_add(amount)
             .ok_or_else(|| surface::reject(Branch::TopUpDepositOverflow))?;
         stream::validate_capacity(new_deposit, s.duration())?;
+
+        let stream_policy = policy::get_stream_policy(&env, Some(s.token.clone()));
+        policy::validate_top_up_args(stream_policy.as_ref(), new_deposit, s.duration())?;
 
         // Interaction: pull the added funds from the sender. A token-side
         // failure maps to a distinct code; the effects below never run, and
@@ -1402,6 +1415,27 @@ impl StreamingPayments {
     /// Returns the queued allowlist change for `asset`, if any.
     pub fn policy_get_queued_asset(env: Env, asset: Address) -> Option<QueuedAssetChange> {
         policy::get_queued_asset(&env, &asset)
+    }
+
+    /// Sets governance policy floors and ceilings for streams of `token`, or global default if `token` is None.
+    /// Governor-only.
+    ///
+    /// Governance timelock hook: this setter gates via `treasury::require_governor` and will route
+    /// through the timelocked proposal queue once governance timelocks are enabled across all operations.
+    pub fn set_stream_policy(
+        env: Env,
+        caller: Address,
+        token: Option<Address>,
+        policy: StreamPolicy,
+    ) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
+        treasury::require_governor(&env, &caller)?;
+        policy::set_stream_policy(&env, token, policy)
+    }
+
+    /// Queries the effective stream policy for `token` (falling back to global policy if unset).
+    pub fn get_stream_policy(env: Env, token: Option<Address>) -> Option<StreamPolicy> {
+        policy::get_stream_policy(&env, token)
     }
 
     // --------------------------------------------- upgrade & migration --

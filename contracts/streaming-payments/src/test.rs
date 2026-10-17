@@ -3203,7 +3203,233 @@ fn run_fee_property(seed: u64, steps: usize) {
     }
 }
 
+/// Property: every state-mutating entrypoint (`create_stream`, `create_streams`,
+/// `withdraw`, `withdraw_max`, `top_up`, `cancel_stream`, `withdraw_treasury`)
+/// strictly preserves value conservation:
+///   1. For every stream: deposit == withdrawn + available_recipient + refundable_sender.
+///   2. For each token: token_balance(contract) == sum(active_escrows) + treasury_fees_retained.
+#[test]
+fn property_value_conservation_across_all_state_mutating_entrypoints() {
+    for seed in [0xC011_5EED_0001, 0xC011_5EED_0002, 0xC011_5EED_0003] {
+        run_value_conservation_property(seed, 100);
+    }
+}
+
+fn run_value_conservation_property(seed: u64, steps: usize) {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    // Multi-token: Native XLM SAC and issued asset SAC
+    let token_native = env
+        .register_stellar_asset_contract_v2(Address::generate(&env))
+        .address();
+    let token_sac = env
+        .register_stellar_asset_contract_v2(Address::generate(&env))
+        .address();
+    let tokens = [token_native, token_sac];
+
+    let sender = Address::generate(&env);
+    let recipients = [
+        Address::generate(&env),
+        Address::generate(&env),
+        Address::generate(&env),
+    ];
+    let governor = Address::generate(&env);
+    let vault = Address::generate(&env);
+
+    let contract_id = env.register(StreamingPayments, (governor.clone(),));
+    let client = Client::new(&env, &contract_id);
+
+    for token in &tokens {
+        StellarAssetClient::new(&env, token).mint(&sender, &1_000_000_000_000_000i128);
+        StellarAssetClient::new(&env, token).approve(
+            &sender,
+            &contract_id,
+            &(i128::MAX / 2),
+            &1_000_000u32,
+        );
+    }
+
+    let mut rng = Rng(seed | 1);
+    let mut stream_ids: Vec<u64> = Vec::new();
+
+    for step in 0..steps {
+        let ctx = format!("conservation seed {seed:#x} step {step}");
+        match rng.below(9) {
+            0 => {
+                // 1. create_stream
+                let ti = rng.below(2) as usize;
+                let ri = rng.below(3) as usize;
+                let deposit = 100 + rng.below(1_000_000) as i128;
+                let duration = 10 + rng.below(500);
+                let start_in = rng.below(10);
+                let cancelable = rng.below(2) == 0;
+                let now = env.ledger().timestamp();
+                let id = client.mock_all_auths().create_stream(
+                    &sender,
+                    &recipients[ri],
+                    &tokens[ti],
+                    &deposit,
+                    &(now + start_in),
+                    &(now + start_in + duration),
+                    &cancelable,
+                );
+                stream_ids.push(id);
+            }
+            1 => {
+                // 2. create_streams (atomic batch)
+                let count = 1 + rng.below(3) as usize;
+                let mut inputs = soroban_sdk::Vec::new(&env);
+                let now = env.ledger().timestamp();
+                for _ in 0..count {
+                    let ti = rng.below(2) as usize;
+                    let ri = rng.below(3) as usize;
+                    let deposit = 100 + rng.below(500_000) as i128;
+                    let duration = 10 + rng.below(300);
+                    let start_in = rng.below(5);
+                    let cancelable = rng.below(2) == 0;
+                    inputs.push_back(StreamInput {
+                        recipient: recipients[ri].clone(),
+                        token: tokens[ti].clone(),
+                        deposit_amount: deposit,
+                        start_time: now + start_in,
+                        end_time: now + start_in + duration,
+                        cancelable,
+                    });
+                }
+                let ids = client.mock_all_auths().create_streams(&sender, &inputs);
+                for id in ids.iter() {
+                    stream_ids.push(id);
+                }
+            }
+            2 => {
+                // advance time
+                env.ledger()
+                    .with_mut(|li| li.timestamp += 1 + rng.below(60));
+            }
+            3 => {
+                // 3. withdraw (partial or available)
+                if !stream_ids.is_empty() {
+                    let id = stream_ids[rng.below(stream_ids.len() as u64) as usize];
+                    let stream = client.get_stream(&id);
+                    if stream.status == StreamStatus::Active {
+                        let avail = client.available(&id);
+                        if avail > 0 {
+                            let withdraw_amt = 1 + rng.below(avail as u64) as i128;
+                            client.mock_all_auths().withdraw(&id, &withdraw_amt);
+                        }
+                    }
+                }
+            }
+            4 => {
+                // 4. withdraw_max
+                if !stream_ids.is_empty() {
+                    let id = stream_ids[rng.below(stream_ids.len() as u64) as usize];
+                    let stream = client.get_stream(&id);
+                    if stream.status == StreamStatus::Active {
+                        let avail = client.available(&id);
+                        if avail > 0 {
+                            let paid = client.mock_all_auths().withdraw_max(&id);
+                            assert_eq!(paid, avail, "{ctx}: withdraw_max mismatch");
+                        }
+                    }
+                }
+            }
+            5 => {
+                // 5. top_up
+                if !stream_ids.is_empty() {
+                    let id = stream_ids[rng.below(stream_ids.len() as u64) as usize];
+                    let stream = client.get_stream(&id);
+                    if stream.status == StreamStatus::Active {
+                        let add = 1 + rng.below(100_000) as i128;
+                        client.mock_all_auths().top_up(&id, &add);
+                    }
+                }
+            }
+            6 => {
+                // 6. cancel_stream (by sender or recipient if cancelable)
+                if !stream_ids.is_empty() {
+                    let id = stream_ids[rng.below(stream_ids.len() as u64) as usize];
+                    let stream = client.get_stream(&id);
+                    if stream.status == StreamStatus::Active {
+                        let by_recipient = rng.below(2) == 0;
+                        if by_recipient && stream.cancelable {
+                            client.mock_all_auths().cancel_stream(&stream.recipient, &id);
+                        } else if !by_recipient {
+                            client.mock_all_auths().cancel_stream(&stream.sender, &id);
+                        }
+                    }
+                }
+            }
+            7 => {
+                // 7. withdraw_treasury
+                let ti = rng.below(2) as usize;
+                let status = client.treasury_status(&tokens[ti]);
+                if status.collectible > 0 {
+                    let amount = 1 + rng.below(status.collectible as u64) as i128;
+                    client
+                        .mock_all_auths()
+                        .withdraw_treasury(&governor, &tokens[ti], &vault, &amount);
+                }
+            }
+            _ => {
+                // fee bps reconfiguration
+                let fee_bps = rng.below(crate::MAX_FEE_BPS as u64 + 1) as u32;
+                client.mock_all_auths().set_fee_bps(&governor, &fee_bps);
+            }
+        }
+
+        // --- Value Conservation Checks after every single mutation ---
+        // 1. Per-stream invariant: deposit == withdrawn + available + refundable
+        for &id in &stream_ids {
+            let stream = client.get_stream(&id);
+            if stream.status == StreamStatus::Active {
+                let avail = client.available(&id);
+                assert!(avail >= 0, "{ctx}: stream {id} available negative");
+                assert!(
+                    stream.withdrawn + avail <= stream.deposit,
+                    "{ctx}: stream {id} payout exceeds deposit"
+                );
+                let refundable = stream.deposit - (stream.withdrawn + avail);
+                assert!(refundable >= 0, "{ctx}: stream {id} refundable negative");
+                assert_eq!(
+                    stream.deposit,
+                    stream.withdrawn + avail + refundable,
+                    "{ctx}: stream {id} conservation invariant failed"
+                );
+            }
+        }
+
+        // 2. Contract-wide balance cross-check:
+        // token_balance(contract) == sum(active_stream_escrows) + treasury_fees_retained
+        for (ti, token) in tokens.iter().enumerate() {
+            let status = client.treasury_status(token);
+            let retained = status.charged_total - status.withdrawn_total;
+            assert_eq!(
+                status.collectible, retained,
+                "{ctx}: treasury collectible mismatch for token {ti}"
+            );
+
+            let mut active_escrows: i128 = 0;
+            for &id in &stream_ids {
+                let stream = client.get_stream(&id);
+                if stream.status == StreamStatus::Active && stream.token == *token {
+                    active_escrows += stream.deposit - stream.withdrawn;
+                }
+            }
+
+            let contract_balance = TokenClient::new(&env, token).balance(&contract_id);
+            assert_eq!(
+                contract_balance,
+                active_escrows + retained,
+                "{ctx}: contract balance conservation failed for token {ti}"
+            );
+        }
+    }
+}
+
 // ------------------------------------------------------------ policy tests --
+
 
 #[test]
 fn policy_uninitialized_allows_any_asset_without_regression() {
@@ -4787,3 +5013,321 @@ fn storage_migration_over_1000_synthetic_streams() {
     assert_eq!(new_id, 1001);
     assert_eq!(client.total_streams(), 1001);
 }
+
+// ------------------------------------ stream policy floors (#203) ---------
+
+#[test]
+fn test_stream_policy_governance_and_resolution() {
+    let f = Fixture::setup();
+    let stranger = Address::generate(&f.env);
+
+    // 1. Non-governor cannot set stream policy
+    let policy = crate::StreamPolicy {
+        min_deposit: 100,
+        min_duration: 60,
+        max_duration: 86400,
+        min_rate: 1,
+        max_rate: 1000,
+    };
+    let res = f
+        .client
+        .mock_all_auths()
+        .try_set_stream_policy(&stranger, &None, &policy);
+    assert_eq!(res.unwrap_err().unwrap(), StreamError::NotGovernor);
+
+    // 2. Governor sets global stream policy
+    f.client
+        .mock_all_auths()
+        .set_stream_policy(&f.governor, &None, &policy);
+    assert_eq!(f.client.get_stream_policy(&None), Some(policy.clone()));
+
+    // When querying for an unconfigured token, falls back to global policy
+    let token2 = Address::generate(&f.env);
+    assert_eq!(
+        f.client.get_stream_policy(&Some(token2.clone())),
+        Some(policy.clone())
+    );
+
+    // 3. Governor sets token-specific policy
+    let token_policy = crate::StreamPolicy {
+        min_deposit: 500,
+        min_duration: 120,
+        max_duration: 43200,
+        min_rate: 2,
+        max_rate: 500,
+    };
+    f.client.mock_all_auths().set_stream_policy(
+        &f.governor,
+        &Some(token2.clone()),
+        &token_policy,
+    );
+    assert_eq!(
+        f.client.get_stream_policy(&Some(token2)),
+        Some(token_policy)
+    );
+    // Other token still gets global policy
+    assert_eq!(f.client.get_stream_policy(&Some(f.token)), Some(policy));
+}
+
+#[test]
+fn test_stream_policy_creation_enforcement() {
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+
+    let policy = crate::StreamPolicy {
+        min_deposit: 1_000,
+        min_duration: DAY,
+        max_duration: 10 * DAY,
+        min_rate: 1,
+        max_rate: 10_000,
+    };
+    f.client
+        .mock_all_auths()
+        .set_stream_policy(&f.governor, &Some(f.token.clone()), &policy);
+
+    // 1. Deposit below floor
+    let res = f.client.mock_all_auths().try_create_stream(
+        &f.sender,
+        &f.recipient,
+        &f.token,
+        &500,
+        &(now + DAY),
+        &(now + 3 * DAY),
+        &true,
+    );
+    assert_eq!(
+        res.unwrap_err().unwrap(),
+        StreamError::PolicyDepositBelowFloor
+    );
+
+    // 2. Duration below floor
+    let res = f.client.mock_all_auths().try_create_stream(
+        &f.sender,
+        &f.recipient,
+        &f.token,
+        &5_000,
+        &(now + DAY),
+        &(now + DAY + 3600), // 1 hour < 1 day
+        &true,
+    );
+    assert_eq!(
+        res.unwrap_err().unwrap(),
+        StreamError::PolicyDurationBelowFloor
+    );
+
+    // 3. Duration above ceiling
+    let res = f.client.mock_all_auths().try_create_stream(
+        &f.sender,
+        &f.recipient,
+        &f.token,
+        &5_000,
+        &(now + DAY),
+        &(now + 20 * DAY), // 19 days > 10 days
+        &true,
+    );
+    assert_eq!(
+        res.unwrap_err().unwrap(),
+        StreamError::PolicyDurationAboveCeiling
+    );
+
+    // 4. Rate below floor (deposit / duration < min_rate)
+    let res = f.client.mock_all_auths().try_create_stream(
+        &f.sender,
+        &f.recipient,
+        &f.token,
+        &1_000, // rate = 1000 / 86400 = 0 < 1
+        &(now + DAY),
+        &(now + 2 * DAY),
+        &true,
+    );
+    assert_eq!(res.unwrap_err().unwrap(), StreamError::PolicyRateBelowFloor);
+
+    // 5. Rate above ceiling (deposit / duration > max_rate)
+    let tight_rate_policy = crate::StreamPolicy {
+        min_deposit: 1_000,
+        min_duration: DAY,
+        max_duration: 10 * DAY,
+        min_rate: 0,
+        max_rate: 10,
+    };
+    f.client.mock_all_auths().set_stream_policy(
+        &f.governor,
+        &Some(f.token.clone()),
+        &tight_rate_policy,
+    );
+    let res = f.client.mock_all_auths().try_create_stream(
+        &f.sender,
+        &f.recipient,
+        &f.token,
+        &10_000_000, // rate = 10_000_000 / 86400 = 115 > 10
+        &(now + DAY),
+        &(now + 2 * DAY),
+        &true,
+    );
+    assert_eq!(res.unwrap_err().unwrap(), StreamError::PolicyRateAboveCeiling);
+
+    // 6. Valid stream succeeds
+    let valid_id = f.client.mock_all_auths().create_stream(
+        &f.sender,
+        &f.recipient,
+        &f.token,
+        &86_400, // rate = 86400 / 86400 = 1 <= 10
+        &(now + DAY),
+        &(now + 2 * DAY),
+        &true,
+    );
+    assert!(valid_id > 0);
+}
+
+#[test]
+fn test_stream_policy_grandfathering_matrix() {
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+
+    // 1. Create a stream under initial lenient policy
+    let initial_policy = crate::StreamPolicy {
+        min_deposit: 1_000,
+        min_duration: DAY,
+        max_duration: 5 * DAY,
+        min_rate: 0,
+        max_rate: 100,
+    };
+    f.client.mock_all_auths().set_stream_policy(
+        &f.governor,
+        &Some(f.token.clone()),
+        &initial_policy,
+    );
+
+    let stream_id = f.client.mock_all_auths().create_stream(
+        &f.sender,
+        &f.recipient,
+        &f.token,
+        &86_400, // 1 token/sec over 1 day
+        &(now + DAY),
+        &(now + 2 * DAY), // duration = 1 DAY
+        &true,
+    );
+    assert_eq!(f.client.get_stream(&stream_id).id, stream_id);
+
+    // 2. Tighten policy: increase min_duration to 30 days and cap max_rate to 2
+    let tightened_policy = crate::StreamPolicy {
+        min_deposit: 5_000,
+        min_duration: 30 * DAY, // Stream's 1-day duration violates this now!
+        max_duration: 60 * DAY,
+        min_rate: 0,
+        max_rate: 2, // 2 tokens/sec
+    };
+    f.client.mock_all_auths().set_stream_policy(
+        &f.governor,
+        &Some(f.token.clone()),
+        &tightened_policy,
+    );
+
+    // Grandfathering check A: Existing stream duration is grandfathered on top-up!
+    // If top-up checked duration, it would fail with PolicyDurationBelowFloor.
+    // Top up with valid rate: +86,400 -> total deposit = 172,800 over 86,400s -> rate = 2 <= max_rate(2)
+    f.client.mock_all_auths().top_up(&stream_id, &86_400);
+    assert_eq!(f.client.get_stream(&stream_id).deposit, 172_800);
+
+    // Grandfathering check B: If top-up pushes rate above max_rate ceiling, it violates policy
+    // Adding +86,400 again -> total deposit = 259,200 -> rate = 3 > max_rate(2)
+    let res = f.client.mock_all_auths().try_top_up(&stream_id, &86_400);
+    assert_eq!(res.unwrap_err().unwrap(), StreamError::PolicyRateAboveCeiling);
+
+    // Grandfathering check C: Cancellation always succeeds regardless of policy (Anti-brick invariant)
+    f.advance_time(2 * DAY); // reach after start
+    let cancel_res = f.client.mock_all_auths().try_cancel_stream(&f.sender, &stream_id);
+    assert!(cancel_res.is_ok());
+    assert_eq!(
+        f.client.get_stream(&stream_id).status,
+        crate::StreamStatus::Cancelled
+    );
+}
+
+#[test]
+fn test_stream_policy_multi_token_boundaries() {
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+
+    // Register a second token (e.g. issued token)
+    let sac2 = f
+        .env
+        .register_stellar_asset_contract_v2(Address::generate(&f.env));
+    let token2 = sac2.address();
+    StellarAssetClient::new(&f.env, &token2).mint(&f.sender, &DEPOSIT);
+    TokenClient::new(&f.env, &token2)
+        .mock_all_auths()
+        .approve(
+            &f.sender,
+            &f.client.address,
+            &DEPOSIT,
+            &200,
+        );
+
+    // Set Global policy: min_deposit = 10_000
+    f.client.mock_all_auths().set_stream_policy(
+        &f.governor,
+        &None,
+        &crate::StreamPolicy {
+            min_deposit: 10_000,
+            min_duration: 0,
+            max_duration: 0,
+            min_rate: 0,
+            max_rate: 0,
+        },
+    );
+
+    // Set Token1 specific policy: min_deposit = 500
+    f.client.mock_all_auths().set_stream_policy(
+        &f.governor,
+        &Some(f.token.clone()),
+        &crate::StreamPolicy {
+            min_deposit: 500,
+            min_duration: 0,
+            max_duration: 0,
+            min_rate: 0,
+            max_rate: 0,
+        },
+    );
+
+    // Token1 allows deposit of 1000 (> 500)
+    let id1 = f.client.mock_all_auths().create_stream(
+        &f.sender,
+        &f.recipient,
+        &f.token,
+        &1_000,
+        &(now + DAY),
+        &(now + 2 * DAY),
+        &true,
+    );
+    assert!(id1 > 0);
+
+    // Token2 falls back to global policy (min_deposit = 10_000)
+    // Deposit of 1000 is rejected on Token2
+    let res = f.client.mock_all_auths().try_create_stream(
+        &f.sender,
+        &f.recipient,
+        &token2,
+        &1_000,
+        &(now + DAY),
+        &(now + 2 * DAY),
+        &true,
+    );
+    assert_eq!(
+        res.unwrap_err().unwrap(),
+        StreamError::PolicyDepositBelowFloor
+    );
+
+    // Token2 allows deposit of 10_000
+    let id2 = f.client.mock_all_auths().create_stream(
+        &f.sender,
+        &f.recipient,
+        &token2,
+        &10_000,
+        &(now + DAY),
+        &(now + 2 * DAY),
+        &true,
+    );
+    assert!(id2 > 0);
+}
+

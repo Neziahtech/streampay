@@ -6,13 +6,13 @@
 //! `#[contractclient]`. The client still targets the real contract address
 //! (`Client::new(&env, &streaming_contract_address)`), so it drives the actual
 //! implementation without building Wasm.
-#![cfg(test)]
+#![cfg(any(test, feature = "testutils"))]
 
 use soroban_sdk::{contractclient, Address, BytesN, Env, Vec};
 
 use crate::{
     FeeScan, MigrationStatus, PendingUpgrade, ScheduledIntent, Stream, StreamError, StreamInput,
-    TreasuryStatus,
+    StreamPolicy, TreasuryStatus,
 };
 
 /// Interface of the StreamPay streaming-payments contract.
@@ -98,6 +98,13 @@ pub trait StreamingPaymentsApi {
     fn policy_set_timelock_delay(env: Env, delay: u64) -> Result<(), StreamError>;
     fn policy_is_asset_allowed(env: Env, asset: Address) -> bool;
     fn policy_get_queued_asset(env: Env, asset: Address) -> Option<crate::QueuedAssetChange>;
+    fn set_stream_policy(
+        env: Env,
+        caller: Address,
+        token: Option<Address>,
+        policy: StreamPolicy,
+    ) -> Result<(), StreamError>;
+    fn get_stream_policy(env: Env, token: Option<Address>) -> Option<StreamPolicy>;
     fn schema_version(env: Env) -> u32;
     fn is_frozen(env: Env) -> bool;
     fn set_frozen(env: Env, caller: Address, frozen: bool) -> Result<(), StreamError>;

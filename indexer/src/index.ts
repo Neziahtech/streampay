@@ -3,8 +3,10 @@ import { nativeToScVal } from "@stellar/stellar-sdk";
 import { decodeEvent } from "./decoder.js";
 import { StreamStore } from "./store.js";
 import type { RpcEvent } from "./types.js";
+import { WebhookDispatcher } from "./webhooks/dispatcher.js";
+import { validateWebhookUrl } from "./webhooks/ssrf.js";
 
-export function createApp(store: StreamStore): express.Express {
+export function createApp(store: StreamStore, dispatcher?: WebhookDispatcher): express.Express {
   const app = express();
   app.use(express.json());
 
@@ -52,6 +54,73 @@ export function createApp(store: StreamStore): express.Express {
     return res.json({ address, count: streams.length, streams });
   });
 
+  // Webhook management API
+  app.get("/api/webhooks/endpoints", (_req, res) => {
+    res.json(store.webhooks.listEndpoints());
+  });
+
+  app.post("/api/webhooks/endpoints", async (req, res) => {
+    const { url, events, secret } = req.body || {};
+    if (!url || typeof url !== "string") {
+      return res.status(400).json({ error: "URL is required" });
+    }
+    const ssrf = await validateWebhookUrl(url);
+    if (!ssrf.safe) {
+      return res.status(400).json({ error: `SSRF validation failed: ${ssrf.reason}` });
+    }
+    const endpoint = store.webhooks.createEndpoint({
+      url,
+      events: Array.isArray(events) ? events : ["*"],
+      secret: typeof secret === "string" ? secret : undefined,
+    });
+    return res.status(201).json(endpoint);
+  });
+
+  app.get("/api/webhooks/endpoints/:id", (req, res) => {
+    const ep = store.webhooks.getEndpoint(req.params.id);
+    if (!ep) return res.status(404).json({ error: "Endpoint not found" });
+    return res.json(ep);
+  });
+
+  app.post("/api/webhooks/endpoints/:id/rotate-secret", (req, res) => {
+    try {
+      const result = store.webhooks.rotateEndpointSecret(req.params.id);
+      return res.json(result);
+    } catch (err: unknown) {
+      return res.status(404).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.delete("/api/webhooks/endpoints/:id", (req, res) => {
+    const deleted = store.webhooks.deleteEndpoint(req.params.id);
+    if (!deleted) return res.status(404).json({ error: "Endpoint not found" });
+    return res.json({ ok: true });
+  });
+
+  app.post("/api/webhooks/endpoints/:id/test", async (req, res) => {
+    if (!dispatcher) {
+      return res.status(500).json({ error: "Webhook dispatcher not configured" });
+    }
+    const result = await dispatcher.testFireEndpoint(req.params.id);
+    return res.json(result);
+  });
+
+  app.get("/api/webhooks/deliveries", (req, res) => {
+    const limit = Math.min(100, Math.max(1, Number(req.query.limit || 50)));
+    return res.json(store.webhooks.listDeliveries(limit));
+  });
+
+  app.get("/api/webhooks/dlq", (req, res) => {
+    const limit = Math.min(100, Math.max(1, Number(req.query.limit || 50)));
+    return res.json(store.webhooks.listDLQ(limit));
+  });
+
+  app.post("/api/webhooks/dlq/:id/retry", (req, res) => {
+    const success = store.webhooks.replayDLQItem(req.params.id);
+    if (!success) return res.status(404).json({ error: "DLQ item not found" });
+    return res.json({ ok: true, replayed: true });
+  });
+
   return app;
 }
 
@@ -66,7 +135,9 @@ export async function run(): Promise<void> {
   if (!Number.isFinite(pollInterval) || pollInterval < 250) throw new Error("POLL_INTERVAL_MS must be at least 250");
 
   const store = new StreamStore(dbPath);
-  const app = createApp(store);
+  const dispatcher = new WebhookDispatcher(store.webhooks);
+  dispatcher.start();
+  const app = createApp(store, dispatcher);
 
   const eventNames = ["stream_created", "withdrawn", "stream_cancelled", "stream_topped_up", "stream_paused", "stream_resumed"];
   const topicFilters = eventNames.map((name) => [nativeToScVal(name, { type: "symbol" }).toXDR("base64")]);
@@ -133,6 +204,7 @@ export async function run(): Promise<void> {
   setInterval(() => void pollSafely(), pollInterval);
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.on(signal, () => {
+      dispatcher.stop();
       store.close();
       process.exit(0);
     });
