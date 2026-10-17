@@ -17,6 +17,8 @@
 //! - [`StreamingPayments::cancel_stream`] — sender (or recipient, if the
 //!   stream is `cancelable`) closes the stream with a pro-rata split
 //! - [`StreamingPayments::top_up`] — add funds to a running stream
+//! - [`StreamingPayments::pause_stream`] / [`StreamingPayments::resume_stream`] —
+//!   freeze accrual for a leave/audit hold and resume from the same point
 //! - [`StreamingPayments::get_stream`] / [`StreamingPayments::available`] —
 //!   read-only views
 //! - [`StreamingPayments::recipient_streams`] /
@@ -77,11 +79,12 @@ use surface::Branch;
 
 pub use errors::StreamError;
 pub use events::{
-    ContractFrozenStateChanged, ContractUpgraded, FeeCharged, FeeWithdrawn, PolicyAssetExecuted,
-    PolicyAssetQueued, PolicyHandoffAccepted, PolicyHandoffCancelled, PolicyHandoffProposed,
-    PolicyInitialized, ScheduledIntentCancelled, ScheduledIntentExpired, ScheduledStreamExecuted,
-    StorageMigrated, StreamCancelled, StreamCreated, StreamScheduled, StreamToppedUp,
-    StreamsCreated, UpgradeCancelled, UpgradeProposed, Withdrawn,
+    ContractFrozenStateChanged, ContractUpgraded, FeeCharged, FeeWithdrawn, PauseStream,
+    PolicyAssetExecuted, PolicyAssetQueued, PolicyHandoffAccepted, PolicyHandoffCancelled,
+    PolicyHandoffProposed, PolicyInitialized, ResumeStream, ScheduledIntentCancelled,
+    ScheduledIntentExpired, ScheduledStreamExecuted, StorageMigrated, StreamCancelled,
+    StreamCreated, StreamScheduled, StreamToppedUp, StreamsCreated, UpgradeCancelled,
+    UpgradeProposed, Withdrawn,
 };
 pub use policy::QueuedAssetChange;
 pub use schedule::{IntentStatus, ScheduledIntent, MAX_OCCURRENCES};
@@ -278,6 +281,9 @@ impl StreamingPayments {
             end_time,
             cancelable,
             status: StreamStatus::Active,
+            paused_total: 0,
+            last_resumed_at: 0,
+            last_paused_at: 0,
         };
         stream::put_stream(&env, &s);
         stream::index_stream(&env, &s);
@@ -364,6 +370,9 @@ impl StreamingPayments {
             end_time,
             cancelable,
             status: StreamStatus::Active,
+            paused_total: 0,
+            last_resumed_at: 0,
+            last_paused_at: 0,
         };
         stream::put_stream(env, &stream);
         stream::index_stream(env, &stream);
@@ -497,6 +506,9 @@ impl StreamingPayments {
                 end_time: input.end_time,
                 cancelable: input.cancelable,
                 status: StreamStatus::Active,
+                paused_total: 0,
+                last_resumed_at: 0,
+                last_paused_at: 0,
             };
             stream::put_stream(&env, &created);
             stream::index_stream(&env, &created);
@@ -598,11 +610,12 @@ impl StreamingPayments {
     }
 
     /// Shared preamble for both withdrawal paths: load the stream, require
-    /// the recipient's authorization, and reject terminal streams.
+    /// the recipient's authorization, and reject terminal streams. Withdrawals
+    /// are allowed while `Paused` — they pay out against the frozen balance.
     fn authorize_withdrawal(env: &Env, stream_id: u64) -> Result<Stream, StreamError> {
         let s = stream::get_stream(env, stream_id)?;
         s.recipient.require_auth();
-        if s.status != StreamStatus::Active {
+        if s.status != StreamStatus::Active && s.status != StreamStatus::Paused {
             return Err(surface::reject(Branch::StreamNotActive));
         }
         Ok(s)
@@ -675,7 +688,10 @@ impl StreamingPayments {
         caller.require_auth();
 
         let mut s = stream::get_stream(&env, stream_id)?;
-        if s.status != StreamStatus::Active {
+        // Cancellation is allowed while `Paused`: the split evaluates at the
+        // frozen pause-time accrual, so the paused window neither earns nor
+        // loses for either party.
+        if s.status != StreamStatus::Active && s.status != StreamStatus::Paused {
             return Err(surface::reject(Branch::StreamNotActive));
         }
         if caller != s.sender {
@@ -759,7 +775,9 @@ impl StreamingPayments {
             return Err(surface::reject(Branch::TopUpAmountNonPositive));
         }
         let mut s = stream::get_stream(&env, stream_id)?;
-        if s.status != StreamStatus::Active {
+        // Top-ups are allowed while `Paused`; the deposit grows against the
+        // frozen elapsed window, so `available` steps up pro-rata immediately.
+        if s.status != StreamStatus::Active && s.status != StreamStatus::Paused {
             return Err(surface::reject(Branch::StreamNotActive));
         }
         s.sender.require_auth();
@@ -792,6 +810,105 @@ impl StreamingPayments {
             new_deposit,
         }
         .publish(&env);
+
+        Ok(())
+    }
+
+    /// Freezes accrual for an active stream. Only the stream's sender may call
+    /// this; their authorization is required. Reverts with
+    /// [`StreamError::ContractFrozen`] while the contract is frozen for
+    /// maintenance or upgrade, with [`StreamError::StreamAlreadyPaused`] (42)
+    /// if the stream is already paused, and with [`StreamError::StreamNotActive`]
+    /// (5) on cancelled or depleted streams.
+    ///
+    /// Accrual freezes exactly at the pause-time `available` value
+    /// (`stream_elapsed_seconds` evaluates at `last_paused_at`), so neither
+    /// party gains or loses from the paused window. Withdrawals against the
+    /// frozen balance and top-ups remain permitted — a pause stops *accrual*,
+    /// not access — and cancelling splits at the frozen balance.
+    ///
+    /// Emits [`PauseStream`] with the `stream_id` topic.
+    pub fn pause_stream(env: Env, sender: Address, stream_id: u64) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
+        sender.require_auth();
+
+        let mut s = stream::get_stream(&env, stream_id)?;
+        if sender != s.sender {
+            return Err(surface::reject(Branch::PauseStreamNotAuthorized));
+        }
+        if s.status == StreamStatus::Paused {
+            return Err(surface::reject(Branch::PauseStreamAlreadyPaused));
+        }
+        if s.status != StreamStatus::Active {
+            return Err(surface::reject(Branch::StreamNotActive));
+        }
+
+        s.status = StreamStatus::Paused;
+        s.last_paused_at = env.ledger().timestamp();
+        stream::put_stream(&env, &s);
+
+        PauseStream { stream_id, sender }.publish(&env);
+
+        Ok(())
+    }
+
+    /// Resumes a paused stream from the exact point it was paused. Only the
+    /// stream's sender may call this; their authorization is required. Reverts
+    /// with [`StreamError::ContractFrozen`] while the contract is frozen, with
+    /// [`StreamError::StreamNotPaused`] (43) if the stream is not paused, and
+    /// with [`StreamError::StreamNotActive`] (5) on cancelled or depleted
+    /// streams.
+    ///
+    /// The paused interval `[last_paused_at, now]` is shifted out of the
+    /// window: `end_time` moves forward by exactly that many seconds and
+    /// `paused_total` accumulates it, so `duration()` — and therefore the
+    /// accrual rate — is invariant across pause/resume cycles. The recipient
+    /// resumes with precisely the balance they had at pause time; total active
+    /// streaming time is preserved end to end.
+    ///
+    /// The two `checked_add` guards below are defensive-only: the paused
+    /// interval is ledger time (bounded by `u64`) and `end_time` / pause
+    /// totals can never approach `u64::MAX` for a stored stream. They return
+    /// a bare [`StreamError::MathOverflow`] rather than a registry branch —
+    /// like `streamed_at`'s guards — because no reachable probe can trigger
+    /// them and the error-surface coverage test requires every registry
+    /// branch to be probed reachable.
+    ///
+    /// Emits [`ResumeStream`] with the `stream_id` topic.
+    pub fn resume_stream(env: Env, sender: Address, stream_id: u64) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
+        sender.require_auth();
+
+        let mut s = stream::get_stream(&env, stream_id)?;
+        if sender != s.sender {
+            return Err(surface::reject(Branch::ResumeStreamNotAuthorized));
+        }
+        if s.status != StreamStatus::Active && s.status != StreamStatus::Paused {
+            return Err(surface::reject(Branch::StreamNotActive));
+        }
+        if s.status != StreamStatus::Paused {
+            return Err(surface::reject(Branch::ResumeStreamNotPaused));
+        }
+
+        let now = env.ledger().timestamp();
+        // A pause that starts before `start_time` banks only the portion that
+        // overlaps the active window (a pre-start resume is a no-op of 0).
+        let pause_start = s.last_paused_at.max(s.start_time);
+        let paused_duration = now.saturating_sub(pause_start);
+
+        s.paused_total = s
+            .paused_total
+            .checked_add(paused_duration)
+            .ok_or(StreamError::MathOverflow)?;
+        s.end_time = s
+            .end_time
+            .checked_add(paused_duration)
+            .ok_or(StreamError::MathOverflow)?;
+        s.last_resumed_at = now;
+        s.status = StreamStatus::Active;
+        stream::put_stream(&env, &s);
+
+        ResumeStream { stream_id, sender }.publish(&env);
 
         Ok(())
     }
@@ -1576,11 +1693,12 @@ impl StreamingPayments {
         let effective_start = effective_start.clamp(1, total);
         let end_id = (effective_start.saturating_add(batch_size).saturating_sub(1)).min(total);
 
-        // Migrate each stream in the batch: read, verify, touch TTL, re-store.
+        // Migrate each stream in the batch: read (cross-reading pre-v3
+        // layouts — `Stream` encodes positionally, so entries written by
+        // pre-pause Wasm do not decode under the current struct), default the
+        // pause fields, verify, touch TTL, re-store.
         for id in effective_start..=end_id {
-            if let Ok(s) = stream::get_stream(&env, id) {
-                stream::put_stream(&env, &s);
-            }
+            stream::migrate_stream(&env, id)?;
         }
 
         let new_cursor = cursor.max(end_id);

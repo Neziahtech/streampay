@@ -137,6 +137,10 @@ pub enum StreamError {
     UpgradeDelayTooShort = 40,
     /// The storage migration has already been completed.
     AlreadyMigrated = 41,
+    /// The stream is already paused; `pause_stream` cannot pause it again.
+    StreamAlreadyPaused = 42,
+    /// The stream is not paused; `resume_stream` requires a paused stream.
+    StreamNotPaused = 43,
 }
 
 impl StreamError {
@@ -185,6 +189,8 @@ impl StreamError {
         StreamError::TimelockNotExpired,
         StreamError::UpgradeDelayTooShort,
         StreamError::AlreadyMigrated,
+        StreamError::StreamAlreadyPaused,
+        StreamError::StreamNotPaused,
     ];
 
     /// The stable numeric value carried across the contract boundary

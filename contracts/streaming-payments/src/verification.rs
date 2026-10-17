@@ -231,6 +231,12 @@ pub mod spec {
             StreamStatus::Depleted => s.stream.withdrawn == s.stream.deposit,
             StreamStatus::Active => s.stream.withdrawn < s.stream.deposit,
             StreamStatus::Cancelled => s.stream.withdrawn <= s.stream.deposit,
+            // `Paused` mirrors `Active`: a drained paused stream is flipped to
+            // `Depleted` by `pay_out`, so a stored `Paused` implies $W < D$.
+            // The transition system itself never pauses (pause is pinned by
+            // the contract-level tests in `test.rs`), so this arm is
+            // exhaustiveness-only.
+            StreamStatus::Paused => s.stream.withdrawn < s.stream.deposit,
         }
     }
 

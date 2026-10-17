@@ -6,7 +6,7 @@
 //! intermediate products) and returns [`StreamError::MathOverflow`] instead of
 //! overflowing or panicking.
 
-use soroban_sdk::{contracttype, Address, BytesN, Env, MuxedAddress, Vec};
+use soroban_sdk::{contracttype, Address, BytesN, Env, MuxedAddress, TryFromVal, Val, Vec};
 
 use crate::errors::StreamError;
 use crate::surface::{self, Branch};
@@ -17,8 +17,15 @@ pub const MIN_UPGRADE_DELAY_SECONDS: u64 = 86_400;
 /// Initial schema version (v1).
 pub const INITIAL_SCHEMA_VERSION: u32 = 1;
 
-/// Target schema version after migration (v2).
-pub const TARGET_SCHEMA_VERSION: u32 = 2;
+/// Target schema version after migration (v3: pause fields added to `Stream`).
+///
+/// * v2 — fee/treasury keys added (append-only; `Stream` layout unchanged).
+/// * v3 — `Stream` gained `paused_total` / `last_resumed_at` / `last_paused_at`.
+///   `#[contracttype]` structs encode positionally, so entries written by
+///   pre-v3 Wasm decode only through the legacy cross-read in
+///   [`migrate_stream`]; `migrate_storage` rewrites every entry in the new
+///   layout while the contract is frozen (see `docs/ARCHITECTURE.md` §13.2).
+pub const TARGET_SCHEMA_VERSION: u32 = 3;
 
 /// Maximum number of streams processed per migration call.
 pub const MAX_MIGRATION_BATCH_SIZE: u32 = 50;
@@ -52,6 +59,12 @@ pub enum StreamStatus {
     Cancelled,
     /// Fully streamed and fully withdrawn. Terminal.
     Depleted,
+    /// Accrual frozen at the pause-time value; withdrawals against the frozen
+    /// balance and top-ups remain allowed. Appended after the terminal states
+    /// so the XDR discriminants of `Active`/`Cancelled`/`Depleted` never move
+    /// (the enum is name-encoded on the wire, but existing values are pinned
+    /// in stored `Stream` entries — see `docs/ARCHITECTURE.md` §13.2).
+    Paused,
 }
 
 /// Full state of a payment stream.
@@ -71,14 +84,51 @@ pub struct Stream {
     /// If true, the recipient may also cancel and reclaim their accrued balance.
     pub cancelable: bool,
     pub status: StreamStatus,
+    /// Cumulative seconds the stream has spent paused in past (completed)
+    /// pause intervals. Always `0` for streams created before schema v3.
+    pub paused_total: u64,
+    /// Timestamp of the last resume (`0` if the stream never resumed).
+    pub last_resumed_at: u64,
+    /// Timestamp of the current pause (`0` when not paused). Accrual freezes
+    /// at this value while `status == StreamStatus::Paused`.
+    pub last_paused_at: u64,
 }
 
 impl Stream {
-    /// Seconds in the stream's full window. Always `>= 1` for a stored stream
-    /// (`create_stream` rejects `end_time <= start_time`).
+    /// Seconds in the stream's full *active* window. Always `>= 1` for a
+    /// stored stream (`create_stream` rejects `end_time <= start_time`).
+    ///
+    /// `resume_stream` shifts `end_time` forward by exactly the paused
+    /// interval and accumulates the same interval into `paused_total`, so the
+    /// two cancel out: the active duration is invariant across pause/resume
+    /// cycles and `streamed_at(deposit, duration(), duration()) == deposit`
+    /// still holds over the active window.
     pub fn duration(&self) -> u64 {
-        self.end_time - self.start_time
+        self.end_time
+            .saturating_sub(self.start_time)
+            .saturating_sub(self.paused_total)
     }
+}
+
+/// The stored shape of a [`Stream`] before schema v3 — the layout written by
+/// every pre-pause Wasm (v1 and v2 shared it; neither pause field existed).
+///
+/// Cross-read only: `migrate_stream` decodes entries with this type when the
+/// current layout does not match, then rewrites them with default pause
+/// fields. Never construct it for new data.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamPreV3 {
+    pub id: u64,
+    pub sender: Address,
+    pub recipient: Address,
+    pub token: Address,
+    pub deposit: i128,
+    pub withdrawn: i128,
+    pub start_time: u64,
+    pub end_time: u64,
+    pub cancelable: bool,
+    pub status: StreamStatus,
 }
 
 /// Proposed contract upgrade pending timelock expiration.
@@ -151,6 +201,10 @@ pub enum DataKey {
 ///
 /// The window is half-open `[start_time, end_time)`: at `now == start_time`
 /// nothing has accrued yet; at `now >= end_time` the full duration has elapsed.
+///
+/// Kept as the plain-window reference implementation; accrual goes through
+/// [`stream_elapsed_seconds`], which additionally subtracts paused time.
+#[allow(dead_code)] // referenced by the elapsed-window tests and mutant checks
 pub fn elapsed_seconds(env: &Env, start_time: u64, end_time: u64) -> u64 {
     let now = env.ledger().timestamp();
     if now <= start_time {
@@ -201,11 +255,43 @@ pub fn streamed_at(deposit: i128, duration: u64, elapsed: u64) -> Result<i128, S
     Ok(streamed as i128)
 }
 
+/// Seconds elapsed of the stream's *active* window at the current ledger time.
+///
+/// Pause-aware evaluation:
+///
+/// * While [`StreamStatus::Paused`], time is evaluated at `last_paused_at`, so
+///   accrual is frozen exactly at the pause-time value no matter how far the
+///   ledger advances (or that `now` passes `end_time`).
+/// * Otherwise, elapsed = `now - start_time - paused_total`, clamped to
+///   `[0, duration()]`: completed pause intervals never count, and because
+///   `resume_stream` shifts `end_time` forward by exactly the same interval it
+///   adds to `paused_total`, the active window stays invariant.
+///
+/// This is deliberately `Env`-pure — no storage reads — so it composes with
+/// the checked rate math in [`streamed_at`] without new failure modes.
+pub fn stream_elapsed_seconds(env: &Env, stream: &Stream) -> u64 {
+    let eval_time = if stream.status == StreamStatus::Paused {
+        stream.last_paused_at
+    } else {
+        env.ledger().timestamp()
+    };
+    if eval_time <= stream.start_time {
+        0
+    } else if eval_time >= stream.end_time {
+        stream.duration()
+    } else {
+        let raw = eval_time - stream.start_time;
+        raw.saturating_sub(stream.paused_total)
+            .min(stream.duration())
+    }
+}
+
 /// Amount streamed (accrued) at the current ledger time.
 ///
-/// See [`streamed_at`] for the rate semantics.
+/// See [`streamed_at`] for the rate semantics and [`stream_elapsed_seconds`]
+/// for how paused intervals are excluded from the elapsed window.
 pub fn streamed_amount(env: &Env, stream: &Stream) -> Result<i128, StreamError> {
-    let elapsed = elapsed_seconds(env, stream.start_time, stream.end_time);
+    let elapsed = stream_elapsed_seconds(env, stream);
     streamed_at(stream.deposit, stream.duration(), elapsed)
 }
 
@@ -276,6 +362,49 @@ pub fn put_stream(env: &Env, stream: &Stream) {
     env.storage()
         .persistent()
         .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+}
+
+/// Reads one stored stream for `migrate_storage`, upgrading a pre-v3 layout,
+/// and re-stores it (touching the entry's TTL).
+///
+/// Returns `Ok(false)` when nothing is stored under `id`. The current
+/// positional layout is tried first — entries written by this Wasm (or already
+/// migrated in an earlier batch) decode directly. When it does not match, the
+/// legacy [`StreamPreV3`] shape written by pre-pause Wasm is cross-read and the
+/// v3 pause fields are defaulted to `0`, so every pre-v3 entry migrates
+/// losslessly. Storage that decodes under neither layout was never written by
+/// this contract and traps, exactly like `get_stream` would on the same entry.
+pub fn migrate_stream(env: &Env, id: u64) -> Result<bool, StreamError> {
+    let key = DataKey::Stream(id);
+    let Some(raw): Option<Val> = env.storage().persistent().get(&key) else {
+        return Ok(false);
+    };
+
+    let migrated = match Stream::try_from_val(env, &raw) {
+        Ok(current) => current,
+        Err(_) => {
+            let legacy = StreamPreV3::try_from_val(env, &raw)
+                .unwrap_or_else(|_| panic!("stream {id} matches no known schema version"));
+            Stream {
+                id: legacy.id,
+                sender: legacy.sender,
+                recipient: legacy.recipient,
+                token: legacy.token,
+                deposit: legacy.deposit,
+                withdrawn: legacy.withdrawn,
+                start_time: legacy.start_time,
+                end_time: legacy.end_time,
+                cancelable: legacy.cancelable,
+                status: legacy.status,
+                paused_total: 0,
+                last_resumed_at: 0,
+                last_paused_at: 0,
+            }
+        }
+    };
+
+    put_stream(env, &migrated);
+    Ok(true)
 }
 
 /// Appends a stream's id to both parties' address indexes.

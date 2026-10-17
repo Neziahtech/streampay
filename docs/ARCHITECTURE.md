@@ -147,6 +147,21 @@ Safety properties:
 The window is **half-open** `[start_time, end_time)`: at `now == start_time`
 nothing has accrued, at `now ≥ end_time` the full duration has elapsed.
 
+Pause-aware elapsed (`stream_elapsed_seconds`, added with schema v3):
+
+- `duration` is the **active** window: `end_time − start_time − paused_total`.
+  `resume_stream` shifts `end_time` forward by exactly the paused interval and
+  accumulates the same interval into `paused_total`, so the two cancel out —
+  the accrual rate is invariant across pause/resume cycles.
+- While `status == Paused`, elapsed time is evaluated at `last_paused_at`, so
+  accrual freezes exactly at the pause-time value no matter how far the ledger
+  advances. While `Active`, elapsed = `now − start_time − paused_total`
+  clamped to `[0, duration]`.
+- Full-window completeness is preserved over active time:
+  `streamed_at(deposit, duration, duration) == deposit`, so the recipient is
+  still made whole after the last resume. Pinned by the pause property test
+  (`property_paused_streams_satisfy_invariants_and_completeness`).
+
 ## 4. Auth model
 
 | Action | who may call | auth consumed |
@@ -231,20 +246,36 @@ is never part of any stream's `deposit`, so no payout path can reach it.
                  │
                  ▼
               Active ──── cancel_stream ────▶ Cancelled (terminal)
-                 │        (pro-rata split:
-                 │         recipient ← available,
+                 │        (pro-rata split:   (also allowed from Paused, at
+                 │         recipient ←        the frozen pause-time balance)
+                 │         available,
                  │         sender ← deposit − streamed)
+                 │
+                 ├── pause_stream ──▶ Paused ── resume_stream ──▶ Active
+                 │    (accrual frozen       (end_time and paused_total
+                 │     at pause-time          shift by the paused interval,
+                 │     balance; withdraw/     so duration is invariant)
+                 │     top_up still allowed)
                  │
                  ├─ withdrawn == deposit ──▶ Depleted (terminal)
                  │
-                 └─ top_up allowed while Active (even after end_time:
-                    funds become fully accrued → recipient withdraws)
+                 └─ top_up allowed while Active or Paused (even after
+                    end_time: funds become fully accrued → recipient
+                    withdraws)
 ```
 
 - Cancelling a `Depleted` stream reverts (`StreamNotActive`) — there is
   nothing left to split.
 - Cancelling a not-yet-started stream is a 100 % refund to the sender.
 - `top_up` on a cancelled/depleted stream reverts.
+- `pause_stream` on a paused stream reverts (`StreamAlreadyPaused`, 42);
+  `resume_stream` on a non-paused stream reverts (`StreamNotPaused`, 43);
+  both on cancelled/depleted streams revert (`StreamNotActive`, 5). Only the
+  sender may call either. Both are also gated by the contract freeze like
+  every other mutating entrypoint.
+- `Paused` is appended **after** the terminal variants in `StreamStatus` so
+  existing discriminants never move; it is name-encoded on the wire but stored
+  inside every `Stream` entry (§13.2).
 
 ### 6.1 Withdraw / cancel race semantics
 
@@ -273,12 +304,15 @@ Properties pinned by the `race_*` regression tests in `src/test.rs`:
   the recipient or a `cancelable` stream's recipient cancels; authorization
   is checked independently of the race (§4).
 
-This table is normative for future entrypoints too: any `pause_stream`-like
-or batched lifecycle operation must preserve "loser reverts with an existing
-code, state untouched" rather than introducing a new interleaving case; if it
-cannot, it needs an append-only error code and an updated table, not a silent
-drift. The same-ledger ordering is documented in the rustdoc of `withdraw` and
-`cancel_stream`.
+This table is normative for future entrypoints too: any pause-like or batched
+lifecycle operation must preserve "loser reverts with an existing code, state
+untouched" rather than introducing a new interleaving case; if it cannot, it
+needs an append-only error code and an updated table, not a silent drift. The
+same-ledger ordering is documented in the rustdoc of `withdraw` and
+`cancel_stream`. `pause_stream` / `resume_stream` (schema v3) follow the rule:
+they only toggle between `Active` and `Paused`, evaluate accrual at the frozen
+pause-time value, and any losing call (e.g. pausing a `Cancelled` stream)
+reverts with the existing `StreamNotActive` (5).
 
 ## 7. Error surface
 
@@ -641,9 +675,11 @@ which surface and how each one may evolve.
   (`NotStreamSender` / `NotStreamRecipient`) are retired-but-sacred: kept,
   documented, unreachable.
 - `NothingToWithdraw = 13` was the tail of the pre-treasury surface; the
-  treasury layer then *appended* 14–17, so the current tail is
-  `InsufficientTreasuryBalance = 17`. That is exactly how evolution is meant
-  to look: 13's meaning never moved while the tail advanced past it.
+  treasury layer then *appended* 14–17, the scheduling layer appended 18–25,
+  the treasury/governance/freeze/upgrade layers appended through 41, and the
+  pause feature appended `StreamAlreadyPaused = 42` / `StreamNotPaused = 43`.
+  That is exactly how evolution is meant to look: 13's meaning never moved
+  while the tail advanced past it.
 - The plumbing keeps the table honest: every variant is mirrored in
   `StreamError::ALL`, an exhaustive-match test forces new variants into that
   list in the same change, the `surface.rs` branch registry ties each variant
@@ -668,6 +704,21 @@ a new struct and migrate/cross-read deliberately, rather than editing the
 existing type. `StreamStatus` is name-encoded like `DataKey`, but is nested
 inside stored `Stream` values — same practical freeze.
 
+The schema v3 pause fields are the worked example of the deliberate path:
+
+- `Stream` gained `paused_total`, `last_resumed_at`, `last_paused_at`
+  (appended at the end of the struct; `StreamStatus` gained `Paused` after
+  the terminal variants) and `TARGET_SCHEMA_VERSION` was bumped 2 → 3.
+- Because the struct encodes positionally, pre-v3 entries do **not** decode
+  under the new type. `migrate_stream` therefore cross-reads them with a
+  legacy `StreamPreV3` shape (the exact pre-v3 field list) and rewrites them
+  with the pause fields defaulted to `0` — a lossless upgrade performed by
+  the existing freeze → `migrate_storage` (batched, resumable) → unfreeze
+  protocol. `storage_migration_cross_reads_pre_v3_stream_layout` pins the
+  round trip.
+- Until migration runs, plain `get_stream` on a pre-v3 entry would trap —
+  which is exactly why migration is gated behind the contract freeze.
+
 ### 13.3 Event shapes
 
 Events are the off-chain ledger indexers consume; fields decode by position
@@ -681,6 +732,8 @@ Events are the off-chain ledger indexers consume; fields decode by position
 | `StreamToppedUp` | `stream_id: u64` | `sender: Address`; `amount: i128`; `new_deposit: i128` |
 | `FeeCharged` | `stream_id: u64` | `token: Address`; `payer: Address`; `amount: i128`; `fee_bps: u32` |
 | `FeeWithdrawn` | `token: Address` | `governor: Address`; `recipient: Address`; `amount: i128`; `withdrawn_total: i128` |
+| `PauseStream` | `stream_id: u64` | `sender: Address` |
+| `ResumeStream` | `stream_id: u64` | `sender: Address` |
 
 Never add, remove, reorder, or retype fields of an existing event; emit a
 new event type instead. Tests must filter by contract and compare typed XDR

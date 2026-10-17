@@ -8,18 +8,18 @@ Every expected failure is a `StreamError` with a stable numeric code. This docum
 
 | Code | Variant | Status | Processed by | Meaning |
 | ---: | --- | --- | --- | --- |
-| 1 | `StreamNotFound` | reachable (1 branch(es)) | `available`, `cancel_stream`, `get_stream`, `top_up`, `withdraw`, `withdraw_max` | no stream is stored under the id |
+| 1 | `StreamNotFound` | reachable (1 branch(es)) | `available`, `cancel_stream`, `get_stream`, `pause_stream`, `resume_stream`, `top_up`, `withdraw`, `withdraw_max` | no stream is stored under the id |
 | 2 | `NotStreamSender` | **retired** (unreachable) | — | Reserved role check from the original draft. The contract authorizes sender-only actions by comparing the caller address directly and uses `NotAuthorized` (#12) otherwise, so this variant is never returned. Retained for wire compatibility. |
 | 3 | `NotStreamRecipient` | **retired** (unreachable) | — | Reserved role check from the original draft. Recipient-only actions require the recipient's authorization (`require_auth`) and use `NotAuthorized` (#12) for business-rule rejections, so this variant is never returned. Retained for wire compatibility. |
 | 4 | `StreamNotCancellable` | reachable (1 branch(es)) | `cancel_stream` | the recipient calls cancel_stream on a stream created non-cancelable |
-| 5 | `StreamNotActive` | reachable (1 branch(es)) | `cancel_stream`, `top_up`, `withdraw`, `withdraw_max` | the stream status is Cancelled or Depleted |
+| 5 | `StreamNotActive` | reachable (1 branch(es)) | `cancel_stream`, `pause_stream`, `resume_stream`, `top_up`, `withdraw`, `withdraw_max` | the stream status is Cancelled or Depleted |
 | 6 | `StartTimeInPast` | reachable (1 branch(es)) | `create_stream`, `create_streams` | start_time is before the current ledger timestamp |
 | 7 | `InvalidTimeRange` | reachable (1 branch(es)) | `create_stream`, `create_streams` | end_time is not strictly after start_time (zero or negative duration) |
 | 8 | `DurationTooLong` | reachable (1 branch(es)) | `create_stream`, `create_streams` | duration exceeds MAX_DURATION_SECONDS (100 years) |
 | 9 | `ZeroAmount` | reachable (4 branch(es)) | `create_stream`, `create_streams`, `top_up`, `withdraw`, `withdraw_treasury` | deposit_amount is zero or negative; withdraw amount is zero or negative; top-up amount is zero or negative; treasury withdrawal amount is zero or negative |
 | 10 | `AmountExceedsAvailable` | reachable (1 branch(es)) | `withdraw` | amount exceeds the accrued-but-unwithdrawn balance |
 | 11 | `MathOverflow` | reachable (6 branch(es)) | `available`, `cancel_stream`, `create_stream`, `create_streams`, `streamed_at`, `top_up`, `withdraw`, `withdraw_max` | deposit + amount would overflow i128; deposit * duration would overflow u128; deposit * elapsed would overflow u128; withdrawn exceeds streamed (an invariant-violating stored stream); the cancel pro-rata split would underflow; withdrawn + amount would overflow i128 |
-| 12 | `NotAuthorized` | reachable (1 branch(es)) | `cancel_stream` | the caller is neither the sender nor the recipient |
+| 12 | `NotAuthorized` | reachable (3 branch(es)) | `cancel_stream`, `pause_stream`, `resume_stream` | the caller is neither the sender nor the recipient; the caller is not the stream sender; the caller is not the stream sender |
 | 13 | `NothingToWithdraw` | reachable (1 branch(es)) | `withdraw_max` | nothing has accrued yet, or everything accrued was already withdrawn |
 | 14 | `FeeRateTooHigh` | reachable (1 branch(es)) | `set_fee_bps` | new_fee_bps exceeds MAX_FEE_BPS (the protocol cap) |
 | 15 | `NotGovernor` | reachable (2 branch(es)) | `accept_governor`, `cancel_upgrade`, `execute_upgrade`, `migrate_storage`, `nominate_governor`, `propose_upgrade`, `set_fee_bps`, `set_frozen`, `withdraw_treasury` | the caller is not the treasury governor; the caller is not the nominated governor |
@@ -43,12 +43,14 @@ Every expected failure is a `StreamError` with a stable numeric code. This docum
 | 33 | `PolicyNoQueuedChange` | reachable (1 branch(es)) | `policy_execute_asset` | no policy change is queued for the specified asset |
 | 34 | `PolicyNotInitialized` | reachable (1 branch(es)) | `policy_accept_handoff`, `policy_cancel_handoff`, `policy_execute_asset`, `policy_propose_asset`, `policy_propose_handoff`, `policy_set_timelock_delay` | the policy module has not been initialized |
 | 35 | `PolicyNoPendingHandoff` | reachable (1 branch(es)) | `policy_accept_handoff`, `policy_cancel_handoff` | no admin handoff proposal is pending |
-| 36 | `ContractFrozen` | reachable (1 branch(es)) | `cancel_stream`, `create_stream`, `create_streams`, `top_up`, `withdraw`, `withdraw_max` | the contract is frozen for maintenance or upgrade |
+| 36 | `ContractFrozen` | reachable (1 branch(es)) | `cancel_stream`, `create_stream`, `create_streams`, `pause_stream`, `resume_stream`, `top_up`, `withdraw`, `withdraw_max` | the contract is frozen for maintenance or upgrade |
 | 37 | `ContractNotFrozen` | reachable (1 branch(es)) | `migrate_storage` | storage migration requires the contract to be frozen |
 | 38 | `NoPendingUpgrade` | reachable (2 branch(es)) | `cancel_upgrade`, `execute_upgrade` | execute_upgrade called with no upgrade pending; cancel_upgrade called with no upgrade pending |
 | 39 | `TimelockNotExpired` | reachable (1 branch(es)) | `execute_upgrade` | upgrade timelock delay has not yet expired |
 | 40 | `UpgradeDelayTooShort` | reachable (1 branch(es)) | `propose_upgrade` | proposed upgrade delay is shorter than MIN_UPGRADE_DELAY_SECONDS |
 | 41 | `AlreadyMigrated` | reachable (1 branch(es)) | `migrate_storage` | storage has already been migrated to the target schema version |
+| 42 | `StreamAlreadyPaused` | reachable (1 branch(es)) | `pause_stream` | the stream is already paused |
+| 43 | `StreamNotPaused` | reachable (1 branch(es)) | `resume_stream` | the stream is not paused |
 
 ## Branch matrix (entrypoint × condition → error)
 
@@ -65,8 +67,12 @@ Every expected failure is a `StreamError` with a stable numeric code. This docum
 | `CancelStreamNotAuthorized` | `cancel_stream` | `NotAuthorized` | 12 | the caller is neither the sender nor the recipient | reachable |
 | `TopUpAmountNonPositive` | `top_up` | `ZeroAmount` | 9 | top-up amount is zero or negative | reachable |
 | `TopUpDepositOverflow` | `top_up` | `MathOverflow` | 11 | deposit + amount would overflow i128 | reachable |
-| `StreamNotFound` | `get_stream`, `available`, `withdraw`, `withdraw_max`, `cancel_stream`, `top_up` | `StreamNotFound` | 1 | no stream is stored under the id | reachable |
-| `StreamNotActive` | `withdraw`, `withdraw_max`, `cancel_stream`, `top_up` | `StreamNotActive` | 5 | the stream status is Cancelled or Depleted | reachable |
+| `PauseStreamAlreadyPaused` | `pause_stream` | `StreamAlreadyPaused` | 42 | the stream is already paused | reachable |
+| `PauseStreamNotAuthorized` | `pause_stream` | `NotAuthorized` | 12 | the caller is not the stream sender | reachable |
+| `ResumeStreamNotPaused` | `resume_stream` | `StreamNotPaused` | 43 | the stream is not paused | reachable |
+| `ResumeStreamNotAuthorized` | `resume_stream` | `NotAuthorized` | 12 | the caller is not the stream sender | reachable |
+| `StreamNotFound` | `get_stream`, `available`, `withdraw`, `withdraw_max`, `cancel_stream`, `top_up`, `pause_stream`, `resume_stream` | `StreamNotFound` | 1 | no stream is stored under the id | reachable |
+| `StreamNotActive` | `withdraw`, `withdraw_max`, `cancel_stream`, `top_up`, `pause_stream`, `resume_stream` | `StreamNotActive` | 5 | the stream status is Cancelled or Depleted | reachable |
 | `CapacityOverflow` | `create_stream`, `create_streams`, `top_up` | `MathOverflow` | 11 | deposit * duration would overflow u128 | reachable |
 | `RateProductOverflow` | `streamed_at`, `available`, `withdraw`, `withdraw_max`, `cancel_stream` | `MathOverflow` | 11 | deposit * elapsed would overflow u128 | reachable |
 | `AvailableBalanceOverflow` | `available`, `withdraw`, `withdraw_max` | `MathOverflow` | 11 | withdrawn exceeds streamed (an invariant-violating stored stream) | defensive (unreachable) |
@@ -96,7 +102,7 @@ Every expected failure is a `StreamError` with a stable numeric code. This docum
 | `PolicyNoQueuedChange` | `policy_execute_asset` | `PolicyNoQueuedChange` | 33 | no policy change is queued for the specified asset | reachable |
 | `PolicyNotInitialized` | `policy_execute_asset`, `policy_propose_asset`, `policy_propose_handoff`, `policy_accept_handoff`, `policy_cancel_handoff`, `policy_set_timelock_delay` | `PolicyNotInitialized` | 34 | the policy module has not been initialized | reachable |
 | `PolicyNoPendingHandoff` | `policy_accept_handoff`, `policy_cancel_handoff` | `PolicyNoPendingHandoff` | 35 | no admin handoff proposal is pending | reachable |
-| `ContractFrozen` | `create_stream`, `create_streams`, `withdraw`, `withdraw_max`, `cancel_stream`, `top_up` | `ContractFrozen` | 36 | the contract is frozen for maintenance or upgrade | reachable |
+| `ContractFrozen` | `create_stream`, `create_streams`, `withdraw`, `withdraw_max`, `cancel_stream`, `top_up`, `pause_stream`, `resume_stream` | `ContractFrozen` | 36 | the contract is frozen for maintenance or upgrade | reachable |
 | `MigrationNotFrozen` | `migrate_storage` | `ContractNotFrozen` | 37 | storage migration requires the contract to be frozen | reachable |
 | `ExecuteUpgradeNoPending` | `execute_upgrade` | `NoPendingUpgrade` | 38 | execute_upgrade called with no upgrade pending | reachable |
 | `CancelUpgradeNoPending` | `cancel_upgrade` | `NoPendingUpgrade` | 38 | cancel_upgrade called with no upgrade pending | reachable |

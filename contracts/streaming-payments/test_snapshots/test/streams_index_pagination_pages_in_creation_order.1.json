@@ -623,6 +623,30 @@
                   },
                   {
                     "key": {
+                      "symbol": "last_paused_at"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "last_resumed_at"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "paused_total"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "recipient"
                     },
                     "val": {
@@ -731,6 +755,30 @@
                     },
                     "val": {
                       "u64": "2"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "last_paused_at"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "last_resumed_at"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "paused_total"
+                    },
+                    "val": {
+                      "u64": "0"
                     }
                   },
                   {
@@ -847,6 +895,30 @@
                   },
                   {
                     "key": {
+                      "symbol": "last_paused_at"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "last_resumed_at"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "paused_total"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "recipient"
                     },
                     "val": {
@@ -959,6 +1031,30 @@
                   },
                   {
                     "key": {
+                      "symbol": "last_paused_at"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "last_resumed_at"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "paused_total"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "recipient"
                     },
                     "val": {
@@ -1067,6 +1163,30 @@
                     },
                     "val": {
                       "u64": "5"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "last_paused_at"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "last_resumed_at"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "paused_total"
+                    },
+                    "val": {
+                      "u64": "0"
                     }
                   },
                   {

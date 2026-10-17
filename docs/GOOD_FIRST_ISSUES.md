@@ -4,10 +4,14 @@ Ready-to-file tickets for new contributors. Copy each into a GitHub issue,
 apply the `good first issue` label plus the difficulty label, and (optionally)
 attach a GrantFox bounty. Claim by commenting and opening an early draft PR.
 
-> **Status (2026-10-04):** issues **#2** (withdrawal panel), **#4** (fuzz
-> math), **#7** (fetch by id — superseded by on-chain discovery), and **#8**
-> (testnet script + demo) have been implemented on `main`. They remain here
+> **Status (2026-10-16):** issues **#1** (pause_stream), **#2** (withdrawal panel),
+> **#4** (fuzz math), **#7** (fetch by id — superseded by on-chain discovery), and
+> **#8** (testnet script + demo) have been implemented on `main`. They remain here
 > as reference for the expected format of new tickets; do not claim them.
+>
+> **Status (2026-10-16):** issue **#1** (`pause_stream` entrypoint) has been
+> implemented (`pause_stream` / `resume_stream`, `StreamStatus::Paused`,
+> codes 42/43, schema v3 migration). Do not claim it.
 
 ---
 
@@ -30,12 +34,12 @@ seconds and `last_resumed_at` on the `Stream` so accrual math stays pure:
 `docs/ARCHITECTURE.md` §3).
 
 **Acceptance criteria:**
-- [ ] `pause_stream` / `resume_stream` return `Result<(), StreamError>`; only the sender may call them; non-Active streams revert with `StreamNotActive`.
-- [ ] New error codes appended (never renumbered) for pause-specific failures.
-- [ ] `PauseStream` / `ResumeStream` events emitted with `stream_id` topic.
-- [ ] Unit tests: accrual frozen while paused, resumes exactly where it left off, withdraw-while-paused, pause→cancel, double-pause reverts.
-- [ ] Property test updated: paused streams still satisfy `streamed ≤ deposit` and full-window completeness.
-- [ ] `docs/ARCHITECTURE.md` lifecycle diagram updated.
+- [x] `pause_stream` / `resume_stream` return `Result<(), StreamError>`; only the sender may call them; non-Active streams revert with `StreamNotActive`.
+- [x] New error codes appended (never renumbered) for pause-specific failures.
+- [x] `PauseStream` / `ResumeStream` events emitted with `stream_id` topic.
+- [x] Unit tests: accrual frozen while paused, resumes exactly where it left off, withdraw-while-paused, pause→cancel, double-pause reverts.
+- [x] Property test updated: paused streams still satisfy `streamed ≤ deposit` and full-window completeness.
+- [x] `docs/ARCHITECTURE.md` lifecycle diagram updated.
 
 ---
 

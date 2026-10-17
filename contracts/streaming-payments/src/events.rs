@@ -178,103 +178,40 @@ pub struct FeeWithdrawn {
     pub withdrawn_total: i128,
 }
 
-/// Emitted when the policy module is initialized with its initial admin.
+/// Emitted when a stream is paused by the sender.
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PolicyInitialized {
-    pub admin: Address,
+pub struct PauseStream {
+    #[topic]
+    pub stream_id: u64,
+    pub sender: Address,
 }
 
-/// Emitted when an asset allowlist mutation is proposed and queued under timelock.
+/// Emitted when a paused stream is resumed by the sender.
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PolicyAssetQueued {
+pub struct ResumeStream {
     #[topic]
-    pub asset: Address,
-    pub allowed: bool,
-    pub executable_after: u64,
+    pub stream_id: u64,
+    pub sender: Address,
 }
 
-/// Emitted when a queued asset allowlist change is executed after timelock expiry.
+/// Emitted when the sender pauses an active stream; accrual freezes at this
+/// ledger timestamp (`last_paused_at`).
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PolicyAssetExecuted {
+pub struct PauseStream {
     #[topic]
-    pub asset: Address,
-    pub allowed: bool,
+    pub stream_id: u64,
+    pub sender: Address,
 }
 
-/// Emitted when the admin proposes a new admin in step 1 of the two-step handoff.
+/// Emitted when the sender resumes a paused stream; `paused_total` grows and
+/// `end_time` shifts forward by exactly the paused interval.
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PolicyHandoffProposed {
+pub struct ResumeStream {
     #[topic]
-    pub current_admin: Address,
-    pub proposed_admin: Address,
-}
-
-/// Emitted when the proposed admin accepts the handoff in step 2.
-#[contractevent]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PolicyHandoffAccepted {
-    #[topic]
-    pub new_admin: Address,
-}
-
-/// Emitted when a pending admin handoff is cancelled by the current admin.
-#[contractevent]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PolicyHandoffCancelled {
-    #[topic]
-    pub proposed_admin: Address,
-}
-
-/// Emitted when a contract upgrade is proposed with a timelock delay.
-#[contractevent]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct UpgradeProposed {
-    #[topic]
-    pub new_wasm_hash: BytesN<32>,
-    pub unlock_time: u64,
-    pub proposer: Address,
-}
-
-/// Emitted when a pending contract upgrade is cancelled by the governor.
-#[contractevent]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct UpgradeCancelled {
-    #[topic]
-    pub new_wasm_hash: BytesN<32>,
-    pub cancelled_by: Address,
-}
-
-/// Emitted when a contract upgrade is executed after its timelock has elapsed.
-#[contractevent]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ContractUpgraded {
-    #[topic]
-    pub new_wasm_hash: BytesN<32>,
-    pub executed_by: Address,
-}
-
-/// Emitted when the contract freeze state is toggled by the governor.
-#[contractevent]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ContractFrozenStateChanged {
-    #[topic]
-    pub frozen: bool,
-    pub changed_by: Address,
-}
-
-/// Emitted when a batch of streams is migrated to a new storage schema version.
-#[contractevent]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct StorageMigrated {
-    #[topic]
-    pub from_version: u32,
-    #[topic]
-    pub to_version: u32,
-    pub start_id: u64,
-    pub end_id: u64,
-    pub is_complete: bool,
+    pub stream_id: u64,
+    pub sender: Address,
 }

@@ -157,6 +157,26 @@ interface: they are only ever appended to, never renumbered or reused.
   signatures are syntactic (type aliases produce undefined spec types), and
   sdk-28 rejects plain `cargo build` for Wasm (requires `stellar contract
   build`). Linked from the README and CONTRIBUTING.
+- **Pause / resume for streams** (`pause_stream` / `resume_stream`): the
+  sender can freeze accrual for a leave or audit hold and resume from the
+  exact point it stopped. A pause evaluates accrual at the pause-time
+  balance (`stream_elapsed_seconds`); withdrawals against the frozen
+  balance, top-ups, and cancellation all remain permitted while paused.
+  `resume_stream` shifts `end_time` forward by exactly the paused interval
+  and accumulates it in `paused_total`, so the active `duration()` — and
+  therefore the accrual rate — is invariant across any number of
+  pause/resume cycles. New append-only codes `StreamAlreadyPaused` (42) and
+  `StreamNotPaused` (43); new append-only events `PauseStream` /
+  `ResumeStream` (`stream_id` topic). Both entrypoints are sender-authorized
+  and gated by the contract freeze like every other mutating entrypoint.
+- Storage schema v3: `Stream` gained `paused_total`, `last_resumed_at`, and
+  `last_paused_at` (defaults `0` for pre-existing streams) and
+  `StreamStatus` gained `Paused` (appended after the terminal variants so
+  existing discriminants never move). Because `#[contracttype]` structs
+  encode positionally, `migrate_storage` now cross-reads pre-v3 entries via
+  a legacy `StreamPreV3` shape and rewrites them in the new layout — the
+  existing freeze → migrate → unfreeze protocol upgrades deployed data
+  losslessly. `TARGET_SCHEMA_VERSION` is now 3.
 
 ### Changed
 - **Deployment interface:** the contract now has a constructor. Deploy with

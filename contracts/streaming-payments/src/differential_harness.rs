@@ -49,6 +49,10 @@ pub fn convert_stream_status(status: StreamStatus) -> ModelStreamStatus {
         StreamStatus::Active => ModelStreamStatus::Active,
         StreamStatus::Cancelled => ModelStreamStatus::Cancelled,
         StreamStatus::Depleted => ModelStreamStatus::Depleted,
+        // The reference model predates pause support and the harness only
+        // replays model-generated actions (no pause/resume), so this arm is
+        // unreachable in differential runs.
+        StreamStatus::Paused => panic!("pause is not modeled by streampay-model"),
     }
 }
 

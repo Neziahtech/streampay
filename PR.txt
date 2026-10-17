@@ -1,0 +1,108 @@
+# PR: Add `pause_stream` and `resume_stream` entrypoints
+
+**Branch:** `feat/pause-stream-entrypoint`  
+**Issue:** #1 — Add a pause_stream entrypoint  
+**Difficulty:** Medium · Contract, Rust  
+**Type:** feature / contract
+
+---
+
+## Summary
+
+Senders can now temporarily stop accrual on a live stream without killing it (contractor on leave, audit hold). Two new sender-only entrypoints freeze accrual at the pause-time available balance and resume from the exact same point — total stream duration stretches by exactly the paused interval, so the recipient is never short-changed and the sender's unspent funds are preserved.
+
+## What changed
+
+### Contract (`contracts/streaming-payments/src/`)
+
+- **`lib.rs`** — Added two entrypoints:
+  - `pause_stream(env, sender, stream_id) -> Result<(), StreamError>`
+  - `resume_stream(env, sender, stream_id) -> Result<(), StreamError>`
+  - Both require sender authorization (`sender.require_auth()` + explicit identity check → `NotAuthorized` for third parties).
+  - Both reject non-Active (Cancelled/Depleted) streams with `StreamNotActive`.
+  - `pause_stream` sets status `Paused`, records `last_paused_at = now`, emits `PauseStream { stream_id, sender }` (topic).
+  - `resume_stream` requires status `Paused` (else `StreamNotPaused`), computes `paused_duration = now − last_paused_at`, adds it to `paused_total`, shifts `end_time` forward by `paused_duration`, records `last_resumed_at = now`, restores status `Active`, emits `ResumeStream { stream_id, sender }` (topic).
+
+### Contract (`contracts/streaming-payments/src/`)
+
+- **`stream.rs`** — Stream state & pure accrual math:
+  - `StreamStatus::Paused` variant added to the lifecycle enum.
+  - `Stream` now persists `paused_total: u64`, `last_resumed_at: u64`, `last_paused_at: u64` (all initialized to `0` at creation).
+  - `Stream::duration()` returns `end_time − start_time − paused_total`.
+  - `stream_elapsed_seconds()`: while `Paused`, accrual evaluates at `last_paused_at` (frozen); while `Active`, `elapsed = now − start_time − paused_total`, clamped to `duration()`.
+  - `available_amount()` zeroes for `Cancelled` streams; otherwise `streamed − withdrawn`, so withdrawals against the frozen pause-time balance remain permitted while paused.
+  - `cancel_amounts()` settles the frozen accrued balance to the recipient and refunds the unaccrued remainder to the sender (works on `Paused` streams).
+
+- **`errors.rs`** — New codes appended at the bottom (never renumbered):
+  - `StreamAlreadyPaused = 18` — pause on an already-paused stream.
+  - `StreamNotPaused = 19` — resume on a non-paused stream.
+
+- **`events.rs`** — `PauseStream` and `ResumeStream` events, both keyed by `stream_id` topic with `sender` as data (wired up by the entrypoints).
+
+### Docs
+
+- `docs/ARCHITECTURE.md`:
+  - §3 accrual math documents `elapsed = now − start_time − paused_total`, pause-time freeze, and the resume shift of `end_time` / `paused_total`.
+  - Auth table lists `pause_stream` / `resume_stream` as sender-only.
+  - §6 lifecycle ASCII diagram includes the `Paused` state with `pause_stream` / `resume_stream` / `cancel_stream` transitions.
+  - Error table includes codes 18/19.
+
+### Tests (`contracts/streaming-payments/src/test.rs`)
+
+Unit tests added:
+- `accrual_frozen_while_paused` — available amount stays constant across the paused interval.
+- `resumes_exactly_where_it_left_off` — post-resume accrual continues from the frozen value.
+- `withdraw_while_paused` — recipient can withdraw against the frozen balance.
+- `pause_then_cancel` — cancelling a paused stream settles frozen accrual + refunds the remainder.
+- `double_pause_reverts` — `StreamAlreadyPaused`.
+- `resume_non_paused_reverts` — `StreamNotPaused`.
+- `pause_non_active_reverts` / `resume_non_active_reverts` — `StreamNotActive` on Cancelled/Depleted.
+- `third_party_cannot_pause_or_resume` — `NotAuthorized`.
+- `pause_and_resume_events_emitted` — `PauseStream` / `ResumeStream` with correct topic/payload.
+- `top_up_while_paused` — top-up allowed while paused.
+- `multiple_pauses_and_resumes_in_sequence` — pause/resume chains accumulate `paused_total` correctly.
+- `property_paused_streams_satisfy_invariants_and_completeness` — property test: paused streams satisfy `0 ≤ streamed ≤ deposit` at all times, stay frozen during pauses, resume without jumps, and reach full-window completeness.
+
+Error-surface matrix tests (`error_surface_test.rs`) cover the new `PauseStream*` / `ResumeStream*` branches; `cargo test` → **93/93 passed**.
+
+## Behavior & invariants preserved
+
+| Invariant | How it holds |
+|---|---|
+| `0 ≤ withdrawn ≤ streamed ≤ deposit` | Pause only pauses time; `available_amount` still caps payout at accrued-but-unwithdrawn. |
+| Accrual frozen while paused | `stream_elapsed_seconds` evaluates at `last_paused_at` for `Paused` streams. |
+| Duration stretches exactly by paused interval | `end_time += paused_duration` on resume; `paused_total` accumulates it; rate (`deposit / duration`) unchanged. |
+| Sender-only mutating pause/resume | `require_auth()` + sender identity check. |
+| Non-Active streams rejected | `StreamNotActive` for Cancelled/Depleted in both entrypoints. |
+| CEI ordering | State persisted + event emitted before any token movement. |
+| `paused_total` / `last_resumed_at` persisted | Stored on `Stream` so accrual math stays pure across calls. |
+
+## Usage example
+
+```rust
+// Sender pauses a running stream for 5 days
+client.pause_stream(&sender, &stream_id)?; // status = Paused, accrual frozen
+
+// ... later, sender resumes
+client.resume_stream(&sender, &stream_id)?; // status = Active, end_time += 5 days, paused_total += 5 days
+```
+
+## Verification
+
+- `cargo test` — 93 tests, 0 failed (contract unit tests + error-surface matrix).
+- `docs/ARCHITECTURE.md` lifecycle diagram and §3 accrual math updated.
+- `docs/ERRORS.md` regenerated from `surface.rs` instrumentation (codes 18/19 listed as reachable).
+
+## Checklist
+
+- [x] `pause_stream` / `resume_stream` return `Result<(), StreamError>`
+- [x] Only the sender may call; `NotAuthorized` otherwise
+- [x] Non-Active streams revert with `StreamNotActive`
+- [x] New error codes appended (18, 19), never renumbered
+- [x] `PauseStream` / `ResumeStream` events with `stream_id` topic
+- [x] Unit tests: frozen accrual, resume-where-left-off, withdraw-while-paused, pause→cancel, double-pause
+- [x] Property test: paused streams satisfy `streamed ≤ deposit` and full-window completeness
+- [x] `docs/ARCHITECTURE.md` lifecycle diagram updated
+
+---
+*Ready for review.*
