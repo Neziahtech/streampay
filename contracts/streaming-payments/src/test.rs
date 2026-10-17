@@ -4221,6 +4221,282 @@ fn non_sep41_token_return_reports_transfer_failure() {
         .unwrap();
     assert_eq!(err, StreamError::DepositTransferFailed);
 }
+// ------------------------------------------------------------- batch creation -
+
+#[test]
+fn create_streams_batch_success() {
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+    let recipient2 = Address::generate(&f.env);
+
+    let mut entries = soroban_sdk::Vec::new(&f.env);
+    entries.push_back(crate::stream::BatchEntry {
+        sender: f.sender.clone(),
+        recipient: f.recipient.clone(),
+        token: f.token.clone(),
+        deposit: 1_000_000,
+        start_time: now + DAY,
+        end_time: now + 10 * DAY,
+        cancelable: true,
+    });
+    entries.push_back(crate::stream::BatchEntry {
+        sender: f.sender.clone(),
+        recipient: recipient2.clone(),
+        token: f.token.clone(),
+        deposit: 2_000_000,
+        start_time: now + 2 * DAY,
+        end_time: now + 20 * DAY,
+        cancelable: false,
+    });
+
+    let results = f.client.mock_all_auths().create_streams_batch(&entries);
+
+    assert_eq!(results.len(), 2);
+    let id1 = results.get(0).unwrap().unwrap();
+    let id2 = results.get(1).unwrap().unwrap();
+
+    let s1 = f.client.get_stream(&id1);
+    assert_eq!(s1.sender, f.sender);
+    assert_eq!(s1.recipient, f.recipient);
+    assert_eq!(s1.deposit, 1_000_000);
+    assert!(s1.cancelable);
+
+    let s2 = f.client.get_stream(&id2);
+    assert_eq!(s2.sender, f.sender);
+    assert_eq!(s2.recipient, recipient2);
+    assert_eq!(s2.deposit, 2_000_000);
+    assert!(!s2.cancelable);
+}
+
+#[test]
+fn create_streams_batch_per_entry_isolation() {
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+    let recipient2 = Address::generate(&f.env);
+    let recipient3 = Address::generate(&f.env);
+
+    let mut entries = soroban_sdk::Vec::new(&f.env);
+    // Entry 0: Valid
+    entries.push_back(crate::stream::BatchEntry {
+        sender: f.sender.clone(),
+        recipient: f.recipient.clone(),
+        token: f.token.clone(),
+        deposit: 1_000_000,
+        start_time: now + DAY,
+        end_time: now + 10 * DAY,
+        cancelable: true,
+    });
+    // Entry 1: Invalid (non-positive deposit)
+    entries.push_back(crate::stream::BatchEntry {
+        sender: f.sender.clone(),
+        recipient: recipient2.clone(),
+        token: f.token.clone(),
+        deposit: 0,
+        start_time: now + DAY,
+        end_time: now + 10 * DAY,
+        cancelable: false,
+    });
+    // Entry 2: Valid
+    entries.push_back(crate::stream::BatchEntry {
+        sender: f.sender.clone(),
+        recipient: recipient3.clone(),
+        token: f.token.clone(),
+        deposit: 2_000_000,
+        start_time: now + 2 * DAY,
+        end_time: now + 20 * DAY,
+        cancelable: true,
+    });
+
+    let results = f.client.mock_all_auths().create_streams_batch(&entries);
+
+    assert_eq!(results.len(), 3);
+    assert!(results.get(0).unwrap().is_ok());
+    assert_eq!(
+        results.get(1).unwrap().unwrap_err(),
+        StreamError::ZeroAmount
+    );
+    assert!(results.get(2).unwrap().is_ok());
+
+    let id1 = results.get(0).unwrap().unwrap();
+    let id3 = results.get(2).unwrap().unwrap();
+
+    let s1 = f.client.get_stream(&id1);
+    assert_eq!(s1.deposit, 1_000_000);
+    let s3 = f.client.get_stream(&id3);
+    assert_eq!(s3.deposit, 2_000_000);
+}
+
+#[test]
+fn create_streams_batch_multi_token() {
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+    let sac2 = f
+        .env
+        .register_stellar_asset_contract_v2(Address::generate(&f.env));
+    let token2 = sac2.address();
+    StellarAssetClient::new(&f.env, &token2).mint(&f.sender, &(2 * DEPOSIT));
+    StellarAssetClient::new(&f.env, &token2).approve(
+        &f.sender,
+        &f.client.address,
+        &(10 * DEPOSIT),
+        &1_000_000u32,
+    );
+
+    let mut entries = soroban_sdk::Vec::new(&f.env);
+    entries.push_back(crate::stream::BatchEntry {
+        sender: f.sender.clone(),
+        recipient: f.recipient.clone(),
+        token: f.token.clone(),
+        deposit: 1_000_000,
+        start_time: now + DAY,
+        end_time: now + 10 * DAY,
+        cancelable: true,
+    });
+    entries.push_back(crate::stream::BatchEntry {
+        sender: f.sender.clone(),
+        recipient: f.recipient.clone(),
+        token: token2.clone(),
+        deposit: 2_000_000,
+        start_time: now + DAY,
+        end_time: now + 10 * DAY,
+        cancelable: true,
+    });
+
+    let results = f.client.mock_all_auths().create_streams_batch(&entries);
+
+    assert_eq!(results.len(), 2);
+    let id1 = results.get(0).unwrap().unwrap();
+    let id2 = results.get(1).unwrap().unwrap();
+
+    let s1 = f.client.get_stream(&id1);
+    assert_eq!(s1.token, f.token);
+    assert_eq!(s1.deposit, 1_000_000);
+
+    let s2 = f.client.get_stream(&id2);
+    assert_eq!(s2.token, token2);
+    assert_eq!(s2.deposit, 2_000_000);
+}
+
+#[test]
+fn create_streams_batch_empty_and_too_large_revert() {
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+
+    // Empty batch rejects
+    let empty_entries = soroban_sdk::Vec::new(&f.env);
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_create_streams_batch(&empty_entries)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::BatchEmpty);
+
+    // Too large batch rejects
+    let mut big_entries = soroban_sdk::Vec::new(&f.env);
+    for _ in 0..=(crate::stream::MAX_BATCH) {
+        big_entries.push_back(crate::stream::BatchEntry {
+            sender: f.sender.clone(),
+            recipient: f.recipient.clone(),
+            token: f.token.clone(),
+            deposit: 1_000,
+            start_time: now + DAY,
+            end_time: now + 2 * DAY,
+            cancelable: false,
+        });
+    }
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_create_streams_batch(&big_entries)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::BatchTooLarge);
+}
+
+#[test]
+fn create_streams_batch_transfer_failure_isolation() {
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+    let broke = Address::generate(&f.env);
+
+    let mut entries = soroban_sdk::Vec::new(&f.env);
+    // Entry 0: Funded sender
+    entries.push_back(crate::stream::BatchEntry {
+        sender: f.sender.clone(),
+        recipient: f.recipient.clone(),
+        token: f.token.clone(),
+        deposit: 1_000_000,
+        start_time: now + DAY,
+        end_time: now + 10 * DAY,
+        cancelable: true,
+    });
+    // Entry 1: Broke sender with no balance or allowance
+    entries.push_back(crate::stream::BatchEntry {
+        sender: broke.clone(),
+        recipient: f.recipient.clone(),
+        token: f.token.clone(),
+        deposit: 1_000_000,
+        start_time: now + DAY,
+        end_time: now + 10 * DAY,
+        cancelable: false,
+    });
+    // Entry 2: Funded sender
+    entries.push_back(crate::stream::BatchEntry {
+        sender: f.sender.clone(),
+        recipient: f.recipient.clone(),
+        token: f.token.clone(),
+        deposit: 2_000_000,
+        start_time: now + 2 * DAY,
+        end_time: now + 20 * DAY,
+        cancelable: true,
+    });
+
+    let results = f.client.mock_all_auths().create_streams_batch(&entries);
+
+    assert_eq!(results.len(), 3);
+    assert!(results.get(0).unwrap().is_ok());
+    assert_eq!(
+        results.get(1).unwrap().unwrap_err(),
+        StreamError::AmountExceedsAvailable
+    );
+    assert!(results.get(2).unwrap().is_ok());
+
+    let id0 = results.get(0).unwrap().unwrap();
+    let id2 = results.get(2).unwrap().unwrap();
+
+    let s0 = f.client.get_stream(&id0);
+    assert_eq!(s0.deposit, 1_000_000);
+    let s2 = f.client.get_stream(&id2);
+    assert_eq!(s2.deposit, 2_000_000);
+}
+
+#[test]
+fn measure_batch_instruction_costs() {
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+
+    for size in [1, 5, 10, 20, 25] {
+        f.env.cost_estimate().budget().reset_unlimited();
+        let mut entries = soroban_sdk::Vec::new(&f.env);
+        for i in 0..size {
+            let recipient = Address::generate(&f.env);
+            entries.push_back(crate::stream::BatchEntry {
+                sender: f.sender.clone(),
+                recipient,
+                token: f.token.clone(),
+                deposit: 1_000_000 + i as i128,
+                start_time: now + DAY,
+                end_time: now + 10 * DAY,
+                cancelable: true,
+            });
+        }
+        f.client.mock_all_auths().create_streams_batch(&entries);
+        let cpu = f.env.cost_estimate().budget().cpu_instruction_cost();
+        let mem = f.env.cost_estimate().budget().memory_bytes_cost();
+        std::println!("BATCH_MEASUREMENT: size={} cpu={} mem={}", size, cpu, mem);
+    }
+}
 
 // ------------------------------------------------ upgrade & migration tests --
 

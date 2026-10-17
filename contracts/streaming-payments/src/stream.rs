@@ -33,6 +33,17 @@ pub const MAX_DURATION_SECONDS: u64 = 3_155_760_000;
 /// of the address-index views.
 pub const MAX_PAGE_SIZE: u32 = 50;
 
+/// Minimum number of stream entries permitted in a batch.
+pub const MIN_BATCH: u32 = 1;
+
+/// Maximum number of stream entries permitted in a batch.
+///
+/// Bounded to 25 because each stream creation emits a `StreamCreated` event
+/// and a token `transfer` event (~600 bytes combined). At 25 streams, event
+/// size is ~15.5 KB, safely within Soroban's network limit of 16,384 bytes (16 KB),
+/// and consumes ~16.2M CPU instructions (~16% of the 100M transaction budget).
+pub const MAX_BATCH: u32 = 25;
+
 /// TTL maintenance, in ledgers (~5 seconds per ledger on Stellar mainnet).
 ///
 /// Streams live in persistent storage: entries that go untouched are
@@ -79,6 +90,19 @@ impl Stream {
     pub fn duration(&self) -> u64 {
         self.end_time - self.start_time
     }
+}
+
+/// Parameters for creating a single stream within a batch creation call.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchEntry {
+    pub sender: Address,
+    pub recipient: Address,
+    pub token: Address,
+    pub deposit: i128,
+    pub start_time: u64,
+    pub end_time: u64,
+    pub cancelable: bool,
 }
 
 /// Proposed contract upgrade pending timelock expiration.

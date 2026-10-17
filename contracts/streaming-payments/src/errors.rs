@@ -137,6 +137,10 @@ pub enum StreamError {
     UpgradeDelayTooShort = 40,
     /// The storage migration has already been completed.
     AlreadyMigrated = 41,
+    /// Batch creation was requested with zero entries.
+    BatchEmpty = 42,
+    /// Batch creation was requested with more entries than MAX_BATCH.
+    BatchTooLarge = 43,
 }
 
 impl StreamError {
@@ -185,6 +189,8 @@ impl StreamError {
         StreamError::TimelockNotExpired,
         StreamError::UpgradeDelayTooShort,
         StreamError::AlreadyMigrated,
+        StreamError::BatchEmpty,
+        StreamError::BatchTooLarge,
     ];
 
     /// The stable numeric value carried across the contract boundary

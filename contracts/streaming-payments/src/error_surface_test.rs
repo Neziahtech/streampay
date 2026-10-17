@@ -459,6 +459,35 @@ fn probe(branch: Branch) -> Option<StreamError> {
                 .mock_all_auths()
                 .try_policy_accept_handoff()))
         }
+        // ------------------------------------------------ create_streams_batch
+        Branch::CreateBatchEmpty => {
+            let f = Fixture::setup_quiet();
+            let entries = soroban_sdk::Vec::new(&f.env);
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_create_streams_batch(&entries)))
+        }
+        Branch::CreateBatchTooLarge => {
+            let f = Fixture::setup_quiet();
+            let now = f.env.ledger().timestamp();
+            let mut entries = soroban_sdk::Vec::new(&f.env);
+            for _ in 0..=(crate::stream::MAX_BATCH) {
+                entries.push_back(crate::stream::BatchEntry {
+                    sender: f.sender.clone(),
+                    recipient: f.recipient.clone(),
+                    token: f.token.clone(),
+                    deposit: DEPOSIT,
+                    start_time: now + DAY,
+                    end_time: now + 2 * DAY,
+                    cancelable: false,
+                });
+            }
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_create_streams_batch(&entries)))
+        }
         Branch::ContractFrozen => {
             let f = Fixture::setup_quiet();
             let now = f.env.ledger().timestamp();
@@ -679,7 +708,9 @@ fn stream_error_variant_list_is_exhaustive() {
             | StreamError::PolicyNoQueuedChange
             | StreamError::PolicyNotInitialized
             | StreamError::PolicyNoPendingHandoff
-            | StreamError::ContractFrozen
+            | StreamError::BatchEmpty
+            | StreamError::BatchTooLarge => StreamError::ALL.contains(&e),
+            StreamError::ContractFrozen
             | StreamError::ContractNotFrozen
             | StreamError::NoPendingUpgrade
             | StreamError::TimelockNotExpired
