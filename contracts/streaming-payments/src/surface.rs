@@ -8,7 +8,7 @@
 //!
 //! * the generated test matrix (`error_surface_test.rs`) can prove that every
 //!   *reachable* branch fires its declared code, and
-//! * `docs/ERROR_SURFACE.md` is generated from the same table (see
+//! * `docs/ERRORS.md` is generated from the same table (see
 //!   `examples/error_surface_doc.rs`) and diffed in CI.
 //!
 //! Because the table is data, a hand-maintained list of "which test covers
@@ -86,26 +86,6 @@ pub enum Branch {
     /// `withdraw_treasury`: amount exceeds fees collected minus fees already
     /// withdrawn.
     WithdrawTreasuryExceedsBalance,
-    // ------------------------------------------------------- sponsor registry
-    /// `register_sponsor`: a budget cap (period or per-beneficiary) is <= 0.
-    RegisterLimitNonPositive,
-    // ---------------------------------------------------- sponsored_withdraw
-    SponsoredWithdrawAmountNonPositive,
-    SponsoredWithdrawAmountExceedsAvailable,
-    /// No sponsor budget is registered under the caller-supplied address.
-    SponsorNotFound,
-    /// The sponsor's registered budget is paused.
-    SponsorInactive,
-    /// The beneficiary never enrolled an ed25519 consent key.
-    BeneficiaryNotEnrolled,
-    /// The relayed claim was submitted after its signed `deadline`.
-    ClaimExpired,
-    /// The claim's nonce was already spent for this (sponsor, beneficiary).
-    ClaimNonceReplay,
-    /// The claim would push the sponsor's current-period spend over its cap.
-    SponsorBudgetPeriodExceeded,
-    /// The claim would push this beneficiary's window spend over its cap.
-    SponsorBudgetBeneficiaryExceeded,
     // --------------------------------------------------- scheduled intents
     /// No stored intent exists for the supplied id.
     IntentNotFound,
@@ -150,11 +130,6 @@ pub enum Branch {
     PolicyNotInitialized,
     /// `policy_accept_handoff` / `policy_cancel_handoff`: no handoff pending.
     PolicyNoPendingHandoff,
-    // ---------------------------------------------------- create_streams_batch
-    /// `create_streams_batch`: entries is empty.
-    CreateBatchEmpty,
-    /// `create_streams_batch`: entries length exceeds MAX_BATCH.
-    CreateBatchTooLarge,
     // ------------------------------------------------ upgrade & freeze
     /// The contract is currently frozen for maintenance or upgrade.
     ContractFrozen,
@@ -176,18 +151,22 @@ pub enum Branch {
     PolicyDurationBelowFloor,
     PolicyDurationAboveCeiling,
     PolicyDepositBelowFloor,
-    // ------------------------------------------------------------- oracle
-    InvalidOracleThreshold,
-    OraclePublishersNotConfigured,
-    OracleReportTooOld,
-    NotOraclePublisher,
+    // ------------------------------------------------------ dust protection
+    /// `create_stream` / `create_streams`: deposit amount is below `MIN_STREAM_AMOUNT`.
+    StreamTooSmall,
+    /// `withdraw` / `withdraw_max`: claimable balance is below `MIN_CLAIM_AMOUNT`.
+    ClaimAmountTooSmall,
+    /// `sweep`: stream is not fully depleted (remaining_balance != 0).
+    StreamNotDepleted,
+    /// `sweep`: stream has not reached its `end_time`.
+    StreamNotExpired,
 }
 
 impl Branch {
     /// Every branch, in declaration order. The matrix test walks this list and
     /// the coverage test requires each [`StreamError`] variant to be produced by
     /// one of these (or retired).
-    pub const ALL: [Branch; 70] = [
+    pub const ALL: [Branch; 58] = [
         Branch::CreateDepositNonPositive,
         Branch::CreateStartTimeInPast,
         Branch::CreateInvalidTimeRange,
@@ -212,16 +191,6 @@ impl Branch {
         Branch::AcceptGovernorNotNominee,
         Branch::WithdrawTreasuryAmountNonPositive,
         Branch::WithdrawTreasuryExceedsBalance,
-        Branch::RegisterLimitNonPositive,
-        Branch::SponsoredWithdrawAmountNonPositive,
-        Branch::SponsoredWithdrawAmountExceedsAvailable,
-        Branch::SponsorNotFound,
-        Branch::SponsorInactive,
-        Branch::BeneficiaryNotEnrolled,
-        Branch::ClaimExpired,
-        Branch::ClaimNonceReplay,
-        Branch::SponsorBudgetPeriodExceeded,
-        Branch::SponsorBudgetBeneficiaryExceeded,
         Branch::IntentNotFound,
         Branch::IntentNotPending,
         Branch::IntentNotYetExecutable,
@@ -240,8 +209,6 @@ impl Branch {
         Branch::PolicyNoQueuedChange,
         Branch::PolicyNotInitialized,
         Branch::PolicyNoPendingHandoff,
-        Branch::CreateBatchEmpty,
-        Branch::CreateBatchTooLarge,
         Branch::ContractFrozen,
         Branch::MigrationNotFrozen,
         Branch::ExecuteUpgradeNoPending,
@@ -254,10 +221,10 @@ impl Branch {
         Branch::PolicyDurationBelowFloor,
         Branch::PolicyDurationAboveCeiling,
         Branch::PolicyDepositBelowFloor,
-        Branch::InvalidOracleThreshold,
-        Branch::OraclePublishersNotConfigured,
-        Branch::OracleReportTooOld,
-        Branch::NotOraclePublisher,
+        Branch::StreamTooSmall,
+        Branch::ClaimAmountTooSmall,
+        Branch::StreamNotDepleted,
+        Branch::StreamNotExpired,
     ];
 
     /// The entrypoint(s) through which this branch can fire. Shared helpers
@@ -269,7 +236,6 @@ impl Branch {
             | Branch::CreateStartTimeInPast
             | Branch::CreateInvalidTimeRange
             | Branch::CreateDurationTooLong => &["create_stream", "create_streams"],
-            Branch::CreateBatchEmpty | Branch::CreateBatchTooLarge => &["create_streams_batch"],
             Branch::WithdrawAmountNonPositive | Branch::WithdrawAmountExceedsAvailable => {
                 &["withdraw"]
             }
@@ -285,26 +251,19 @@ impl Branch {
                 "withdraw_max",
                 "cancel_stream",
                 "top_up",
-                "sponsored_withdraw",
             ],
-            Branch::StreamNotActive => &[
-                "withdraw",
-                "withdraw_max",
-                "cancel_stream",
-                "top_up",
-                "sponsored_withdraw",
-            ],
-            Branch::CapacityOverflow => &["create_stream", "top_up"],
+            Branch::StreamNotActive => &["withdraw", "withdraw_max", "cancel_stream", "top_up"],
+            Branch::CapacityOverflow => &["create_stream", "create_streams", "top_up"],
             Branch::RateProductOverflow => &[
                 "streamed_at",
                 "available",
                 "withdraw",
                 "withdraw_max",
                 "cancel_stream",
-                "sponsored_withdraw",
             ],
             Branch::AvailableBalanceOverflow => &["available", "withdraw", "withdraw_max"],
             Branch::CancelSplitOverflow => &["cancel_stream"],
+            Branch::PayoutOverflow => &["withdraw", "withdraw_max"],
             Branch::SetFeeRateTooHigh => &["set_fee_bps"],
             Branch::GovernorNotAllowed => &[
                 "set_fee_bps",
@@ -323,18 +282,6 @@ impl Branch {
             Branch::WithdrawTreasuryAmountNonPositive | Branch::WithdrawTreasuryExceedsBalance => {
                 &["withdraw_treasury"]
             }
-            Branch::PayoutOverflow => &["withdraw", "withdraw_max", "sponsored_withdraw"],
-            // ----------------------------------------------------- sponsor module
-            Branch::RegisterLimitNonPositive => &["register_sponsor"],
-            Branch::SponsoredWithdrawAmountNonPositive
-            | Branch::SponsoredWithdrawAmountExceedsAvailable
-            | Branch::SponsorNotFound
-            | Branch::SponsorInactive
-            | Branch::BeneficiaryNotEnrolled
-            | Branch::ClaimExpired
-            | Branch::ClaimNonceReplay
-            | Branch::SponsorBudgetPeriodExceeded
-            | Branch::SponsorBudgetBeneficiaryExceeded => &["sponsored_withdraw"],
             Branch::IntentNotFound => &[
                 "get_intent",
                 "execute_scheduled",
@@ -375,6 +322,7 @@ impl Branch {
                 "withdraw_max",
                 "cancel_stream",
                 "top_up",
+                "sweep",
             ],
             Branch::MigrationNotFrozen | Branch::AlreadyMigrated => &["migrate_storage"],
             Branch::ExecuteUpgradeNoPending | Branch::TimelockNotExpired => &["execute_upgrade"],
@@ -383,13 +331,12 @@ impl Branch {
             Branch::PolicyDepositBelowFloor
             | Branch::PolicyRateBelowFloor
             | Branch::PolicyRateAboveCeiling => &["create_stream", "create_streams", "top_up"],
-            Branch::PolicyDurationBelowFloor | Branch::PolicyDurationAboveCeiling => {
-                &["create_stream", "create_streams"]
-            }
-            Branch::InvalidOracleThreshold => &["set_oracle_config"],
-            Branch::OraclePublishersNotConfigured
-            | Branch::OracleReportTooOld
-            | Branch::NotOraclePublisher => &["submit_oracle_time"],
+            Branch::PolicyDurationBelowFloor
+            | Branch::PolicyDurationAboveCeiling => &["create_stream", "create_streams"],
+            Branch::StreamTooSmall => &["create_stream", "create_streams"],
+            Branch::ClaimAmountTooSmall => &["withdraw", "withdraw_max"],
+            Branch::StreamNotDepleted => &["sweep"],
+            Branch::StreamNotExpired => &["sweep"],
         }
     }
 
@@ -423,16 +370,6 @@ impl Branch {
             Branch::AcceptGovernorNoPending => StreamError::NoPendingGovernor,
             Branch::WithdrawTreasuryAmountNonPositive => StreamError::ZeroAmount,
             Branch::WithdrawTreasuryExceedsBalance => StreamError::InsufficientTreasuryBalance,
-            Branch::RegisterLimitNonPositive => StreamError::ZeroAmount,
-            Branch::SponsoredWithdrawAmountNonPositive => StreamError::ZeroAmount,
-            Branch::SponsoredWithdrawAmountExceedsAvailable => StreamError::AmountExceedsAvailable,
-            Branch::SponsorNotFound => StreamError::SponsorNotFound,
-            Branch::SponsorInactive => StreamError::SponsorInactive,
-            Branch::BeneficiaryNotEnrolled => StreamError::BeneficiaryNotEnrolled,
-            Branch::ClaimExpired => StreamError::ClaimExpired,
-            Branch::ClaimNonceReplay => StreamError::ClaimNonceReplay,
-            Branch::SponsorBudgetPeriodExceeded => StreamError::SponsorBudgetExceeded,
-            Branch::SponsorBudgetBeneficiaryExceeded => StreamError::BeneficiaryBudgetExceeded,
             Branch::IntentNotFound => StreamError::IntentNotFound,
             Branch::IntentNotPending => StreamError::IntentNotPending,
             Branch::IntentNotYetExecutable => StreamError::IntentNotYetExecutable,
@@ -451,8 +388,6 @@ impl Branch {
             Branch::PolicyNoQueuedChange => StreamError::PolicyNoQueuedChange,
             Branch::PolicyNotInitialized => StreamError::PolicyNotInitialized,
             Branch::PolicyNoPendingHandoff => StreamError::PolicyNoPendingHandoff,
-            Branch::CreateBatchEmpty => StreamError::BatchEmpty,
-            Branch::CreateBatchTooLarge => StreamError::BatchTooLarge,
             Branch::ContractFrozen => StreamError::ContractFrozen,
             Branch::MigrationNotFrozen => StreamError::ContractNotFrozen,
             Branch::ExecuteUpgradeNoPending | Branch::CancelUpgradeNoPending => {
@@ -466,14 +401,14 @@ impl Branch {
             Branch::PolicyDurationBelowFloor => StreamError::PolicyDurationBelowFloor,
             Branch::PolicyDurationAboveCeiling => StreamError::PolicyDurationAboveCeiling,
             Branch::PolicyDepositBelowFloor => StreamError::PolicyDepositBelowFloor,
-            Branch::InvalidOracleThreshold => StreamError::InvalidOracleThreshold,
-            Branch::OraclePublishersNotConfigured => StreamError::OraclePublishersNotConfigured,
-            Branch::OracleReportTooOld => StreamError::OracleReportTooOld,
-            Branch::NotOraclePublisher => StreamError::NotOraclePublisher,
+            Branch::StreamTooSmall => StreamError::StreamTooSmall,
+            Branch::ClaimAmountTooSmall => StreamError::ClaimAmountTooSmall,
+            Branch::StreamNotDepleted => StreamError::StreamNotDepleted,
+            Branch::StreamNotExpired => StreamError::StreamNotExpired,
         }
     }
 
-    /// Human-readable condition, used to generate `docs/ERROR_SURFACE.md`.
+    /// Human-readable condition, used to generate `docs/ERRORS.md`.
     pub const fn condition(self) -> &'static str {
         match self {
             Branch::CreateDepositNonPositive => "deposit_amount is zero or negative",
@@ -516,28 +451,6 @@ impl Branch {
             Branch::WithdrawTreasuryExceedsBalance => {
                 "amount exceeds fees collected minus fees already withdrawn"
             }
-            Branch::RegisterLimitNonPositive => {
-                "a sponsor budget cap (per-period or per-beneficiary) is zero or negative"
-            }
-            Branch::SponsoredWithdrawAmountNonPositive => {
-                "a sponsored claim requests a zero or negative payout"
-            }
-            Branch::SponsoredWithdrawAmountExceedsAvailable => {
-                "a sponsored claim exceeds the stream's accrued-but-unwithdrawn balance"
-            }
-            Branch::SponsorNotFound => "no sponsor budget is registered for the address",
-            Branch::SponsorInactive => "the sponsor's budget is paused (inactive)",
-            Branch::BeneficiaryNotEnrolled => {
-                "the beneficiary has not enrolled an ed25519 consent key"
-            }
-            Branch::ClaimExpired => "the relayed claim was submitted after its deadline",
-            Branch::ClaimNonceReplay => "the claim's nonce was already spent for this pair",
-            Branch::SponsorBudgetPeriodExceeded => {
-                "the claim would exceed the sponsor's per-period budget cap"
-            }
-            Branch::SponsorBudgetBeneficiaryExceeded => {
-                "the claim would exceed the per-beneficiary budget cap"
-            }
             Branch::IntentNotFound => "no scheduled intent is stored under the id",
             Branch::IntentNotPending => "the intent is already executed, cancelled, or expired",
             Branch::IntentNotYetExecutable => "the next occurrence has not reached execute_after",
@@ -572,8 +485,6 @@ impl Branch {
             Branch::PolicyNoQueuedChange => "no policy change is queued for the specified asset",
             Branch::PolicyNotInitialized => "the policy module has not been initialized",
             Branch::PolicyNoPendingHandoff => "no admin handoff proposal is pending",
-            Branch::CreateBatchEmpty => "entries is empty",
-            Branch::CreateBatchTooLarge => "entries length exceeds MAX_BATCH",
             Branch::ContractFrozen => "the contract is frozen for maintenance or upgrade",
             Branch::MigrationNotFrozen => "storage migration requires the contract to be frozen",
             Branch::ExecuteUpgradeNoPending => "execute_upgrade called with no upgrade pending",
@@ -596,12 +507,10 @@ impl Branch {
             Branch::PolicyDepositBelowFloor => {
                 "stream deposit is below the governance policy floor"
             }
-            Branch::InvalidOracleThreshold => {
-                "oracle threshold is invalid (e.g. zero or exceeds publisher count)"
-            }
-            Branch::OraclePublishersNotConfigured => "oracle publishers are not configured",
-            Branch::OracleReportTooOld => "oracle report timestamp is too far in the past or future",
-            Branch::NotOraclePublisher => "the caller is not an authorized oracle publisher",
+            Branch::StreamTooSmall => "deposit is below MIN_STREAM_AMOUNT (dust protection)",
+            Branch::ClaimAmountTooSmall => "claimable balance is below MIN_CLAIM_AMOUNT (not worth claiming)",
+            Branch::StreamNotDepleted => "stream still has remaining balance (not fully depleted)",
+            Branch::StreamNotExpired => "stream has not reached its end_time",
         }
     }
 

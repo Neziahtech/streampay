@@ -36,10 +36,10 @@ pub enum StreamError {
     /// No stream exists with the provided id.
     StreamNotFound = 1,
     /// **Retired — never produced.** Reserved role check; retained so the
-    /// numeric code is never reused. See `docs/ERROR_SURFACE.md`.
+    /// numeric code is never reused. See `docs/ERRORS.md`.
     NotStreamSender = 2,
     /// **Retired — never produced.** Reserved role check; retained so the
-    /// numeric code is never reused. See `docs/ERROR_SURFACE.md`.
+    /// numeric code is never reused. See `docs/ERRORS.md`.
     NotStreamRecipient = 3,
     /// The stream is not `cancelable`, so the recipient cannot cancel it.
     StreamNotCancellable = 4,
@@ -70,23 +70,6 @@ pub enum StreamError {
     /// A treasury withdrawal exceeds the fees collected minus fees already
     /// withdrawn for that token.
     InsufficientTreasuryBalance = 17,
-    /// No sponsor budget is registered for the provided sponsor address.
-    SponsorNotFound = 49,
-    /// The sponsor's budget exists but is currently paused (inactive).
-    SponsorInactive = 50,
-    /// The beneficiary has no registered ed25519 consent key; they must
-    /// enroll once before a claim can be sponsored on their behalf.
-    BeneficiaryNotEnrolled = 51,
-    /// A sponsored claim was relayed after its signed `deadline`.
-    ClaimExpired = 52,
-    /// The claim's nonce was already spent by this sponsor for this
-    /// beneficiary — a replay of a previously sponsored call.
-    ClaimNonceReplay = 53,
-    /// Paying this claim would exceed the sponsor's per-period budget cap.
-    SponsorBudgetExceeded = 54,
-    /// Paying this claim would exceed the per-beneficiary cap within the
-    /// sponsor's current budget window.
-    BeneficiaryBudgetExceeded = 55,
     /// No scheduled intent exists with the provided id.
     IntentNotFound = 18,
     /// The scheduled intent is not pending (already executed, cancelled, or
@@ -164,18 +147,14 @@ pub enum StreamError {
     PolicyDurationAboveCeiling = 45,
     /// Stream deposit is below the governance policy floor.
     PolicyDepositBelowFloor = 46,
-    /// Batch creation was requested with zero entries.
-    BatchEmpty = 47,
-    /// Batch creation was requested with more entries than MAX_BATCH.
-    BatchTooLarge = 48,
-    /// Oracle threshold is invalid (e.g., zero or exceeds publisher count).
-    InvalidOracleThreshold = 56,
-    /// Oracle publishers are not configured.
-    OraclePublishersNotConfigured = 57,
-    /// Oracle report timestamp is too far in the past or future.
-    OracleReportTooOld = 58,
-    /// The caller is not an authorized oracle publisher.
-    NotOraclePublisher = 59,
+    /// Stream deposit is below the economically viable threshold (`MIN_STREAM_AMOUNT`); dust streams are rejected.
+    StreamTooSmall = 47,
+    /// Claim amount is below the transaction fee floor (`MIN_CLAIM_AMOUNT`); not worth claiming.
+    ClaimAmountTooSmall = 48,
+    /// Sweep was attempted on a stream that is not fully depleted (remaining_balance != 0).
+    StreamNotDepleted = 49,
+    /// Sweep was attempted before the stream's `end_time`; the stream has not expired.
+    StreamNotExpired = 50,
 }
 
 impl StreamError {
@@ -218,7 +197,7 @@ impl StreamError {
         StreamError::PolicyNoQueuedChange,
         StreamError::PolicyNotInitialized,
         StreamError::PolicyNoPendingHandoff,
-        StreamError::ContractFrozen,
+StreamError::ContractFrozen,
         StreamError::ContractNotFrozen,
         StreamError::NoPendingUpgrade,
         StreamError::TimelockNotExpired,
@@ -229,19 +208,10 @@ impl StreamError {
         StreamError::PolicyDurationBelowFloor,
         StreamError::PolicyDurationAboveCeiling,
         StreamError::PolicyDepositBelowFloor,
-        StreamError::BatchEmpty,
-        StreamError::BatchTooLarge,
-        StreamError::SponsorNotFound,
-        StreamError::SponsorInactive,
-        StreamError::BeneficiaryNotEnrolled,
-        StreamError::ClaimExpired,
-        StreamError::ClaimNonceReplay,
-        StreamError::SponsorBudgetExceeded,
-        StreamError::BeneficiaryBudgetExceeded,
-        StreamError::InvalidOracleThreshold,
-        StreamError::OraclePublishersNotConfigured,
-        StreamError::OracleReportTooOld,
-        StreamError::NotOraclePublisher,
+        StreamError::StreamTooSmall,
+        StreamError::ClaimAmountTooSmall,
+        StreamError::StreamNotDepleted,
+        StreamError::StreamNotExpired,
     ];
 
     /// The stable numeric value carried across the contract boundary
