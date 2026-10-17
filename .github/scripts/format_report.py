@@ -53,17 +53,23 @@ def render_markdown_report(diff_data: Dict[str, Any]) -> str:
         header_icon = "ℹ️"
         trend_badge = "🟡 **Minor Shift**"
 
+    base_total = format_size(summary.get('base_total_size', 0))
+    head_total = format_size(summary.get('head_total_size', 0))
+    net_delta_str = format_bytes(total_delta)
+
     lines = [
         "<!-- wasm-diff-report -->",
         f"### {header_icon} WebAssembly Binary Function-Level Diff",
         "",
-        f"**Net Wasm Size Change**: {trend_badge} (`{format_bytes(total_delta)}` / `{total_pct:+.2f}%`)",
+        f"**Summary**: Total size before: **`{base_total}`**, Total size after: **`{head_total}`**, Net delta: **`{net_delta_str}`** (`{total_pct:+.2f}%`)",
+        "",
+        f"**Net Wasm Size Change**: {trend_badge} (`{net_delta_str}` / `{total_pct:+.2f}%`)",
         "",
         "#### 📊 High-Level Metrics",
         "",
         "| Metric | Base Branch | Head (PR) | Delta | Change |",
         "| :--- | :--- | :--- | :--- | :--- |",
-        f"| **Total Binary Size** | `{format_size(summary.get('base_total_size', 0))}` | `{format_size(summary.get('head_total_size', 0))}` | `{format_bytes(total_delta)}` | `{total_pct:+.2f}%` |",
+        f"| **Total Binary Size** | `{base_total}` | `{head_total}` | `{net_delta_str}` | `{total_pct:+.2f}%` |",
         f"| **Code Section Size** | `{format_size(summary.get('base_code_size', 0))}` | `{format_size(summary.get('head_code_size', 0))}` | `{format_bytes(code_delta)}` | `{code_pct:+.2f}%` |",
         f"| **Function Count** | `{summary.get('base_functions', 0)}` | `{summary.get('head_functions', 0)}` | `{summary.get('head_functions', 0) - summary.get('base_functions', 0):+d}` | - |",
         "",
@@ -81,52 +87,46 @@ def render_markdown_report(diff_data: Dict[str, Any]) -> str:
         lines.append("> _No significant function size changes detected._")
         lines.append("")
     else:
-        lines.append("| Status | Function Signature (Demangled) | Base Size | Head Size | Byte Delta | % Change |")
-        lines.append("| :---: | :--- | :---: | :---: | :---: | :---: |")
+        lines.append("| Function Signature | Base Size | Head Size | Delta (Bytes) | Change Type |")
+        lines.append("| :--- | :---: | :---: | :---: | :---: |")
 
         for m in top_movers:
             status = m.get("status", "")
-            if status == "NEW":
-                status_badge = "🟢 `NEW`"
+            if status in ("NEW", "added"):
+                change_type = "added"
                 base_str = "-"
                 head_str = format_size(m.get("head_size", 0))
-                delta_str = f"**+{m.get('delta', 0):,} B**"
-                pct_str = "NEW"
-            elif status == "REMOVED":
-                status_badge = "🔴 `REMOVED`"
+                delta_str = f"+{m.get('delta', 0):,} B"
+            elif status in ("REMOVED", "removed"):
+                change_type = "removed"
                 base_str = format_size(m.get("base_size", 0))
                 head_str = "-"
-                delta_str = f"**-{abs(m.get('delta', 0)):,} B**"
-                pct_str = "-100%"
-            elif status == "GROWN":
-                status_badge = "📈 `GROWN`"
+                delta_str = f"-{abs(m.get('delta', 0)):,} B"
+            elif status in ("GROWN", "grew"):
+                change_type = "grew"
                 base_str = format_size(m.get("base_size", 0))
                 head_str = format_size(m.get("head_size", 0))
                 delta_str = f"+{m.get('delta', 0):,} B"
-                pct_str = f"`+{m.get('percent_change', 0.0):.1f}%`"
-            elif status == "SHRUNK":
-                status_badge = "📉 `SHRUNK`"
+            elif status in ("SHRUNK", "shrank"):
+                change_type = "shrank"
                 base_str = format_size(m.get("base_size", 0))
                 head_str = format_size(m.get("head_size", 0))
                 delta_str = f"-{abs(m.get('delta', 0)):,} B"
-                pct_str = f"`{m.get('percent_change', 0.0):.1f}%`"
             else:
-                status_badge = f"`{status}`"
+                change_type = status.lower()
                 base_str = format_size(m.get("base_size", 0))
                 head_str = format_size(m.get("head_size", 0))
                 delta_str = format_bytes(m.get("delta", 0))
-                pct_str = f"`{m.get('percent_change', 0.0):.1f}%`"
 
             sig = m.get("demangled_signature", m.get("name", "unknown"))
             # Escape pipes for markdown table
             sig_escaped = sig.replace("|", "\\|")
-            # Truncate overly long signatures for clean table rendering
             if len(sig_escaped) > 85:
                 sig_display = f"`{sig_escaped[:82]}...`"
             else:
                 sig_display = f"`{sig_escaped}`"
 
-            lines.append(f"| {status_badge} | {sig_display} | {base_str} | {head_str} | {delta_str} | {pct_str} |")
+            lines.append(f"| {sig_display} | {base_str} | {head_str} | {delta_str} | `{change_type}` |")
 
         lines.append("")
 
