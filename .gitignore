@@ -43,3 +43,10 @@ fuzz/target/
 fuzz/corpus/
 fuzz/artifacts/
 fuzz/Cargo.lock
+
+# SDK build artifacts
+sdks/typescript/dist/
+sdks/python/dist/
+sdks/python/build/
+sdks/python/*.egg-info/
+__pycache__/

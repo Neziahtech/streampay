@@ -1,0 +1,42 @@
+{
+  "schema": "streampay-vector/v1",
+  "name": "top-up",
+  "specFingerprint": "a3f66765c3030af77932f8d8865e9441da31bff85baadc74fd62df08e0ee1af0",
+  "provenance": "StreamToppedUp payload from contracts/streaming-payments/test_snapshots/test/top_up_event_emitted.1.json.",
+  "transactionEnvelopeXdr": "AAAAAgAAAADqSmxj4pxSCr71UHsTLsX5lUd2rr6+e5JCHuppFEbSLAABhqAAAAAAAAAAAQAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAGAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAUAAAAGdG9wX3VwAAAAAAACAAAABQAAAAAAAAABAAAACgAAAAAAAAAAAAAAAAAABNIAAAAAAAAAAAAAAAEURtIsAAAAQAgJmq8TQQiQftfhf7WI5RUGtZ0Snuz+jkuBSEm6ISZtf8+L3dKREQ2u90iTfNuVBrs/uZ2NoXVH4LIr6MDwfg0=",
+  "resultXdr": "AAAAAQ==",
+  "eventsXdr": [
+    "AAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABQAAAAEAAAAAAAAAAgAAAA8AAAAQc3RyZWFtX3RvcHBlZF91cAAAAAUAAAAAAAAAAQAAABEAAAABAAAAAwAAAA8AAAAGYW1vdW50AAAAAAAKAAAAAAAAAAAAAAAAAAAE0gAAAA8AAAALbmV3X2RlcG9zaXQAAAAACgAAAAAAAAAAAAAAAlQL6NIAAAAPAAAABnNlbmRlcgAAAAAAEgAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAw=="
+  ],
+  "expected": {
+    "transaction": {
+      "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
+      "function": "top_up",
+      "args": {
+        "stream_id": "1",
+        "amount": "1234"
+      },
+      "source": "GDVEU3DD4KOFECV66VIHWEZOYX4ZKR3WV27L464SIIPOU2IUI3JCZA57",
+      "fee": "100000",
+      "sequence": "1",
+      "signatures": 1
+    },
+    "result": {
+      "ok": null
+    },
+    "events": [
+      {
+        "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
+        "name": "StreamToppedUp",
+        "topics": {
+          "stream_id": "1"
+        },
+        "data": {
+          "amount": "1234",
+          "new_deposit": "10000001234",
+          "sender": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+        }
+      }
+    ]
+  }
+}

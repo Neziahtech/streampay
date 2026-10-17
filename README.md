@@ -157,6 +157,29 @@ npm run verify-fees -- --contract <C…> --token <C…> --start-ledger <deploy l
 Design details, the cancel-refund decision table, and rejected
 alternatives: [`docs/ARCHITECTURE.md` §11](./docs/ARCHITECTURE.md).
 
+## Client SDKs
+
+Typed clients are generated from one canonical contract spec for Rust,
+TypeScript, and Python — typed entrypoints, contract-event decoding, and index
+pagination helpers, with a shared conformance-vector suite that CI runs across
+all three decoders.
+
+| SDK | Package | Quickstart |
+|---|---|---|
+| Rust | `streampay-sdk` | [`sdks/rust`](./sdks/rust) |
+| TypeScript | `@streampay/sdk` | [`sdks/typescript`](./sdks/typescript) |
+| Python | `streampay-sdk` | [`sdks/python`](./sdks/python) |
+
+```bash
+make -C sdks generate      # spec -> generated clients
+make -C sdks test          # unit + conformance tests for all three
+make -C sdks conformance   # cross-language decode check
+```
+
+The spec is the contract: a schema guard diffs the spec IR against the Rust
+sources, and a sha256 fingerprint is embedded in every client and fixture. See
+[`sdks/README.md`](./sdks/README.md) for generation, versioning, and publishing.
+
 ## Getting started (clean machine)
 
 Prerequisites:

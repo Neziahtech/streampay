@@ -1,0 +1,216 @@
+{
+  "schema": "streampay-spec/v1",
+  "generator": "sdks/generator/generate.py",
+  "contract": {
+    "name": "StreamingPayments",
+    "crate": "streampay-contract",
+    "version": "0.3.0",
+    "description": "Continuous, linear streaming payments on Stellar (Soroban)."
+  },
+  "constants": {
+    "MAX_DURATION_SECONDS": { "value": 3155760000, "type": "u64" },
+    "MAX_PAGE_SIZE": { "value": 50, "type": "u32" }
+  },
+  "functions": [
+    {
+      "name": "create_stream",
+      "doc": "Creates a linear payment stream and pulls the deposit from the sender.",
+      "args": [
+        { "name": "sender", "type": "address" },
+        { "name": "recipient", "type": "address" },
+        { "name": "token", "type": "address" },
+        { "name": "deposit_amount", "type": "i128" },
+        { "name": "start_time", "type": "u64" },
+        { "name": "end_time", "type": "u64" },
+        { "name": "cancelable", "type": "bool" }
+      ],
+      "returns": "u64",
+      "error": "StreamError",
+      "auth": ["sender"],
+      "mutating": true
+    },
+    {
+      "name": "withdraw",
+      "doc": "Withdraws up to `amount` of the accrued, unwithdrawn balance to the recipient.",
+      "args": [
+        { "name": "stream_id", "type": "u64" },
+        { "name": "amount", "type": "i128" }
+      ],
+      "returns": "void",
+      "error": "StreamError",
+      "auth": ["recipient"],
+      "mutating": true
+    },
+    {
+      "name": "withdraw_max",
+      "doc": "Withdraws the entire accrued, unwithdrawn balance and returns the amount paid.",
+      "args": [{ "name": "stream_id", "type": "u64" }],
+      "returns": "i128",
+      "error": "StreamError",
+      "auth": ["recipient"],
+      "mutating": true
+    },
+    {
+      "name": "cancel_stream",
+      "doc": "Cancels a stream, paying the recipient their accrued balance and refunding the sender.",
+      "args": [
+        { "name": "caller", "type": "address" },
+        { "name": "stream_id", "type": "u64" }
+      ],
+      "returns": "void",
+      "error": "StreamError",
+      "auth": ["caller"],
+      "mutating": true
+    },
+    {
+      "name": "top_up",
+      "doc": "Adds funds to an active stream; accrual stays linear over the original window.",
+      "args": [
+        { "name": "stream_id", "type": "u64" },
+        { "name": "amount", "type": "i128" }
+      ],
+      "returns": "void",
+      "error": "StreamError",
+      "auth": ["sender"],
+      "mutating": true
+    },
+    {
+      "name": "get_stream",
+      "doc": "Returns the full stored state of a stream.",
+      "args": [{ "name": "stream_id", "type": "u64" }],
+      "returns": "Stream",
+      "error": "StreamError",
+      "auth": [],
+      "mutating": false
+    },
+    {
+      "name": "available",
+      "doc": "Returns the accrued, unwithdrawn balance at the current ledger time.",
+      "args": [{ "name": "stream_id", "type": "u64" }],
+      "returns": "i128",
+      "error": "StreamError",
+      "auth": [],
+      "mutating": false
+    },
+    {
+      "name": "recipient_streams",
+      "doc": "Returns a creation-ordered page of stream ids where `recipient` receives funds.",
+      "args": [
+        { "name": "recipient", "type": "address" },
+        { "name": "offset", "type": "u32" },
+        { "name": "limit", "type": "u32" }
+      ],
+      "returns": { "vec": "u64" },
+      "error": null,
+      "auth": [],
+      "mutating": false
+    },
+    {
+      "name": "sender_streams",
+      "doc": "Returns a creation-ordered page of stream ids created by `sender`.",
+      "args": [
+        { "name": "sender", "type": "address" },
+        { "name": "offset", "type": "u32" },
+        { "name": "limit", "type": "u32" }
+      ],
+      "returns": { "vec": "u64" },
+      "error": null,
+      "auth": [],
+      "mutating": false
+    }
+  ],
+  "structs": [
+    {
+      "name": "Stream",
+      "doc": "Full state of a payment stream.",
+      "fields": [
+        { "name": "id", "type": "u64" },
+        { "name": "sender", "type": "address" },
+        { "name": "recipient", "type": "address" },
+        { "name": "token", "type": "address" },
+        { "name": "deposit", "type": "i128" },
+        { "name": "withdrawn", "type": "i128" },
+        { "name": "start_time", "type": "u64" },
+        { "name": "end_time", "type": "u64" },
+        { "name": "cancelable", "type": "bool" },
+        { "name": "status", "type": "StreamStatus" }
+      ]
+    }
+  ],
+  "enums": [
+    {
+      "name": "StreamStatus",
+      "doc": "Lifecycle state of a stream.",
+      "cases": [
+        { "name": "Active", "value": 0, "doc": "Running; funds accrue." },
+        { "name": "Cancelled", "value": 1, "doc": "Cancelled; payouts settled. Terminal." },
+        { "name": "Depleted", "value": 2, "doc": "Fully streamed and withdrawn. Terminal." }
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "StreamCreated",
+      "topic": "stream_created",
+      "doc": "Emitted when a new stream is created and its deposit pulled in.",
+      "topicFields": [{ "name": "stream_id", "type": "u64" }],
+      "dataFields": [
+        { "name": "sender", "type": "address" },
+        { "name": "recipient", "type": "address" },
+        { "name": "token", "type": "address" },
+        { "name": "deposit", "type": "i128" },
+        { "name": "start_time", "type": "u64" },
+        { "name": "end_time", "type": "u64" },
+        { "name": "cancelable", "type": "bool" }
+      ]
+    },
+    {
+      "name": "Withdrawn",
+      "topic": "withdrawn",
+      "doc": "Emitted when the recipient withdraws accrued funds.",
+      "topicFields": [{ "name": "stream_id", "type": "u64" }],
+      "dataFields": [
+        { "name": "recipient", "type": "address" },
+        { "name": "amount", "type": "i128" },
+        { "name": "withdrawn_total", "type": "i128" }
+      ]
+    },
+    {
+      "name": "StreamCancelled",
+      "topic": "stream_cancelled",
+      "doc": "Emitted when a stream is cancelled and both parties are paid atomically.",
+      "topicFields": [{ "name": "stream_id", "type": "u64" }],
+      "dataFields": [
+        { "name": "cancelled_by", "type": "address" },
+        { "name": "recipient_amount", "type": "i128" },
+        { "name": "sender_amount", "type": "i128" }
+      ]
+    },
+    {
+      "name": "StreamToppedUp",
+      "topic": "stream_topped_up",
+      "doc": "Emitted when the sender adds funds to an existing stream.",
+      "topicFields": [{ "name": "stream_id", "type": "u64" }],
+      "dataFields": [
+        { "name": "sender", "type": "address" },
+        { "name": "amount", "type": "i128" },
+        { "name": "new_deposit", "type": "i128" }
+      ]
+    }
+  ],
+  "errors": [
+    { "name": "StreamNotFound", "code": 1, "doc": "No stream exists with the provided id." },
+    { "name": "NotStreamSender", "code": 2, "doc": "The caller is not the sender of the stream." },
+    { "name": "NotStreamRecipient", "code": 3, "doc": "The caller is not the recipient of the stream." },
+    { "name": "StreamNotCancellable", "code": 4, "doc": "The stream is not cancelable by the recipient." },
+    { "name": "StreamNotActive", "code": 5, "doc": "The stream is cancelled or depleted." },
+    { "name": "StartTimeInPast", "code": 6, "doc": "start_time is before the current ledger timestamp." },
+    { "name": "InvalidTimeRange", "code": 7, "doc": "end_time is not strictly after start_time." },
+    { "name": "DurationTooLong", "code": 8, "doc": "The stream duration exceeds the maximum." },
+    { "name": "ZeroAmount", "code": 9, "doc": "A provided amount is zero or negative." },
+    { "name": "AmountExceedsAvailable", "code": 10, "doc": "The withdrawal exceeds the accrued balance." },
+    { "name": "MathOverflow", "code": 11, "doc": "An intermediate computation would overflow." },
+    { "name": "NotAuthorized", "code": 12, "doc": "The caller is not permitted to perform this action." },
+    { "name": "NothingToWithdraw", "code": 13, "doc": "Nothing accrued-but-unwithdrawn to pay out." }
+  ]
+}

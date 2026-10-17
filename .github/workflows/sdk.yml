@@ -1,0 +1,164 @@
+name: SDKs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "sdks/**"
+      - "contracts/streaming-payments/src/**"
+      - "contracts/streaming-payments/test_snapshots/**"
+      - ".github/workflows/sdk.yml"
+  pull_request:
+    paths:
+      - "sdks/**"
+      - "contracts/streaming-payments/src/**"
+      - "contracts/streaming-payments/test_snapshots/**"
+      - ".github/workflows/sdk.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  spec:
+    name: Spec — schema guard / generated drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      # The Rust SDK is emitted through rustfmt so `cargo fmt --check` passes.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Spec matches the contract surface
+        run: python3 sdks/generator/check_contract_surface.py
+
+      - name: Generated clients are up to date
+        run: python3 sdks/generator/generate.py --check
+
+  rust:
+    name: Rust SDK — fmt / clippy / test / package
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdks/rust
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            sdks/rust/target
+          key: ${{ runner.os }}-sdk-cargo-${{ hashFiles('sdks/rust/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-sdk-cargo-
+
+      - name: Format check
+        run: cargo fmt --check
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Tests (includes conformance vectors)
+        run: cargo test --locked
+
+      - name: crates.io packaging dry run
+        run: cargo publish --dry-run --locked
+
+  typescript:
+    name: TypeScript SDK — typecheck / test / pack
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdks/typescript
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: sdks/typescript/package-lock.json
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build + tests
+        run: npm test
+
+      - name: Fixture regeneration is deterministic
+        run: |
+          node scripts/build-fixtures.mjs
+          git diff --exit-code ../vectors
+
+      - name: npm packaging dry run
+        run: npm publish --dry-run
+
+  python:
+    name: Python SDK — test / build / metadata
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdks/python
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - run: python -m pip install --upgrade pip build twine
+
+      - name: Tests (includes conformance vectors)
+        run: python -m unittest discover -s tests -v
+
+      - name: Build sdist + wheel
+        run: python -m build
+
+      - name: Twine metadata check
+        run: python -m twine check dist/*
+
+  conformance:
+    name: Cross-language conformance
+    runs-on: ubuntu-latest
+    needs: [rust, typescript, python]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install TypeScript dependencies
+        working-directory: sdks/typescript
+        run: npm ci
+
+      - name: Run all three decoders and compare
+        run: ./sdks/conformance/run.sh
+
+      - name: Upload canonical decoder output
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdk-conformance-output
+          path: sdks/conformance/out/
+          if-no-files-found: error
