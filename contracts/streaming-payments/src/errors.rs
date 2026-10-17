@@ -69,58 +69,6 @@ pub enum StreamError {
     NoPendingGovernor = 16,
     /// A treasury withdrawal exceeds the fees collected minus fees already
     /// withdrawn for that token.
-    InsufficientTreasuryBalance = 17,
-    /// No scheduled intent exists with the provided id.
-    IntentNotFound = 18,
-    /// The scheduled intent is not pending (already executed, cancelled, or
-    /// expired), so the operation is not permitted.
-    IntentNotPending = 19,
-    /// Execution was attempted before the intent's `execute_after` (for the
-    /// next outstanding occurrence).
-    IntentNotYetExecutable = 20,
-    /// Execution or cancellation was attempted at/after the intent's
-    /// `expires_at`; the funds are reclaimable via `reclaim_expired`.
-    IntentExpired = 21,
-    /// The sender tried to cancel an intent whose execution window has already
-    /// opened; cancellation is only allowed before `execute_after`.
-    IntentNotCancellable = 22,
-    /// The scheduling parameters are inconsistent (bad occurrence/interval
-    /// combination, negative fee budget, ordering of `execute_after` /
-    /// `start_time` / `expires_at`, or an overflowing recurrence window).
-    InvalidScheduleParameters = 23,
-    /// A defensive integrity check failed: the stored intent's parameters no
-    /// longer hash to the commitment recorded when it was scheduled.
-    IntentParamsMismatch = 24,
-    /// `reclaim_expired` was called before the intent's `expires_at`.
-    IntentNotExpired = 25,
-    /// The token pull in `create_stream` failed: the sender's balance or
-    /// allowance was insufficient (the pull covers `deposit_amount + fee`),
-    /// or the asset refused the transfer (frozen/unauthorized/deauthorized
-    /// holder, or any non-compliant token). Nothing is persisted when it
-    /// fails, so no stream id is consumed.
-    DepositTransferFailed = 26,
-    /// The token pull in `top_up` failed (see
-    /// [`StreamError::DepositTransferFailed`]; the stream's deposit is left
-    /// untouched).
-    TopUpTransferFailed = 27,
-    /// The payout of accrued funds to the stream recipient failed — from
-    /// `withdraw`, `withdraw_max`, or the recipient leg of `cancel_stream`.
-    /// State changes made before the transfer are rolled back with the error.
-    RecipientPayoutFailed = 28,
-    /// The refund of unaccrued funds back to the sender failed during
-    /// `cancel_stream` (the recipient leg, if any, was already paid).
-    /// The cancellation is rolled back in full, so the stream stays active.
-    SenderRefundFailed = 29,
-    /// The payout of collected protocol fees failed in `withdraw_treasury`.
-    /// The recorded withdrawal and the `FeeWithdrawn` event are rolled back
-    /// with it, so the fee ledger stays unchanged.
-    TreasuryPayoutFailed = 30,
-    /// The asset is not permitted by the policy module allowlist.
-    PolicyAssetNotAllowed = 31,
-    /// The timelock delay has not elapsed for this queued policy change.
-    PolicyTimelockNotElapsed = 32,
-    /// No policy change is queued for the specified asset.
-    PolicyNoQueuedChange = 33,
     /// The policy module has not been initialized.
     PolicyNotInitialized = 34,
     /// No admin handoff proposal is pending.

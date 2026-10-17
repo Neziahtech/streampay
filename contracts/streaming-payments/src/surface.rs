@@ -81,8 +81,6 @@ pub enum Branch {
     AcceptGovernorNoPending,
     /// `accept_governor`: the caller is not the nominated address.
     AcceptGovernorNotNominee,
-    /// `withdraw_treasury`: amount is zero or negative.
-    WithdrawTreasuryAmountNonPositive,
     /// `withdraw_treasury`: amount exceeds fees collected minus fees already
     /// withdrawn.
     WithdrawTreasuryExceedsBalance,

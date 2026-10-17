@@ -73,6 +73,32 @@ pub struct Stream {
     pub status: StreamStatus,
 }
 
+/// Delegation configuration for an authorized session agent on a stream.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AgentConfig {
+    /// Maximum amount the agent can withdraw per fixed period.
+    pub max_per_period: i128,
+    /// Maximum cumulative amount the agent can withdraw over the stream lifetime.
+    pub max_per_stream: i128,
+    /// Length of a fixed quota period in seconds (e.g. 86400 for 1 day).
+    pub period_duration: u64,
+    /// Expiry timestamp (seconds) after which delegation is invalid.
+    pub expires_at: u64,
+}
+
+/// Dynamic cap tracking ledger for an authorized session agent on a stream.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AgentCapState {
+    /// Current window start timestamp (aligned to fixed period boundaries).
+    pub current_period_start: u64,
+    /// Cumulative amount withdrawn by agent in current period window.
+    pub period_withdrawn: i128,
+    /// Cumulative amount withdrawn by agent across all periods for this stream.
+    pub total_withdrawn: i128,
+}
+
 impl Stream {
     /// Seconds in the stream's full window. Always `>= 1` for a stored stream
     /// (`create_stream` rejects `end_time <= start_time`).

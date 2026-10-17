@@ -607,6 +607,192 @@ impl StreamingPayments {
         Ok(amount)
     }
 
+    /// Authorizes a session agent (hot wallet / bot) to withdraw on behalf of the
+    /// stream's recipient under strict caps and expiration.
+    /// Only the stream recipient can authorize an agent.
+    pub fn authorize_agent(
+        env: Env,
+        stream_id: u64,
+        agent: Address,
+        max_per_period: i128,
+        max_per_stream: i128,
+        period_duration: u64,
+        expires_at: u64,
+    ) -> Result<(), StreamError> {
+        let s = stream::get_stream(&env, stream_id)?;
+        s.recipient.require_auth();
+
+        if s.status != StreamStatus::Active {
+            return Err(surface::reject(Branch::StreamNotActive));
+        }
+        if max_per_period <= 0 {
+            return Err(surface::reject(Branch::AuthorizeAgentMaxPeriodNonPositive));
+        }
+        if max_per_stream <= 0 {
+            return Err(surface::reject(Branch::AuthorizeAgentMaxStreamNonPositive));
+        }
+        if period_duration == 0 {
+            return Err(surface::reject(Branch::AuthorizeAgentPeriodDurationZero));
+        }
+        let now = env.ledger().timestamp();
+        if expires_at <= now {
+            return Err(surface::reject(Branch::AuthorizeAgentExpiryInPast));
+        }
+
+        let config = AgentConfig {
+            max_per_period,
+            max_per_stream,
+            period_duration,
+            expires_at,
+        };
+        stream::put_agent_auth(&env, stream_id, &agent, &config);
+
+        AgentAuthorized {
+            stream_id,
+            agent,
+            max_per_period,
+            max_per_stream,
+            period_duration,
+            expires_at,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Revokes an authorized agent on a stream.
+    /// Only the stream recipient can revoke an agent.
+    pub fn revoke_agent(env: Env, stream_id: u64, agent: Address, caller: Address) -> Result<(), StreamError> {
+        caller.require_auth();
+        let s = stream::get_stream(&env, stream_id)?;
+        if caller != s.recipient {
+            return Err(surface::reject(Branch::RevokeAgentNotRecipient));
+        }
+
+        stream::remove_agent_auth(&env, stream_id, &agent);
+
+        AgentRevoked {
+            stream_id,
+            agent,
+            revoked_by: caller,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Executes a delegated withdrawal by an authorized agent on behalf of the recipient.
+    ///
+    /// Requires `agent.require_auth()`. Funds are always transferred directly to the
+    /// stream's recipient (never to the agent). Caps and expiration are strictly enforced.
+    pub fn withdraw_delegated(
+        env: Env,
+        stream_id: u64,
+        agent: Address,
+        amount: i128,
+    ) -> Result<(), StreamError> {
+        agent.require_auth();
+
+        if amount <= 0 {
+            return Err(surface::reject(Branch::WithdrawAmountNonPositive));
+        }
+
+        let mut s = stream::get_stream(&env, stream_id)?;
+        if s.status != StreamStatus::Active {
+            return Err(surface::reject(Branch::StreamNotActive));
+        }
+
+        let config = stream::get_agent_auth(&env, stream_id, &agent)
+            .ok_or_else(|| surface::reject(Branch::WithdrawDelegatedAgentNotAuthorized))?;
+
+        let now = env.ledger().timestamp();
+        if now >= config.expires_at {
+            return Err(surface::reject(Branch::WithdrawDelegatedAgentExpired));
+        }
+
+        let available = stream::available_amount(&env, &s)?;
+        if amount > available {
+            return Err(surface::reject(Branch::WithdrawAmountExceedsAvailable));
+        }
+
+        let mut cap_state = stream::get_agent_cap(
+            &env,
+            stream_id,
+            &agent,
+            s.start_time,
+            config.period_duration,
+            now,
+        );
+
+        // Advance period window if current time is past current period end
+        let period_end = cap_state
+            .current_period_start
+            .saturating_add(config.period_duration);
+        if now >= period_end {
+            let elapsed_since_start = now.saturating_sub(s.start_time);
+            let period_idx = elapsed_since_start / config.period_duration;
+            cap_state.current_period_start = s
+                .start_time
+                .saturating_add(period_idx.saturating_mul(config.period_duration));
+            cap_state.period_withdrawn = 0;
+        }
+
+        let new_period_withdrawn = cap_state
+            .period_withdrawn
+            .checked_add(amount)
+            .ok_or(StreamError::MathOverflow)?;
+        if new_period_withdrawn > config.max_per_period {
+            return Err(surface::reject(Branch::WithdrawDelegatedCapExceededPeriod));
+        }
+
+        let new_total_withdrawn = cap_state
+            .total_withdrawn
+            .checked_add(amount)
+            .ok_or(StreamError::MathOverflow)?;
+        if new_total_withdrawn > config.max_per_stream {
+            return Err(surface::reject(Branch::WithdrawDelegatedCapExceededStream));
+        }
+
+        // Update cap state
+        cap_state.period_withdrawn = new_period_withdrawn;
+        cap_state.total_withdrawn = new_total_withdrawn;
+        stream::put_agent_cap(&env, stream_id, &agent, &cap_state);
+
+        // Execute payout to stream recipient
+        Self::pay_out(&env, &mut s, amount)
+    }
+
+    /// Read-only view for checking an agent's delegation configuration and cap state.
+    pub fn agent_status(
+        env: Env,
+        stream_id: u64,
+        agent: Address,
+    ) -> Option<(AgentConfig, AgentCapState)> {
+        let s = stream::get_stream(&env, stream_id).ok()?;
+        let config = stream::get_agent_auth(&env, stream_id, &agent)?;
+        let now = env.ledger().timestamp();
+        let mut cap_state = stream::get_agent_cap(
+            &env,
+            stream_id,
+            &agent,
+            s.start_time,
+            config.period_duration,
+            now,
+        );
+        let period_end = cap_state
+            .current_period_start
+            .saturating_add(config.period_duration);
+        if now >= period_end {
+            let elapsed_since_start = now.saturating_sub(s.start_time);
+            let period_idx = elapsed_since_start / config.period_duration;
+            cap_state.current_period_start = s
+                .start_time
+                .saturating_add(period_idx.saturating_mul(config.period_duration));
+            cap_state.period_withdrawn = 0;
+        }
+        Some((config, cap_state))
+    }
+
     /// Shared preamble for both withdrawal paths: load the stream, require
     /// the recipient's authorization, and reject terminal streams.
     fn authorize_withdrawal(env: &Env, stream_id: u64) -> Result<Stream, StreamError> {

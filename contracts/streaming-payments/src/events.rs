@@ -178,6 +178,31 @@ pub struct FeeWithdrawn {
     pub withdrawn_total: i128,
 }
 
+/// Emitted when a stream recipient authorizes a session key agent with caps.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AgentAuthorized {
+    #[topic]
+    pub stream_id: u64,
+    #[topic]
+    pub agent: Address,
+    pub max_per_period: i128,
+    pub max_per_stream: i128,
+    pub period_duration: u64,
+    pub expires_at: u64,
+}
+
+/// Emitted when an authorized session key agent is revoked.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AgentRevoked {
+    #[topic]
+    pub stream_id: u64,
+    #[topic]
+    pub agent: Address,
+    pub revoked_by: Address,
+}
+
 /// Emitted when the policy module is initialized with its initial admin.
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
