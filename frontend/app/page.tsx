@@ -33,7 +33,9 @@ export default function Home() {
       const { isConnected: connected, error: connectedError } =
         await isConnected();
       if (connectedError || !connected) {
-        toast.error("Freighter not detected — install the extension and reload.");
+        toast.error(
+          "Freighter not detected — install the extension and reload.",
+        );
         return;
       }
       const { address, error: accessError } = await requestAccess();
@@ -41,7 +43,7 @@ export default function Home() {
         toast.error(
           `Wallet connection failed: ${
             accessError?.message ?? "no address returned from Freighter."
-          }`
+          }`,
         );
         return;
       }
@@ -51,11 +53,9 @@ export default function Home() {
       const cached = loadStreamIds(address);
       if (cached.length > 0) {
         const views = await Promise.all(
-          cached.map((id) => readStream(id).catch(() => null))
+          cached.map((id) => readStream(id).catch(() => null)),
         );
-        setStreams(
-          views.filter((s): s is StreamView => s !== null).reverse()
-        );
+        setStreams(views.filter((s): s is StreamView => s !== null).reverse());
       }
     } catch (e) {
       toast.error(`Wallet connection failed: ${String(e)}`);
@@ -81,7 +81,9 @@ export default function Home() {
       ]);
       const byId = new Map<string, StreamView>();
       for (const s of [...asRecipient, ...asSender]) byId.set(s.id, s);
-      const found = [...byId.values()].sort((a, b) => Number(b.id) - Number(a.id));
+      const found = [...byId.values()].sort(
+        (a, b) => Number(b.id) - Number(a.id),
+      );
       setStreams(found);
       toast.info(`Discovered ${found.length} stream(s) on-chain.`);
       for (const s of found) saveStreamId(address, s.id);
@@ -115,9 +117,22 @@ export default function Home() {
   if (!address) {
     return (
       <main className="wrap">
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+          }}
+        >
           <div className="kicker mono">SOROBAN · STELLAR</div>
-          <Link href="/docs" style={{ color: "#38bdf8", fontSize: "0.85rem", textDecoration: "none" }}>
+          <Link
+            href="/docs"
+            style={{
+              color: "#38bdf8",
+              fontSize: "0.85rem",
+              textDecoration: "none",
+            }}
+          >
             API Docs ↗
           </Link>
         </div>
@@ -153,7 +168,13 @@ export default function Home() {
   return (
     <main className="wrap">
       <h1>⚡ StreamPay</h1>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "baseline",
+        }}
+      >
         <p className="muted">
           Connected: <code>{address}</code>
         </p>
@@ -185,11 +206,16 @@ export default function Home() {
       <BatchStreamForm
         onCreate={async (token, entries, cancelable) => {
           try {
-            const ids = await createStreams(address, token, entries, cancelable);
+            const ids = await createStreams(
+              address,
+              token,
+              entries,
+              cancelable,
+            );
             toast.success(
               `${ids.length} stream${ids.length === 1 ? "" : "s"} created: ${ids
                 .map((id) => `#${id}`)
-                .join(", ")}.`
+                .join(", ")}.`,
             );
             await Promise.all(ids.map((id) => refresh(String(id))));
             return true;

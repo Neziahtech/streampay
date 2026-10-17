@@ -3,7 +3,11 @@ import assert from "node:assert";
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { streamedAt, MathOverflowError, computeVestingAccrual } from "./oracle.ts";
+import {
+  streamedAt,
+  MathOverflowError,
+  computeVestingAccrual,
+} from "./oracle.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -16,7 +20,10 @@ interface VectorEntry {
 }
 
 describe("oracle differential fuzz-vector suite against contract streamed_at", () => {
-  const vectorPath = resolve(__dirname, "../../tests/vectors/accrual_vectors.json");
+  const vectorPath = resolve(
+    __dirname,
+    "../../tests/vectors/accrual_vectors.json",
+  );
 
   it("loads vector corpus", () => {
     assert.strictEqual(existsSync(vectorPath), true);
@@ -35,7 +42,7 @@ describe("oracle differential fuzz-vector suite against contract streamed_at", (
       if (vector.expected_error) {
         assert.throws(
           () => streamedAt(deposit, duration, elapsed),
-          MathOverflowError
+          MathOverflowError,
         );
       } else {
         const actual = streamedAt(deposit, duration, elapsed);

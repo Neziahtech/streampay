@@ -33,21 +33,29 @@ export function parseBatchCsv(csv: string): BatchStreamEntry[] {
 
     const [recipient, rateText, durationText] = columns;
     if (!/^\d+$/.test(rateText) || !/^\d+$/.test(durationText)) {
-      throw new Error(`CSV row ${index + 1}: rate and duration must be whole numbers.`);
+      throw new Error(
+        `CSV row ${index + 1}: rate and duration must be whole numbers.`,
+      );
     }
 
     const rate = BigInt(rateText);
     const duration = BigInt(durationText);
     if (rate <= 0n || duration <= 0n) {
-      throw new Error(`CSV row ${index + 1}: rate and duration must be positive.`);
+      throw new Error(
+        `CSV row ${index + 1}: rate and duration must be positive.`,
+      );
     }
     if (duration > MAX_DURATION_SECONDS) {
-      throw new Error(`CSV row ${index + 1}: duration exceeds the 100-year stream limit.`);
+      throw new Error(
+        `CSV row ${index + 1}: duration exceeds the 100-year stream limit.`,
+      );
     }
 
     const deposit = rate * duration;
     if (deposit > I128_MAX) {
-      throw new Error(`CSV row ${index + 1}: rate × duration exceeds the i128 deposit limit.`);
+      throw new Error(
+        `CSV row ${index + 1}: rate × duration exceeds the i128 deposit limit.`,
+      );
     }
     entries.push({
       recipient,

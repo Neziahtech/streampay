@@ -28,9 +28,7 @@ export default function StreamDetail() {
 
   const [stream, setStream] = useState<StreamView | null>(null);
   const [available, setAvailable] = useState<bigint | null>(null);
-  const [displayAvailable, setDisplayAvailable] = useState<bigint | null>(
-    null
-  );
+  const [displayAvailable, setDisplayAvailable] = useState<bigint | null>(null);
   const [snapshot, setSnapshot] = useState<StreamSnapshot | null>(null);
   const [amount, setAmount] = useState<string>("");
   const [address, setAddress] = useState<string | null>(null);
@@ -75,7 +73,7 @@ export default function StreamDetail() {
         snapshot.endTime,
         snapshot.withdrawn,
         snapshot.status,
-        now
+        now,
       );
       setDisplayAvailable(next);
     }, 1000);
@@ -136,7 +134,7 @@ export default function StreamDetail() {
       } else {
         if (overWithdrawal) {
           toast.error(
-            `Amount exceeds the accrued balance (${available?.toString()} units). Try “Withdraw max”.`
+            `Amount exceeds the accrued balance (${available?.toString()} units). Try “Withdraw max”.`,
           );
           return;
         }
@@ -203,8 +201,8 @@ export default function StreamDetail() {
               <th>Available now</th>
               <td className="mono">
                 {snapshot?.status === "Active"
-                  ? (displayAvailable ?? available)?.toString() ?? "…"
-                  : available?.toString() ?? "…"}
+                  ? ((displayAvailable ?? available)?.toString() ?? "…")
+                  : (available?.toString() ?? "…")}
               </td>
             </tr>
             <tr>
@@ -231,9 +229,10 @@ export default function StreamDetail() {
           <h2>Withdraw accrued funds</h2>
           {claimNotWorthwhile && available !== null ? (
             <p className="err">
-              Not worth claiming yet: <span className="mono">{fmtUnits(available)} units</span> {" "}
-              is below the transaction fee floor (<span className="mono">1000</span> units). {" "}
-              The gas cost to claim would exceed the payout.
+              Not worth claiming yet:{" "}
+              <span className="mono">{fmtUnits(available)} units</span> is below
+              the transaction fee floor (<span className="mono">1000</span>{" "}
+              units). The gas cost to claim would exceed the payout.
             </p>
           ) : (
             <div className="row">
