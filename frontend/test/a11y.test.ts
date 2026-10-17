@@ -14,8 +14,11 @@
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
 import { JSDOM } from "jsdom";
 import axe from "axe-core";
+
+const require = createRequire(import.meta.url);
 
 // ---------------------------------------------------------------------------
 // Helper: run axe against an HTML string, return violations filtered to AA.
