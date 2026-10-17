@@ -32,7 +32,7 @@ use soroban_sdk::{
     Address, Env, Event as _, IntoVal, MuxedAddress, String as SdkString,
 };
 
-use crate::stream::streamed_at;
+use crate::stream::{streamed_at, MIN_CLAIM_AMOUNT, MIN_STREAM_AMOUNT};
 use crate::test_client::StreamingPaymentsClient as Client;
 use crate::{
     StreamError, StreamInput, StreamStatus, StreamingPayments, INITIAL_SCHEMA_VERSION,
@@ -658,7 +658,7 @@ fn withdraw_before_start_returns_zero_and_reverts() {
         .try_withdraw(&id, &1000)
         .unwrap_err()
         .unwrap();
-    assert_eq!(err, StreamError::AmountExceedsAvailable);
+    assert_eq!(err, StreamError::ClaimAmountTooSmall);
 }
 
 #[test]
@@ -1885,7 +1885,7 @@ fn withdraw_max_pays_everything_accrued() {
         .try_withdraw_max(&id)
         .unwrap_err()
         .unwrap();
-    assert_eq!(err, StreamError::NothingToWithdraw);
+    assert_eq!(err, StreamError::ClaimAmountTooSmall);
 }
 
 #[test]
@@ -1898,7 +1898,7 @@ fn withdraw_max_before_start_reverts_nothing_to_withdraw() {
         .try_withdraw_max(&id)
         .unwrap_err()
         .unwrap();
-    assert_eq!(err, StreamError::NothingToWithdraw);
+    assert_eq!(err, StreamError::ClaimAmountTooSmall);
 }
 
 #[test]
@@ -2679,7 +2679,10 @@ fn run_state_machine_sequence(seed: u64, steps: &[(u8, u16, u16)]) -> Result<(),
                 let now = env.ledger().timestamp();
                 let start = now + (first as u64 % 4);
                 let duration = 1 + (second as u64 % 100);
-                let deposit = 1 + (first as i128 % 20_000) * 257 + second as i128 % 257;
+                let deposit = MIN_STREAM_AMOUNT as i128
+                    + 1
+                    + (first as i128 % 20_000) * 257
+                    + second as i128 % 257;
                 let cancelable = operation & 0x80 != 0;
                 let id = client.mock_all_auths().create_stream(
                     &sender,
@@ -2730,25 +2733,40 @@ fn run_state_machine_sequence(seed: u64, steps: &[(u8, u16, u16)]) -> Result<(),
                 } else {
                     let available =
                         streams[index].accrued(env.ledger().timestamp()) - streams[index].withdrawn;
-                    if available > 0 && second & 1 == 0 {
-                        let amount = 1 + second as i128 % available;
-                        client.mock_all_auths().withdraw(&id, &amount);
-                        streams[index].withdrawn += amount;
-                    } else if available > 0 {
-                        let paid = client.mock_all_auths().withdraw_max(&id);
-                        prop_assert_eq!(paid, available, "{}: withdraw_max amount", context);
-                        streams[index].withdrawn += paid;
+                    if available > 0 {
+                        if available >= MIN_CLAIM_AMOUNT && second & 1 == 0 {
+                            // Withdraw a random amount >= MIN_CLAIM_AMOUNT
+                            let max_add = available - MIN_CLAIM_AMOUNT;
+                            let amount = MIN_CLAIM_AMOUNT + second as i128 % (max_add + 1);
+                            client.mock_all_auths().withdraw(&id, &amount);
+                            streams[index].withdrawn += amount;
+                        } else if available >= MIN_CLAIM_AMOUNT {
+                            // Withdraw max (available funds)
+                            let paid = client.mock_all_auths().withdraw_max(&id);
+                            prop_assert_eq!(paid, available, "{}: withdraw_max amount", context);
+                            streams[index].withdrawn += paid;
+                        } else {
+                            // 0 < available < MIN_CLAIM_AMOUNT
+                            // Any withdrawal attempt should fail with ClaimAmountTooSmall
+                            let error = client
+                                .mock_all_auths()
+                                .try_withdraw(&id, &MIN_CLAIM_AMOUNT)
+                                .unwrap_err()
+                                .unwrap();
+                            prop_assert_eq!(error, StreamError::ClaimAmountTooSmall, "{}", context);
+                        }
                     } else {
+                        // available == 0
                         let error = client
                             .mock_all_auths()
                             .try_withdraw_max(&id)
                             .unwrap_err()
                             .unwrap();
-                        prop_assert_eq!(error, StreamError::NothingToWithdraw, "{}", context);
+                        prop_assert_eq!(error, StreamError::ClaimAmountTooSmall, "{}", context);
                     }
-                    if streams[index].withdrawn == streams[index].deposit {
-                        streams[index].status = StreamStatus::Depleted;
-                    }
+                }
+                if streams[index].withdrawn == streams[index].deposit {
+                    streams[index].status = StreamStatus::Depleted;
                 }
             }
             3 if !streams.is_empty() => {
@@ -2970,7 +2988,8 @@ fn run_fee_property(seed: u64, steps: usize) {
             0 => {
                 // create a stream
                 let ti = rng.below(2) as usize;
-                let deposit = 1 + rng.below(1_000_000) as i128;
+                let deposit =
+                    crate::stream::MIN_STREAM_AMOUNT as i128 + 1 + rng.below(1_000_000) as i128;
                 let duration = 1 + rng.below(200);
                 let start_in = rng.below(3);
                 let cancelable = rng.below(2) == 0;
@@ -3016,40 +3035,98 @@ fn run_fee_property(seed: u64, steps: usize) {
                 let now = env.ledger().timestamp();
                 let avail = streams[idx].available(now);
                 match rng.below(4) {
-                    0 if avail > 0 => {
-                        client.mock_all_auths().withdraw(&id, &avail);
-                        streams[idx].withdrawn += avail;
+                    0 => {
+                        // Withdraw full available amount
+                        if avail >= MIN_CLAIM_AMOUNT {
+                            client.mock_all_auths().withdraw(&id, &avail);
+                            streams[idx].withdrawn += avail;
+                        } else if avail > 0 {
+                            // avail > 0 but < MIN_CLAIM_AMOUNT
+                            let err = client
+                                .mock_all_auths()
+                                .try_withdraw(&id, &avail)
+                                .unwrap_err()
+                                .unwrap();
+                            assert_eq!(
+                                err,
+                                StreamError::ClaimAmountTooSmall,
+                                "{ctx}: small withdraw"
+                            );
+                        }
                     }
-                    1 if avail > 0 => {
-                        let amount = 1 + rng.below(avail as u64) as i128;
-                        client.mock_all_auths().withdraw(&id, &amount);
-                        streams[idx].withdrawn += amount;
+                    1 => {
+                        if avail >= MIN_CLAIM_AMOUNT {
+                            let max_add = avail - MIN_CLAIM_AMOUNT;
+                            let amount = MIN_CLAIM_AMOUNT + rng.below(max_add as u64 + 1) as i128;
+                            client.mock_all_auths().withdraw(&id, &amount);
+                            streams[idx].withdrawn += amount;
+                        } else if avail > 0 {
+                            let err = client
+                                .mock_all_auths()
+                                .try_withdraw(&id, &MIN_CLAIM_AMOUNT)
+                                .unwrap_err()
+                                .unwrap();
+                            assert_eq!(
+                                err,
+                                StreamError::ClaimAmountTooSmall,
+                                "{ctx}: small withdraw"
+                            );
+                        }
                     }
                     2 => {
-                        // Over-withdrawal must always revert, leaving state intact.
-                        let err = client
-                            .mock_all_auths()
-                            .try_withdraw(&id, &(avail + 1))
-                            .unwrap_err()
-                            .unwrap();
-                        assert_eq!(
-                            err,
-                            StreamError::AmountExceedsAvailable,
-                            "{ctx}: over-withdraw"
-                        );
+                        // Over-withdrawal must always revert
+                        if avail >= MIN_CLAIM_AMOUNT {
+                            let err = client
+                                .mock_all_auths()
+                                .try_withdraw(&id, &(avail + 1))
+                                .unwrap_err()
+                                .unwrap();
+                            assert_eq!(
+                                err,
+                                StreamError::AmountExceedsAvailable,
+                                "{ctx}: over-withdraw"
+                            );
+                        } else {
+                            // avail < MIN_CLAIM_AMOUNT triggers ClaimAmountTooSmall
+                            let err = client
+                                .mock_all_auths()
+                                .try_withdraw(&id, &1)
+                                .unwrap_err()
+                                .unwrap();
+                            assert_eq!(
+                                err,
+                                StreamError::ClaimAmountTooSmall,
+                                "{ctx}: small withdraw"
+                            );
+                        }
                     }
                     _ => {
-                        if avail > 0 {
+                        if avail >= MIN_CLAIM_AMOUNT {
                             let paid = client.mock_all_auths().withdraw_max(&id);
                             assert_eq!(paid, avail, "{ctx}: withdraw_max pays available");
                             streams[idx].withdrawn += paid;
+                        } else if avail > 0 {
+                            let err = client
+                                .mock_all_auths()
+                                .try_withdraw_max(&id)
+                                .unwrap_err()
+                                .unwrap();
+                            assert_eq!(
+                                err,
+                                StreamError::ClaimAmountTooSmall,
+                                "{ctx}: small withdraw_max"
+                            );
                         } else {
                             let err = client
                                 .mock_all_auths()
                                 .try_withdraw_max(&id)
                                 .unwrap_err()
                                 .unwrap();
-                            assert_eq!(err, StreamError::NothingToWithdraw, "{ctx}");
+                            assert_eq!(
+                                err,
+                                StreamError::ClaimAmountTooSmall,
+                                "{ctx}: zero withdraw_max"
+                            );
                         }
                     }
                 }
