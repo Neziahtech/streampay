@@ -3,14 +3,16 @@
  * stale-selection detection, and sequential fallback execution for StreamPay streams.
  */
 
-import {
-  type StreamView,
-  readStream,
-  readAvailable,
-  withdrawMaxFromStream,
-  cancelStream,
-  describeError,
-} from "./stellar.ts";
+import { type StreamView } from "./pagination.ts";
+
+export function describeError(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  const m = message.match(/Error\(Contract, #(\d+)\)/);
+  if (m) {
+    return `Contract error #${m[1]}`;
+  }
+  return message;
+}
 
 // ============================================================================
 // 1. CSV Batch Creation (for BatchStreamForm)
@@ -267,12 +269,19 @@ export async function checkContractBatchSupport(): Promise<boolean> {
  */
 export async function simulateSingleAction(
   stream: StreamView,
-  action: BatchActionType
+  action: BatchActionType,
+  readAvailableFn?: (id: string) => Promise<bigint>
 ): Promise<ItemSimulationFootprint> {
   try {
     let claimable = 0n;
     if (action === "withdraw_max") {
-      claimable = await readAvailable(stream.id);
+      const readAvail =
+        readAvailableFn ??
+        (async (id: string) => {
+          const stellar = await import("./stellar.ts");
+          return await stellar.readAvailable(id);
+        });
+      claimable = await readAvail(stream.id);
       if (claimable <= 0n) {
         return {
           streamId: stream.id,
@@ -346,11 +355,12 @@ export async function simulateSingleAction(
  */
 export async function simulateBatchAction(
   streams: StreamView[],
-  action: BatchActionType
+  action: BatchActionType,
+  readAvailableFn?: (id: string) => Promise<bigint>
 ): Promise<BatchSimulationSummary> {
   const hasBatchSupport = await checkContractBatchSupport();
   const items = await Promise.all(
-    streams.map((s) => simulateSingleAction(s, action))
+    streams.map((s) => simulateSingleAction(s, action, readAvailableFn))
   );
 
   let totalFeeBigInt = 0n;
@@ -394,10 +404,9 @@ export interface ExecuteBatchOptions {
     current: ItemSimulationFootprint,
     statusText: string
   ) => void;
-  // Optional function injection for mockable unit testing
   readStreamFn?: (id: string) => Promise<StreamView>;
   readAvailableFn?: (id: string) => Promise<bigint>;
-  withdrawMaxFn?: (caller: string, id: string) => Promise<string>;
+  withdrawMaxFn?: (caller: string, id: string) => Promise<string | bigint>;
   cancelFn?: (caller: string, id: string) => Promise<void>;
 }
 
@@ -420,10 +429,33 @@ export async function executeBatch(
   const total = actionable.length;
   let completed = 0;
 
-  const readStreamImpl = options.readStreamFn ?? readStream;
-  const readAvailableImpl = options.readAvailableFn ?? readAvailable;
-  const withdrawMaxImpl = options.withdrawMaxFn ?? withdrawMaxFromStream;
-  const cancelImpl = options.cancelFn ?? cancelStream;
+  const readStreamImpl =
+    options.readStreamFn ??
+    (async (id: string) => {
+      const stellar = await import("./stellar.ts");
+      return await stellar.readStream(id);
+    });
+
+  const readAvailableImpl =
+    options.readAvailableFn ??
+    (async (id: string) => {
+      const stellar = await import("./stellar.ts");
+      return await stellar.readAvailable(id);
+    });
+
+  const withdrawMaxImpl =
+    options.withdrawMaxFn ??
+    (async (c: string, id: string) => {
+      const stellar = await import("./stellar.ts");
+      return await stellar.withdrawMaxFromStream(c, id);
+    });
+
+  const cancelImpl =
+    options.cancelFn ??
+    (async (c: string, id: string) => {
+      const stellar = await import("./stellar.ts");
+      return await stellar.cancelStream(c, id);
+    });
 
   for (let i = 0; i < total; i++) {
     const item = actionable[i];
@@ -465,7 +497,7 @@ export async function executeBatch(
         results.push({
           streamId: item.streamId,
           status: "success",
-          paid: paid ?? "0",
+          paid: paid !== undefined ? String(paid) : "0",
         });
       } else if (action === "cancel") {
         await cancelImpl(caller, item.streamId);

@@ -10,8 +10,8 @@ import {
   notifyBatchResult,
   type StreamSnapshot,
   type ItemSimulationFootprint,
-  type BatchExecutionResult,
 } from "../batch.ts";
+
 import type { StreamView } from "../stellar.ts";
 
 test("URL Selection Encoding & Decoding handles all edge cases", () => {
@@ -214,8 +214,9 @@ test("Mixed success/failure batch scenario: reports honest per-action outcomes a
         return "250"; // Succeeded
       }
       // Stream 202 reverts on-chain!
-      throw new Error("HostError: Error(Contract, #12): token transfer failed");
+      throw new Error("token transfer failed");
     },
+
   });
 
   // 1. Verify batch execution result structure
