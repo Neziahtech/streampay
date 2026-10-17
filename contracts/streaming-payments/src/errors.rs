@@ -133,6 +133,18 @@ pub enum StreamError {
     StreamNotDepleted = 38,
     /// Sweep was attempted before the stream's `end_time`; the stream has not expired.
     StreamNotExpired = 39,
+    /// The contract is currently frozen for maintenance or upgrade.
+    ContractFrozen = 40,
+    /// The operation requires the contract to be frozen.
+    ContractNotFrozen = 41,
+    /// An upgrade operation was attempted but no upgrade is pending.
+    NoPendingUpgrade = 42,
+    /// The upgrade timelock delay has not yet expired.
+    TimelockNotExpired = 43,
+    /// The proposed upgrade delay is shorter than the minimum timelock.
+    UpgradeDelayTooShort = 44,
+    /// The storage migration has already been completed.
+    AlreadyMigrated = 45,
 }
 
 impl StreamError {
@@ -177,8 +189,14 @@ impl StreamError {
         StreamError::PolicyNoPendingHandoff,
         StreamError::StreamTooSmall,
         StreamError::ClaimAmountTooSmall,
-StreamError::StreamNotDepleted,
+        StreamError::StreamNotDepleted,
         StreamError::StreamNotExpired,
+        StreamError::ContractFrozen,
+        StreamError::ContractNotFrozen,
+        StreamError::NoPendingUpgrade,
+        StreamError::TimelockNotExpired,
+        StreamError::UpgradeDelayTooShort,
+        StreamError::AlreadyMigrated,
     ];
 
     /// The stable numeric value carried across the contract boundary

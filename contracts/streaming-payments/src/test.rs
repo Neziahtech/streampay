@@ -34,7 +34,10 @@ use soroban_sdk::{
 
 use crate::stream::streamed_at;
 use crate::test_client::StreamingPaymentsClient as Client;
-use crate::{StreamError, StreamInput, StreamStatus, StreamingPayments, MAX_DURATION_SECONDS};
+use crate::{
+    StreamError, StreamInput, StreamStatus, StreamingPayments, INITIAL_SCHEMA_VERSION,
+    MAX_DURATION_SECONDS, MIN_UPGRADE_DELAY_SECONDS, TARGET_SCHEMA_VERSION,
+};
 
 // ---------------------------------------------------------------- fixtures --
 
@@ -4217,4 +4220,570 @@ fn non_sep41_token_return_reports_transfer_failure() {
         .unwrap_err()
         .unwrap();
     assert_eq!(err, StreamError::DepositTransferFailed);
+}
+
+// ------------------------------------------------ upgrade & migration tests --
+
+#[test]
+fn freeze_and_unfreeze_governor_controls_and_mutation_gates() {
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+    let stranger = Address::generate(&f.env);
+
+    // Initial state: not frozen, schema version 1.
+    assert!(!f.client.is_frozen());
+    assert_eq!(f.client.schema_version(), INITIAL_SCHEMA_VERSION);
+
+    // Create an active stream before freezing.
+    let id = f.create_stream(DEPOSIT, 0, 10 * DAY, true);
+    assert_eq!(f.client.get_stream(&id).status, StreamStatus::Active);
+
+    // Stranger cannot freeze.
+    let res = f.client.mock_all_auths().try_set_frozen(&stranger, &true);
+    assert_eq!(res.unwrap_err().unwrap(), StreamError::NotGovernor);
+
+    // Governor freezes the contract.
+    f.client.mock_all_auths().set_frozen(&f.governor, &true);
+    assert!(f.client.is_frozen());
+
+    // Advance time into the stream window so funds accrue.
+    f.advance_time(5 * DAY);
+
+    // All mutating entrypoints revert with ContractFrozen:
+    // 1. create_stream
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_create_stream(
+            &f.sender,
+            &f.recipient,
+            &f.token,
+            &DEPOSIT,
+            &(now + 6 * DAY),
+            &(now + 16 * DAY),
+            &false,
+        )
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::ContractFrozen);
+
+    // 2. withdraw
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_withdraw(&id, &100)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::ContractFrozen);
+
+    // 3. withdraw_max
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_withdraw_max(&id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::ContractFrozen);
+
+    // 4. cancel_stream
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_cancel_stream(&f.sender, &id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::ContractFrozen);
+
+    // 5. top_up
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_top_up(&id, &DEPOSIT)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::ContractFrozen);
+
+    // All read-only views remain completely functional while frozen:
+    let s = f.client.get_stream(&id);
+    assert_eq!(s.id, id);
+    let avail = f.client.available(&id);
+    assert!(avail > 0);
+    assert_eq!(f.client.recipient_streams(&f.recipient, &0, &10).len(), 1);
+    assert_eq!(f.client.sender_streams(&f.sender, &0, &10).len(), 1);
+    assert_eq!(f.client.total_streams(), 1);
+    assert_eq!(f.client.schema_version(), INITIAL_SCHEMA_VERSION);
+    let status = f.client.treasury_status(&f.token);
+    assert_eq!(status.governor, f.governor);
+    let progress = f.client.migration_progress();
+    assert_eq!(progress.current_version, INITIAL_SCHEMA_VERSION);
+    assert!(!progress.is_complete);
+
+    // Stranger cannot unfreeze.
+    let res = f.client.mock_all_auths().try_set_frozen(&stranger, &false);
+    assert_eq!(res.unwrap_err().unwrap(), StreamError::NotGovernor);
+
+    // Governor unfreezes the contract.
+    f.client.mock_all_auths().set_frozen(&f.governor, &false);
+    assert!(!f.client.is_frozen());
+
+    // Mutations succeed again after unfreeze.
+    let withdrawn = f.client.mock_all_auths().withdraw_max(&id);
+    assert!(withdrawn > 0);
+    assert_eq!(f.client.get_stream(&id).withdrawn, withdrawn);
+}
+
+#[test]
+fn upgrade_timelock_proposal_cancellation_and_execution() {
+    let f = Fixture::setup();
+    let stranger = Address::generate(&f.env);
+    #[rustfmt::skip]
+    const UPGRADE_WASM: &[u8] = &[
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x1b, 0x05, 0x60,
+        0x03, 0x7e, 0x7e, 0x7e, 0x01, 0x7e, 0x60, 0x02, 0x7e, 0x7e, 0x01, 0x7e,
+        0x60, 0x02, 0x7f, 0x7e, 0x00, 0x60, 0x01, 0x7e, 0x01, 0x7e, 0x60, 0x00,
+        0x00, 0x02, 0x19, 0x04, 0x01, 0x6c, 0x01, 0x5f, 0x00, 0x00, 0x01, 0x6c,
+        0x01, 0x30, 0x00, 0x01, 0x01, 0x6c, 0x01, 0x31, 0x00, 0x01, 0x01, 0x6c,
+        0x01, 0x32, 0x00, 0x01, 0x03, 0x06, 0x05, 0x01, 0x02, 0x03, 0x03, 0x04,
+        0x05, 0x03, 0x01, 0x00, 0x10, 0x06, 0x19, 0x03, 0x7f, 0x01, 0x41, 0x80,
+        0x80, 0xc0, 0x00, 0x0b, 0x7f, 0x00, 0x41, 0x80, 0x80, 0xc0, 0x00, 0x0b,
+        0x7f, 0x00, 0x41, 0x80, 0x80, 0xc0, 0x00, 0x0b, 0x07, 0x3b, 0x07, 0x06,
+        0x6d, 0x65, 0x6d, 0x6f, 0x72, 0x79, 0x02, 0x00, 0x03, 0x70, 0x75, 0x74,
+        0x00, 0x04, 0x03, 0x67, 0x65, 0x74, 0x00, 0x06, 0x03, 0x64, 0x65, 0x6c,
+        0x00, 0x07, 0x01, 0x5f, 0x00, 0x08, 0x0a, 0x5f, 0x5f, 0x64, 0x61, 0x74,
+        0x61, 0x5f, 0x65, 0x6e, 0x64, 0x03, 0x01, 0x0b, 0x5f, 0x5f, 0x68, 0x65,
+        0x61, 0x70, 0x5f, 0x62, 0x61, 0x73, 0x65, 0x03, 0x02, 0x0a, 0xd5, 0x02,
+        0x05, 0x66, 0x01, 0x01, 0x7f, 0x23, 0x80, 0x80, 0x80, 0x80, 0x00, 0x41,
+        0x20, 0x6b, 0x22, 0x02, 0x24, 0x80, 0x80, 0x80, 0x80, 0x00, 0x20, 0x02,
+        0x41, 0x10, 0x6a, 0x20, 0x00, 0x10, 0x85, 0x80, 0x80, 0x80, 0x00, 0x02,
+        0x40, 0x20, 0x02, 0x29, 0x03, 0x10, 0xa7, 0x0d, 0x00, 0x20, 0x02, 0x29,
+        0x03, 0x18, 0x21, 0x00, 0x20, 0x02, 0x20, 0x01, 0x10, 0x85, 0x80, 0x80,
+        0x80, 0x00, 0x20, 0x02, 0x29, 0x03, 0x00, 0xa7, 0x0d, 0x00, 0x20, 0x00,
+        0x20, 0x02, 0x29, 0x03, 0x08, 0x42, 0x01, 0x10, 0x80, 0x80, 0x80, 0x80,
+        0x00, 0x1a, 0x20, 0x02, 0x41, 0x20, 0x6a, 0x24, 0x80, 0x80, 0x80, 0x80,
+        0x00, 0x42, 0x02, 0x0f, 0x0b, 0x00, 0x00, 0x0b, 0x24, 0x01, 0x01, 0x7f,
+        0x20, 0x00, 0x20, 0x01, 0x37, 0x03, 0x08, 0x20, 0x00, 0x20, 0x01, 0xa7,
+        0x41, 0xff, 0x01, 0x71, 0x22, 0x02, 0x41, 0x0e, 0x47, 0x20, 0x02, 0x41,
+        0xca, 0x00, 0x47, 0x71, 0xad, 0x37, 0x03, 0x00, 0x0b, 0x7b, 0x02, 0x01,
+        0x7f, 0x01, 0x7e, 0x23, 0x80, 0x80, 0x80, 0x80, 0x00, 0x41, 0x20, 0x6b,
+        0x22, 0x01, 0x24, 0x80, 0x80, 0x80, 0x80, 0x00, 0x20, 0x01, 0x41, 0x10,
+        0x6a, 0x20, 0x00, 0x10, 0x85, 0x80, 0x80, 0x80, 0x00, 0x02, 0x40, 0x20,
+        0x01, 0x29, 0x03, 0x10, 0xa7, 0x0d, 0x00, 0x42, 0x02, 0x21, 0x00, 0x02,
+        0x40, 0x20, 0x01, 0x29, 0x03, 0x18, 0x22, 0x02, 0x42, 0x01, 0x10, 0x81,
+        0x80, 0x80, 0x80, 0x00, 0x42, 0x01, 0x52, 0x0d, 0x00, 0x20, 0x01, 0x20,
+        0x02, 0x42, 0x01, 0x10, 0x82, 0x80, 0x80, 0x80, 0x00, 0x10, 0x85, 0x80,
+        0x80, 0x80, 0x00, 0x20, 0x01, 0x29, 0x03, 0x00, 0xa7, 0x0d, 0x01, 0x20,
+        0x01, 0x29, 0x03, 0x08, 0x21, 0x00, 0x0b, 0x20, 0x01, 0x41, 0x20, 0x6a,
+        0x24, 0x80, 0x80, 0x80, 0x80, 0x00, 0x20, 0x00, 0x0f, 0x0b, 0x00, 0x00,
+        0x0b, 0x48, 0x01, 0x01, 0x7f, 0x23, 0x80, 0x80, 0x80, 0x80, 0x00, 0x41,
+        0x10, 0x6b, 0x22, 0x01, 0x24, 0x80, 0x80, 0x80, 0x80, 0x00, 0x20, 0x01,
+        0x20, 0x00, 0x10, 0x85, 0x80, 0x80, 0x80, 0x00, 0x02, 0x40, 0x20, 0x01,
+        0x29, 0x03, 0x00, 0xa7, 0x45, 0x0d, 0x00, 0x00, 0x00, 0x0b, 0x20, 0x01,
+        0x29, 0x03, 0x08, 0x42, 0x01, 0x10, 0x83, 0x80, 0x80, 0x80, 0x00, 0x1a,
+        0x20, 0x01, 0x41, 0x10, 0x6a, 0x24, 0x80, 0x80, 0x80, 0x80, 0x00, 0x42,
+        0x02, 0x0b, 0x02, 0x00, 0x0b, 0x00, 0x9f, 0x01, 0x0e, 0x63, 0x6f, 0x6e,
+        0x74, 0x72, 0x61, 0x63, 0x74, 0x73, 0x70, 0x65, 0x63, 0x76, 0x30, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x70,
+        0x75, 0x74, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x03, 0x6b, 0x65, 0x79, 0x00, 0x00, 0x00, 0x00, 0x11, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x76, 0x61, 0x6c, 0x00, 0x00,
+        0x00, 0x00, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x67, 0x65, 0x74, 0x00, 0x00,
+        0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x6b,
+        0x65, 0x79, 0x00, 0x00, 0x00, 0x00, 0x11, 0x00, 0x00, 0x00, 0x01, 0x00,
+        0x00, 0x03, 0xe8, 0x00, 0x00, 0x00, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x64, 0x65, 0x6c, 0x00, 0x00,
+        0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x6b,
+        0x65, 0x79, 0x00, 0x00, 0x00, 0x00, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x1e, 0x11, 0x63, 0x6f, 0x6e, 0x74, 0x72, 0x61, 0x63, 0x74, 0x65, 0x6e,
+        0x76, 0x6d, 0x65, 0x74, 0x61, 0x76, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x16, 0x00, 0x00, 0x00, 0x00, 0x00, 0x77, 0x0e, 0x63, 0x6f,
+        0x6e, 0x74, 0x72, 0x61, 0x63, 0x74, 0x6d, 0x65, 0x74, 0x61, 0x76, 0x30,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x72, 0x73, 0x76, 0x65,
+        0x72, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x31, 0x2e, 0x38, 0x31,
+        0x2e, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08,
+        0x72, 0x73, 0x73, 0x64, 0x6b, 0x76, 0x65, 0x72, 0x00, 0x00, 0x00, 0x35,
+        0x32, 0x32, 0x2e, 0x30, 0x2e, 0x32, 0x23, 0x64, 0x66, 0x65, 0x38, 0x39,
+        0x39, 0x62, 0x63, 0x31, 0x32, 0x63, 0x32, 0x32, 0x39, 0x37, 0x35, 0x35,
+        0x31, 0x30, 0x36, 0x33, 0x65, 0x33, 0x30, 0x31, 0x35, 0x31, 0x66, 0x66,
+        0x36, 0x35, 0x34, 0x66, 0x39, 0x37, 0x62, 0x38, 0x32, 0x65, 0x38, 0x2d,
+        0x64, 0x69, 0x72, 0x74, 0x79, 0x00, 0x00, 0x00,
+    ];
+    let wasm_hash = f.env.deployer().upload_contract_wasm(UPGRADE_WASM);
+
+    assert_eq!(f.client.pending_upgrade(), None);
+
+    // Non-governor cannot propose upgrade.
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_propose_upgrade(&stranger, &wasm_hash, &MIN_UPGRADE_DELAY_SECONDS)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::NotGovernor);
+
+    // Proposed delay below MIN_UPGRADE_DELAY_SECONDS is rejected.
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_propose_upgrade(&f.governor, &wasm_hash, &(MIN_UPGRADE_DELAY_SECONDS - 1))
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::UpgradeDelayTooShort);
+
+    // Governor proposes upgrade with valid timelock delay.
+    let now = f.env.ledger().timestamp();
+    f.client
+        .mock_all_auths()
+        .propose_upgrade(&f.governor, &wasm_hash, &MIN_UPGRADE_DELAY_SECONDS);
+
+    let pending = f
+        .client
+        .pending_upgrade()
+        .expect("pending upgrade expected");
+    assert_eq!(pending.new_wasm_hash, wasm_hash);
+    assert_eq!(pending.unlock_time, now + MIN_UPGRADE_DELAY_SECONDS);
+
+    // Non-governor cannot cancel or execute upgrade.
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_cancel_upgrade(&stranger)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::NotGovernor);
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_execute_upgrade(&stranger)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::NotGovernor);
+
+    // Governor cannot execute before timelock expires.
+    f.advance_time(MIN_UPGRADE_DELAY_SECONDS - 10);
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_execute_upgrade(&f.governor)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::TimelockNotExpired);
+
+    // Governor can cancel the upgrade.
+    f.client.mock_all_auths().cancel_upgrade(&f.governor);
+    assert_eq!(f.client.pending_upgrade(), None);
+
+    // Cannot execute after cancellation.
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_execute_upgrade(&f.governor)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::NoPendingUpgrade);
+
+    // Cannot cancel when nothing is pending.
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_cancel_upgrade(&f.governor)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::NoPendingUpgrade);
+
+    // Propose again and execute after timelock expires.
+    f.client
+        .mock_all_auths()
+        .propose_upgrade(&f.governor, &wasm_hash, &MIN_UPGRADE_DELAY_SECONDS);
+    f.advance_time(MIN_UPGRADE_DELAY_SECONDS + 1);
+
+    f.client.mock_all_auths().execute_upgrade(&f.governor);
+}
+
+#[test]
+fn storage_migration_lifecycle_and_invariants() {
+    let f = Fixture::setup();
+    let stranger = Address::generate(&f.env);
+
+    // Non-governor cannot migrate.
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_migrate_storage(&stranger, &0, &50)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::NotGovernor);
+
+    // Migration rejected when contract is not frozen.
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_migrate_storage(&f.governor, &0, &50)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::ContractNotFrozen);
+
+    // Freeze contract for migration.
+    f.client.mock_all_auths().set_frozen(&f.governor, &true);
+
+    // Empty contract migration completes immediately and sets schema to TARGET_SCHEMA_VERSION.
+    let status = f
+        .client
+        .mock_all_auths()
+        .migrate_storage(&f.governor, &0, &50);
+    assert_eq!(status.current_version, TARGET_SCHEMA_VERSION);
+    assert_eq!(status.target_version, TARGET_SCHEMA_VERSION);
+    assert_eq!(status.cursor, 0);
+    assert_eq!(status.total_streams, 0);
+    assert!(status.is_complete);
+    assert_eq!(f.client.schema_version(), TARGET_SCHEMA_VERSION);
+
+    // Calling migrate_storage when already migrated fails with AlreadyMigrated.
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_migrate_storage(&f.governor, &0, &50)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::AlreadyMigrated);
+}
+
+#[test]
+fn storage_migration_over_1000_synthetic_streams() {
+    let mut env = Env::default();
+    env.set_config(soroban_sdk::testutils::EnvTestConfig {
+        capture_snapshot_at_drop: false,
+    });
+    env.mock_all_auths();
+
+    let sac = env.register_stellar_asset_contract_v2(Address::generate(&env));
+    let token = sac.address();
+    let sender = Address::generate(&env);
+    let recipient_base = Address::generate(&env);
+    let governor = Address::generate(&env);
+
+    const NUM_STREAMS: usize = 1_000;
+    const STREAM_DEPOSIT: i128 = 100_000;
+    let total_mint = (NUM_STREAMS as i128) * STREAM_DEPOSIT * 2;
+    StellarAssetClient::new(&env, &token).mint(&sender, &total_mint);
+
+    let contract_id = env.register(StreamingPayments, (governor.clone(),));
+    let client = Client::new(&env, &contract_id);
+
+    StellarAssetClient::new(&env, &token).approve(
+        &sender,
+        &contract_id,
+        &total_mint,
+        &1_000_000u32,
+    );
+
+    let base_time = env.ledger().timestamp();
+
+    // Create 1,000 synthetic streams with diverse parameters and states:
+    // Some will remain Active, some partially withdrawn, some fully depleted, some cancelled.
+    for i in 1..=NUM_STREAMS {
+        let cancelable = (i % 2) == 0;
+        let duration = (10 + (i as u64 % 100)) * DAY;
+        let start_time = base_time + (i as u64 % 5) * DAY;
+        let end_time = start_time + duration;
+        let deposit = STREAM_DEPOSIT + (i as i128 * 10);
+
+        let id = client.mock_all_auths().create_stream(
+            &sender,
+            &recipient_base,
+            &token,
+            &deposit,
+            &start_time,
+            &end_time,
+            &cancelable,
+        );
+        assert_eq!(id, i as u64);
+    }
+
+    assert_eq!(client.total_streams(), NUM_STREAMS as u64);
+
+    // Advance time so some streams accrue funds.
+    env.ledger().with_mut(|li| li.timestamp += 15 * DAY);
+
+    // Mutate state of selected streams to exercise all lifecycle statuses before migration:
+    // Streams 1..=100: withdraw some accrued funds.
+    for i in 1..=100 {
+        let avail = client.available(&(i as u64));
+        if avail > 10 {
+            client.mock_all_auths().withdraw(&(i as u64), &(avail / 2));
+        }
+    }
+    // Streams 101..=150: cancel stream.
+    for i in 101..=150 {
+        let s = client.get_stream(&(i as u64));
+        if s.cancelable {
+            client.mock_all_auths().cancel_stream(&sender, &(i as u64));
+        }
+    }
+    // Advance time past end for streams 151..=200 and withdraw all to mark Depleted.
+    env.ledger().with_mut(|li| li.timestamp += 200 * DAY);
+    for i in 151..=200 {
+        let _ = client.mock_all_auths().try_withdraw_max(&(i as u64));
+    }
+
+    // --- SNAPSHOT PHASE: Snapshot all 1,000 streams ---
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct Snapshot {
+        id: u64,
+        sender: Address,
+        recipient: Address,
+        token: Address,
+        deposit: i128,
+        withdrawn: i128,
+        start_time: u64,
+        end_time: u64,
+        cancelable: bool,
+        status: StreamStatus,
+        available: i128,
+    }
+
+    let mut snapshots = std::vec::Vec::with_capacity(NUM_STREAMS);
+    for i in 1..=NUM_STREAMS {
+        let id = i as u64;
+        let s = client.get_stream(&id);
+        let avail = client.available(&id);
+        snapshots.push(Snapshot {
+            id: s.id,
+            sender: s.sender,
+            recipient: s.recipient,
+            token: s.token,
+            deposit: s.deposit,
+            withdrawn: s.withdrawn,
+            start_time: s.start_time,
+            end_time: s.end_time,
+            cancelable: s.cancelable,
+            status: s.status,
+            available: avail,
+        });
+    }
+
+    // --- MIGRATION PHASE ---
+    // 1. Freeze contract
+    client.mock_all_auths().set_frozen(&governor, &true);
+    assert!(client.is_frozen());
+    assert_eq!(client.schema_version(), INITIAL_SCHEMA_VERSION);
+
+    // 2. Perform resumable, batch migration in increments of 50
+    // Test mid-write interruption: migrate first 300 streams (6 batches of 50).
+    for _ in 0..6 {
+        let progress = client.mock_all_auths().migrate_storage(&governor, &0, &50);
+        assert!(!progress.is_complete);
+        assert_eq!(progress.current_version, INITIAL_SCHEMA_VERSION);
+    }
+    assert_eq!(client.migration_progress().cursor, 300);
+
+    // Test idempotency: re-run migration explicitly on streams 1..=50
+    let idempotent_res = client.mock_all_auths().migrate_storage(&governor, &1, &50);
+    assert_eq!(idempotent_res.cursor, 300); // Cursor does not regress!
+    assert!(!idempotent_res.is_complete);
+
+    // Resume from cursor to completion (remaining 700 streams: 14 batches of 50).
+    let mut finished = false;
+    while !finished {
+        let p = client.mock_all_auths().migrate_storage(&governor, &0, &50);
+        finished = p.is_complete;
+    }
+
+    // Verify migration completion state.
+    let final_progress = client.migration_progress();
+    assert!(final_progress.is_complete);
+    assert_eq!(final_progress.current_version, TARGET_SCHEMA_VERSION);
+    assert_eq!(final_progress.target_version, TARGET_SCHEMA_VERSION);
+    assert_eq!(final_progress.cursor, NUM_STREAMS as u64);
+    assert_eq!(client.schema_version(), TARGET_SCHEMA_VERSION);
+
+    // Attempting further migration returns AlreadyMigrated.
+    let err = client
+        .mock_all_auths()
+        .try_migrate_storage(&governor, &0, &50)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::AlreadyMigrated);
+
+    // --- VERIFICATION PHASE: Assert 100% data preservation across all 1,000 streams ---
+    for expected in &snapshots {
+        let actual = client.get_stream(&expected.id);
+        let actual_avail = client.available(&expected.id);
+
+        assert_eq!(actual.id, expected.id, "Stream {} id mismatch", expected.id);
+        assert_eq!(
+            actual.sender, expected.sender,
+            "Stream {} sender mismatch",
+            expected.id
+        );
+        assert_eq!(
+            actual.recipient, expected.recipient,
+            "Stream {} recipient mismatch",
+            expected.id
+        );
+        assert_eq!(
+            actual.token, expected.token,
+            "Stream {} token mismatch",
+            expected.id
+        );
+        assert_eq!(
+            actual.deposit, expected.deposit,
+            "Stream {} deposit mismatch",
+            expected.id
+        );
+        assert_eq!(
+            actual.withdrawn, expected.withdrawn,
+            "Stream {} withdrawn mismatch",
+            expected.id
+        );
+        assert_eq!(
+            actual.start_time, expected.start_time,
+            "Stream {} start_time mismatch",
+            expected.id
+        );
+        assert_eq!(
+            actual.end_time, expected.end_time,
+            "Stream {} end_time mismatch",
+            expected.id
+        );
+        assert_eq!(
+            actual.cancelable, expected.cancelable,
+            "Stream {} cancelable mismatch",
+            expected.id
+        );
+        assert_eq!(
+            actual.status, expected.status,
+            "Stream {} status mismatch",
+            expected.id
+        );
+        assert_eq!(
+            actual_avail, expected.available,
+            "Stream {} available mismatch",
+            expected.id
+        );
+    }
+
+    // 3. Unfreeze contract and verify subsequent mutations on migrated streams
+    client.mock_all_auths().set_frozen(&governor, &false);
+    assert!(!client.is_frozen());
+
+    // Top up an active stream post-migration (e.g. stream 500)
+    let s500_before = client.get_stream(&500);
+    client.mock_all_auths().top_up(&500, &10_000);
+    let s500_after = client.get_stream(&500);
+    assert_eq!(s500_after.deposit, s500_before.deposit + 10_000);
+
+    // Create a new stream post-migration (stream 1001)
+    let new_now = env.ledger().timestamp();
+    let new_id = client.mock_all_auths().create_stream(
+        &sender,
+        &recipient_base,
+        &token,
+        &STREAM_DEPOSIT,
+        &new_now,
+        &(new_now + 10 * DAY),
+        &true,
+    );
+    assert_eq!(new_id, 1001);
+    assert_eq!(client.total_streams(), 1001);
 }
