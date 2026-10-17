@@ -125,6 +125,14 @@ pub enum StreamError {
     PolicyNotInitialized = 34,
     /// No admin handoff proposal is pending.
     PolicyNoPendingHandoff = 35,
+    /// Stream deposit is below the economically viable threshold (`MIN_STREAM_AMOUNT`); dust streams are rejected.
+    StreamTooSmall = 36,
+    /// Claim amount is below the transaction fee floor (`MIN_CLAIM_AMOUNT`); not worth claiming.
+    ClaimAmountTooSmall = 37,
+    /// Sweep was attempted on a stream that is not fully depleted (remaining_balance != 0).
+    StreamNotDepleted = 38,
+    /// Sweep was attempted before the stream's `end_time`; the stream has not expired.
+    StreamNotExpired = 39,
 }
 
 impl StreamError {
@@ -167,6 +175,10 @@ impl StreamError {
         StreamError::PolicyNoQueuedChange,
         StreamError::PolicyNotInitialized,
         StreamError::PolicyNoPendingHandoff,
+        StreamError::StreamTooSmall,
+        StreamError::ClaimAmountTooSmall,
+StreamError::StreamNotDepleted,
+        StreamError::StreamNotExpired,
     ];
 
     /// The stable numeric value carried across the contract boundary

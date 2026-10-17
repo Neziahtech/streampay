@@ -178,6 +178,17 @@ pub struct FeeWithdrawn {
     pub withdrawn_total: i128,
 }
 
+/// Emitted exactly once when a stream is swept, removing its storage entries
+/// and reclaiming its storage rent. Fired on successful `sweep` invocation.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Swept {
+    #[topic]
+    pub stream_id: u64,
+    pub sender: Address,
+    pub recipient: Address,
+}
+
 /// Emitted when the policy module is initialized with its initial admin.
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -169,6 +169,15 @@ const STREAM_ERRORS: Record<number, string> = {
   28: "RecipientPayoutFailed",
   29: "SenderRefundFailed",
   30: "TreasuryPayoutFailed",
+  31: "PolicyAssetNotAllowed",
+  32: "PolicyTimelockNotElapsed",
+  33: "PolicyNoQueuedChange",
+  34: "PolicyNotInitialized",
+  35: "PolicyNoPendingHandoff",
+  36: "StreamTooSmall",
+  37: "ClaimAmountTooSmall",
+  38: "StreamNotDepleted",
+  39: "StreamNotExpired",
 };
 
 /** Rewrites raw simulation/tx error text into a readable StreamError name. */
@@ -424,6 +433,21 @@ export async function cancelStream(
   await send(
     caller,
     contract().call("cancel_stream", scAddr(caller), u64(streamId)),
+    () => undefined
+  );
+}
+
+/**
+ * Permissionlessly sweeps a depleted/expired stream, reclaiming its storage rent.
+ * Anyone can call this function to clean up streams that are no longer active.
+ */
+export async function sweepStream(
+  caller: string,
+  streamId: string
+): Promise<void> {
+  await send(
+    caller,
+    contract().call("sweep", u64(streamId)),
     () => undefined
   );
 }

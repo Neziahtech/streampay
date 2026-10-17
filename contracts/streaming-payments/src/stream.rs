@@ -30,6 +30,21 @@ pub const MAX_PAGE_SIZE: u32 = 50;
 pub(crate) const TTL_THRESHOLD_LEDGERS: u32 = 200_000; // extend when TTL drops below ~11.5 days
 pub(crate) const TTL_EXTEND_LEDGERS: u32 = 500_000; // extend to ~29 days
 
+/// Minimum economically viable stream deposit (smallest token units).
+///
+/// Must exceed the transaction fee floor plus expected storage rent for the
+/// stream's lifetime. Below this threshold, creation costs exceed deposit
+/// value, making the stream economically irrational. Set to 5,000 stroops
+/// (0.0005 XLM) as a conservative estimate covering creation gas + rent.
+pub const MIN_STREAM_AMOUNT: i128 = 5_000;
+
+/// Minimum claim amount where claiming exceeds transaction cost (smallest token units).
+///
+/// Must exceed the gas fee for a withdraw_max transaction. Claiming less than
+/// this results in net loss. Set to 1,000 stroops (0.0001 XLM) based on
+/// typical Soroban transaction fee floors.
+pub const MIN_CLAIM_AMOUNT: i128 = 1_000;
+
 /// Lifecycle state of a stream.
 #[contracttype]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -237,6 +252,12 @@ pub fn put_stream(env: &Env, stream: &Stream) {
     env.storage()
         .persistent()
         .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+}
+
+/// Removes a stream entry from persistent storage, reclaiming its storage rent.
+pub fn remove_stream(env: &Env, stream: &Stream) {
+    let key = DataKey::Stream(stream.id);
+    env.storage().persistent().remove(&key);
 }
 
 /// Appends a stream's id to both parties' address indexes.
