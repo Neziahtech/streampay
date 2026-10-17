@@ -7,12 +7,12 @@ list survives reloads and shows streams you didn't create in this session.
 
 ## Routes
 
-| Route | What it does |
-|---|---|
-| `/` | Connect, single and CSV batch creation forms (asset selector: **native XLM** or an entered token contract id), stream list with per-row actions and a **Discover on-chain** button (scans the contract's `recipient_streams` / `sender_streams` indexes for your address) |
-| `/stream/[id]` | Stream detail: progress bar, live `available` poll (15 s), withdraw form with over-withdrawal guard, **Withdraw max** (`withdraw_max`), cancel. Read-only-safe without a wallet; contract errors decode to `StreamError` names |
-| `GET /accrual/[id]` | Computed accrual curve time-series API (`?from&to&step`) with ETag/304 caching, honest staleness headers, and shared RPC rate budgets |
-| `/docs` | Public interactive API documentation page (Swagger UI) rendering OpenAPI 3.1 spec |
+| Route               | What it does                                                                                                                                                                                                                                                              |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/`                 | Connect, single and CSV batch creation forms (asset selector: **native XLM** or an entered token contract id), stream list with per-row actions and a **Discover on-chain** button (scans the contract's `recipient_streams` / `sender_streams` indexes for your address) |
+| `/stream/[id]`      | Stream detail: progress bar, live `available` poll (15 s), withdraw form with over-withdrawal guard, **Withdraw max** (`withdraw_max`), cancel. Read-only-safe without a wallet; contract errors decode to `StreamError` names                                            |
+| `GET /accrual/[id]` | Computed accrual curve time-series API (`?from&to&step`) with ETag/304 caching, honest staleness headers, and shared RPC rate budgets                                                                                                                                     |
+| `/docs`             | Public interactive API documentation page (Swagger UI) rendering OpenAPI 3.1 spec                                                                                                                                                                                         |
 
 ## Setup
 

@@ -6,7 +6,11 @@ import type {
   NotificationChannelType,
 } from "./types.ts";
 import { SubscriptionStore, defaultSubscriptionStore } from "./store.ts";
-import { WebhookNotifier, EmailNotifier, TelegramNotifier } from "./notifiers.ts";
+import {
+  WebhookNotifier,
+  EmailNotifier,
+  TelegramNotifier,
+} from "./notifiers.ts";
 
 export interface RetryConfig {
   baseDelayMs: number;
@@ -16,10 +20,10 @@ export interface RetryConfig {
 }
 
 export const DEFAULT_RETRY_CONFIG: RetryConfig = {
-  baseDelayMs: 1000,  // 1 second base delay
-  maxDelayMs: 32000,  // 32 seconds maximum delay
-  maxRetries: 5,      // 5 maximum attempts
-  jitterFactor: 0.2,  // +/- 20% random jitter
+  baseDelayMs: 1000, // 1 second base delay
+  maxDelayMs: 32000, // 32 seconds maximum delay
+  maxRetries: 5, // 5 maximum attempts
+  jitterFactor: 0.2, // +/- 20% random jitter
 };
 
 /**
@@ -35,7 +39,7 @@ export const DEFAULT_RETRY_CONFIG: RetryConfig = {
  */
 export function computeExponentialBackoff(
   attempt: number,
-  config: RetryConfig = DEFAULT_RETRY_CONFIG
+  config: RetryConfig = DEFAULT_RETRY_CONFIG,
 ): number {
   const exponent = Math.max(0, attempt);
   const exponentialDelay = config.baseDelayMs * Math.pow(2, exponent);
@@ -53,7 +57,7 @@ export class NotificationDispatcher {
 
   constructor(
     store: SubscriptionStore = defaultSubscriptionStore,
-    retryConfig: RetryConfig = DEFAULT_RETRY_CONFIG
+    retryConfig: RetryConfig = DEFAULT_RETRY_CONFIG,
   ) {
     this.store = store;
     this.retryConfig = retryConfig;
@@ -76,7 +80,8 @@ export class NotificationDispatcher {
     successCount: number;
     failureCount: number;
   }> {
-    const matchingSubscriptions = await this.store.findSubscriptionsForEvent(event);
+    const matchingSubscriptions =
+      await this.store.findSubscriptionsForEvent(event);
     let successCount = 0;
     let failureCount = 0;
 
@@ -139,7 +144,11 @@ export class NotificationDispatcher {
         return false;
       }
 
-      if (result.fatal || !result.retryable || attempt >= this.retryConfig.maxRetries) {
+      if (
+        result.fatal ||
+        !result.retryable ||
+        attempt >= this.retryConfig.maxRetries
+      ) {
         await this.store.recordDeliveryFailure(notification.subscriptionId, {
           reason: result.statusMessage,
         });

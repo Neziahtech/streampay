@@ -4,7 +4,10 @@ import { RpcBudgetManager, type CachedStreamState } from "./budget-manager.ts";
 
 describe("Shared RPC Budget Manager (Issue #56)", () => {
   it("allows client requests within configured budget", () => {
-    const manager = new RpcBudgetManager({ clientLimit: 5, clientWindowSeconds: 10 });
+    const manager = new RpcBudgetManager({
+      clientLimit: 5,
+      clientWindowSeconds: 10,
+    });
     const client = "client-A";
 
     for (let i = 0; i < 5; i++) {
@@ -14,13 +17,25 @@ describe("Shared RPC Budget Manager (Issue #56)", () => {
   });
 
   it("exhausts client budget and returns 429 Retry-After", () => {
-    const manager = new RpcBudgetManager({ clientLimit: 3, clientWindowSeconds: 30 });
+    const manager = new RpcBudgetManager({
+      clientLimit: 3,
+      clientWindowSeconds: 30,
+    });
     const client = "client-B";
 
     // Consume all 3
-    assert.strictEqual(manager.consumeClientBudget(client, 1, 1000).allowed, true);
-    assert.strictEqual(manager.consumeClientBudget(client, 1, 1000).allowed, true);
-    assert.strictEqual(manager.consumeClientBudget(client, 1, 1000).allowed, true);
+    assert.strictEqual(
+      manager.consumeClientBudget(client, 1, 1000).allowed,
+      true,
+    );
+    assert.strictEqual(
+      manager.consumeClientBudget(client, 1, 1000).allowed,
+      true,
+    );
+    assert.strictEqual(
+      manager.consumeClientBudget(client, 1, 1000).allowed,
+      true,
+    );
 
     // 4th request must be rejected
     const blocked = manager.consumeClientBudget(client, 1, 1000);
@@ -31,12 +46,18 @@ describe("Shared RPC Budget Manager (Issue #56)", () => {
   });
 
   it("refills client bucket over time", () => {
-    const manager = new RpcBudgetManager({ clientLimit: 10, clientWindowSeconds: 10 });
+    const manager = new RpcBudgetManager({
+      clientLimit: 10,
+      clientWindowSeconds: 10,
+    });
     const client = "client-C";
 
     // Consume all 10 at t=0
     manager.consumeClientBudget(client, 10, 0);
-    assert.strictEqual(manager.consumeClientBudget(client, 1, 0).allowed, false);
+    assert.strictEqual(
+      manager.consumeClientBudget(client, 1, 0).allowed,
+      false,
+    );
 
     // At t = 5000ms (5s elapsed), 5 tokens should have refilled (1 token/sec)
     const at5s = manager.consumeClientBudget(client, 3, 5000);
@@ -44,7 +65,10 @@ describe("Shared RPC Budget Manager (Issue #56)", () => {
   });
 
   it("enforces shared upstream Soroban RPC node budget", () => {
-    const manager = new RpcBudgetManager({ nodeRpcLimit: 2, nodeRpcWindowSeconds: 20 });
+    const manager = new RpcBudgetManager({
+      nodeRpcLimit: 2,
+      nodeRpcWindowSeconds: 20,
+    });
 
     // Request 1 from client A triggers 1 node RPC call
     assert.strictEqual(manager.consumeNodeRpcBudget(1, 1000).allowed, true);

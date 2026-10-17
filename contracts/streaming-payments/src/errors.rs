@@ -125,18 +125,26 @@ pub enum StreamError {
     PolicyNotInitialized = 34,
     /// No admin handoff proposal is pending.
     PolicyNoPendingHandoff = 35,
+    /// Stream deposit is below the economically viable threshold (`MIN_STREAM_AMOUNT`); dust streams are rejected.
+    StreamTooSmall = 36,
+    /// Claim amount is below the transaction fee floor (`MIN_CLAIM_AMOUNT`); not worth claiming.
+    ClaimAmountTooSmall = 37,
+    /// Sweep was attempted on a stream that is not fully depleted (remaining_balance != 0).
+    StreamNotDepleted = 38,
+    /// Sweep was attempted before the stream's `end_time`; the stream has not expired.
+    StreamNotExpired = 39,
     /// The contract is currently frozen for maintenance or upgrade.
-    ContractFrozen = 36,
+    ContractFrozen = 40,
     /// The operation requires the contract to be frozen.
-    ContractNotFrozen = 37,
+    ContractNotFrozen = 41,
     /// An upgrade operation was attempted but no upgrade is pending.
-    NoPendingUpgrade = 38,
+    NoPendingUpgrade = 42,
     /// The upgrade timelock delay has not yet expired.
-    TimelockNotExpired = 39,
+    TimelockNotExpired = 43,
     /// The proposed upgrade delay is shorter than the minimum timelock.
-    UpgradeDelayTooShort = 40,
+    UpgradeDelayTooShort = 44,
     /// The storage migration has already been completed.
-    AlreadyMigrated = 41,
+    AlreadyMigrated = 45,
 }
 
 impl StreamError {
@@ -179,6 +187,10 @@ impl StreamError {
         StreamError::PolicyNoQueuedChange,
         StreamError::PolicyNotInitialized,
         StreamError::PolicyNoPendingHandoff,
+        StreamError::StreamTooSmall,
+        StreamError::ClaimAmountTooSmall,
+        StreamError::StreamNotDepleted,
+        StreamError::StreamNotExpired,
         StreamError::ContractFrozen,
         StreamError::ContractNotFrozen,
         StreamError::NoPendingUpgrade,

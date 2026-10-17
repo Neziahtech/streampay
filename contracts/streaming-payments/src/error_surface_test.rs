@@ -459,6 +459,39 @@ fn probe(branch: Branch) -> Option<StreamError> {
                 .mock_all_auths()
                 .try_policy_accept_handoff()))
         }
+        // ----------------------------------------------------- dust protection
+        Branch::StreamTooSmall => {
+            let f = Fixture::setup_quiet();
+            let now = f.env.ledger().timestamp();
+            Some(rejected!(f.client.mock_all_auths().try_create_stream(
+                &f.sender,
+                &f.recipient,
+                &f.token,
+                &1_000, // below MIN_STREAM_AMOUNT (5_000)
+                &(now + DAY),
+                &(now + 2 * DAY),
+                &false,
+            )))
+        }
+        Branch::ClaimAmountTooSmall => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(5_000, DAY, 10 * DAY, false);
+            f.advance_time(DAY); // accrues some but under MIN_CLAIM_AMOUNT
+            Some(rejected!(f.client.mock_all_auths().try_withdraw(&id, &500)))
+        }
+        Branch::StreamNotDepleted => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            // Stream is Active, not Depleted.
+            Some(rejected!(f.client.mock_all_auths().try_sweep(&id)))
+        }
+        Branch::StreamNotExpired => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 2 * DAY, false);
+            f.client.mock_all_auths().withdraw_max(&id);
+            f.advance_time(DAY); // not yet at end_time
+            Some(rejected!(f.client.mock_all_auths().try_sweep(&id)))
+        }
         Branch::ContractFrozen => {
             let f = Fixture::setup_quiet();
             let now = f.env.ledger().timestamp();
@@ -679,6 +712,10 @@ fn stream_error_variant_list_is_exhaustive() {
             | StreamError::PolicyNoQueuedChange
             | StreamError::PolicyNotInitialized
             | StreamError::PolicyNoPendingHandoff
+            | StreamError::StreamTooSmall
+            | StreamError::ClaimAmountTooSmall
+            | StreamError::StreamNotDepleted
+            | StreamError::StreamNotExpired
             | StreamError::ContractFrozen
             | StreamError::ContractNotFrozen
             | StreamError::NoPendingUpgrade

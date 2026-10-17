@@ -30,7 +30,11 @@ export function createToastStore(initial: Toast[] = []): ToastStore {
     }
   }
 
-  function addToast(message: string, type: ToastType = "info", duration: number = 5000): string {
+  function addToast(
+    message: string,
+    type: ToastType = "info",
+    duration: number = 5000,
+  ): string {
     const id = `toast-${Date.now()}-${++globalToastCounter}`;
     toasts = [...toasts, { id, type, message, duration }];
     notify();
@@ -58,9 +62,12 @@ export function createToastStore(initial: Toast[] = []): ToastStore {
     removeToast,
     clear,
     subscribe,
-    success: (message: string, duration?: number) => addToast(message, "success", duration),
-    error: (message: string, duration?: number) => addToast(message, "error", duration ?? 6000),
-    info: (message: string, duration?: number) => addToast(message, "info", duration),
+    success: (message: string, duration?: number) =>
+      addToast(message, "success", duration),
+    error: (message: string, duration?: number) =>
+      addToast(message, "error", duration ?? 6000),
+    info: (message: string, duration?: number) =>
+      addToast(message, "info", duration),
   };
 }
 

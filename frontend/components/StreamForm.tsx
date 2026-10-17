@@ -1,11 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import {
-  NATIVE_XLM,
-  tokenContractId,
-  type StreamArgs,
-} from "@/lib/stellar";
+import { NATIVE_XLM, tokenContractId, type StreamArgs } from "@/lib/stellar";
 
 /** Asset choices on the create form: native XLM, or a token contract id. */
 type AssetChoice = "native" | "contract";
@@ -27,12 +23,13 @@ export default function StreamForm({
 
   const set =
     (k: keyof StreamArgs) =>
-    (
-      e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>
-    ) =>
+    (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
       setArgs((prev) => ({
         ...prev,
-        [k]: k === "cancelable" ? (e.target as HTMLSelectElement).value === "yes" : e.target.value,
+        [k]:
+          k === "cancelable"
+            ? (e.target as HTMLSelectElement).value === "yes"
+            : e.target.value,
       }));
 
   async function submit(e: React.FormEvent) {
@@ -92,7 +89,8 @@ export default function StreamForm({
       </div>
       {asset === "native" && (
         <p className="muted mono" style={{ wordBreak: "break-all" }}>
-          Native XLM streams through its Stellar Asset Contract: {tokenContractId(NATIVE_XLM)}
+          Native XLM streams through its Stellar Asset Contract:{" "}
+          {tokenContractId(NATIVE_XLM)}
         </p>
       )}
       <div className="row">
@@ -121,16 +119,20 @@ export default function StreamForm({
         </div>
         <div>
           <label htmlFor="cancelable">Recipient may cancel?</label>
-          <select id="cancelable" value={args.cancelable ? "yes" : "no"} onChange={set("cancelable")}>
+          <select
+            id="cancelable"
+            value={args.cancelable ? "yes" : "no"}
+            onChange={set("cancelable")}
+          >
             <option value="yes">Yes (cancelable)</option>
             <option value="no">No (sender-only)</option>
           </select>
         </div>
       </div>
       <p className="muted">
-        Amounts are in smallest units (7 decimals for XLM and testnet USDC).
-        The UI checks the token allowance first and asks Freighter to approve
-        the deposit only when it is short — expect one or two signatures.
+        Amounts are in smallest units (7 decimals for XLM and testnet USDC). The
+        UI checks the token allowance first and asks Freighter to approve the
+        deposit only when it is short — expect one or two signatures.
       </p>
       <button type="submit" disabled={busy}>
         {busy ? "Streaming…" : "Create stream"}

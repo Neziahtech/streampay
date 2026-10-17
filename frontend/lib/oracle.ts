@@ -18,7 +18,9 @@ export interface AccrualParams {
 }
 
 export class MathOverflowError extends Error {
-  constructor(message = "MathOverflow: product exceeds u128 or capacity bounds") {
+  constructor(
+    message = "MathOverflow: product exceeds u128 or capacity bounds",
+  ) {
     super(message);
     this.name = "MathOverflowError";
   }
@@ -33,7 +35,7 @@ export class MathOverflowError extends Error {
 export function streamedAt(
   deposit: bigint,
   duration: bigint,
-  elapsed: bigint
+  elapsed: bigint,
 ): bigint {
   if (elapsed <= 0n || deposit <= 0n || duration <= 0n) {
     return 0n;
@@ -42,7 +44,9 @@ export function streamedAt(
   const u128Max = (1n << 128n) - 1n;
   const product = deposit * elapsed;
   if (product > u128Max) {
-    throw new MathOverflowError("RateProductOverflow: deposit * elapsed exceeds u128::MAX");
+    throw new MathOverflowError(
+      "RateProductOverflow: deposit * elapsed exceeds u128::MAX",
+    );
   }
 
   const streamed = product / duration;
@@ -58,9 +62,15 @@ export function streamedAt(
  */
 export function computeVestingAccrual(
   params: AccrualParams,
-  elapsed: bigint
+  elapsed: bigint,
 ): bigint {
-  const { deposit, duration, cliffDuration = 0n, cliffAmount = 0n, segments } = params;
+  const {
+    deposit,
+    duration,
+    cliffDuration = 0n,
+    cliffAmount = 0n,
+    segments,
+  } = params;
 
   if (elapsed <= 0n || deposit <= 0n || duration <= 0n) {
     return 0n;
@@ -74,7 +84,8 @@ export function computeVestingAccrual(
   if (segments && segments.length > 0) {
     let accumulatedTime = cliffDuration;
     let accumulatedPayout = cliffAmount > deposit ? deposit : cliffAmount;
-    const remainingDeposit = deposit > accumulatedPayout ? deposit - accumulatedPayout : 0n;
+    const remainingDeposit =
+      deposit > accumulatedPayout ? deposit - accumulatedPayout : 0n;
 
     if (elapsed === cliffDuration) {
       return accumulatedPayout;
@@ -110,8 +121,13 @@ export function computeVestingAccrual(
     }
 
     const postCliffElapsed = elapsed - cliffDuration;
-    const remainingToAccrue = deposit > cliffAmount ? deposit - cliffAmount : 0n;
-    const linearPart = streamedAt(remainingToAccrue, postCliffDuration, postCliffElapsed);
+    const remainingToAccrue =
+      deposit > cliffAmount ? deposit - cliffAmount : 0n;
+    const linearPart = streamedAt(
+      remainingToAccrue,
+      postCliffDuration,
+      postCliffElapsed,
+    );
     const total = cliffAmount + linearPart;
     return total > deposit ? deposit : total;
   }

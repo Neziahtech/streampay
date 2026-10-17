@@ -2,7 +2,11 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import type { StreamView, StreamRoleFilter, StreamStatusFilter } from "@/lib/stellar";
+import type {
+  StreamView,
+  StreamRoleFilter,
+  StreamStatusFilter,
+} from "@/lib/stellar";
 import { computeAccruedAt, computeAvailable } from "@/lib/accrual";
 
 export interface AddressStats {
@@ -88,10 +92,12 @@ export default function AddressExplorerClient({
   }): string {
     const params = new URLSearchParams();
     const targetTab = overrides.tab !== undefined ? overrides.tab : tab;
-    const targetStatus = overrides.status !== undefined ? overrides.status : status;
+    const targetStatus =
+      overrides.status !== undefined ? overrides.status : status;
 
     if (targetTab && targetTab !== "all") params.set("tab", targetTab);
-    if (targetStatus && targetStatus !== "all") params.set("status", targetStatus);
+    if (targetStatus && targetStatus !== "all")
+      params.set("status", targetStatus);
 
     if (overrides.cursor) {
       params.set("cursor", overrides.cursor);
@@ -111,17 +117,49 @@ export default function AddressExplorerClient({
       </div>
 
       <header style={{ marginBottom: 20 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12 }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "flex-start",
+            flexWrap: "wrap",
+            gap: 12,
+          }}
+        >
           <div>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-              <h1 style={{ margin: "0 0 4px 0", fontSize: 26 }}>Address Explorer</h1>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                flexWrap: "wrap",
+              }}
+            >
+              <h1 style={{ margin: "0 0 4px 0", fontSize: 26 }}>
+                Address Explorer
+              </h1>
               <span className="live-indicator">
                 <span className="live-dot" />
                 Live Accrual Tick
               </span>
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
-              <span className="mono" style={{ fontSize: 14, color: "var(--text)", wordBreak: "break-all" }}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                flexWrap: "wrap",
+                marginTop: 4,
+              }}
+            >
+              <span
+                className="mono"
+                style={{
+                  fontSize: 14,
+                  color: "var(--text)",
+                  wordBreak: "break-all",
+                }}
+              >
                 {address}
               </span>
               <button
@@ -137,7 +175,8 @@ export default function AddressExplorerClient({
 
           <div style={{ textAlign: "right" }}>
             <span className="muted" style={{ fontSize: 12 }}>
-              Snapshot as of {new Date(asOfTimestamp * 1000).toLocaleTimeString()}
+              Snapshot as of{" "}
+              {new Date(asOfTimestamp * 1000).toLocaleTimeString()}
             </span>
           </div>
         </div>
@@ -151,21 +190,31 @@ export default function AddressExplorerClient({
         </div>
         <div className="stat-box">
           <span className="stat-label">Active Streams</span>
-          <span className="stat-value" style={{ color: "var(--green)" }}>{stats.activeStreams}</span>
+          <span className="stat-value" style={{ color: "var(--green)" }}>
+            {stats.activeStreams}
+          </span>
         </div>
         <div className="stat-box">
           <span className="stat-label">Total Deposited</span>
-          <span className="stat-value">{formatAmount(stats.totalDeposited)}</span>
+          <span className="stat-value">
+            {formatAmount(stats.totalDeposited)}
+          </span>
         </div>
         <div className="stat-box">
           <span className="stat-label">Total Claimed</span>
-          <span className="stat-value" style={{ color: "var(--accent2)" }}>{formatAmount(stats.totalWithdrawn)}</span>
+          <span className="stat-value" style={{ color: "var(--accent2)" }}>
+            {formatAmount(stats.totalWithdrawn)}
+          </span>
         </div>
       </section>
 
       {/* Navigation & Filter Controls */}
       <nav className="filter-controls" aria-label="Filter streams">
-        <div className="filter-group" role="tablist" aria-label="Direction filter">
+        <div
+          className="filter-group"
+          role="tablist"
+          aria-label="Direction filter"
+        >
           <Link
             href={makeUrl({ tab: "all", cursor: null })}
             className={`filter-btn ${tab === "all" ? "active" : ""}`}
@@ -215,9 +264,17 @@ export default function AddressExplorerClient({
       </nav>
 
       {/* Matching count summary */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "12px 0 16px" }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          margin: "12px 0 16px",
+        }}
+      >
         <span className="muted" style={{ fontSize: 13 }}>
-          Showing {streams.length} of {totalMatching} matching stream{totalMatching === 1 ? "" : "s"}
+          Showing {streams.length} of {totalMatching} matching stream
+          {totalMatching === 1 ? "" : "s"}
         </span>
         <span className="muted" style={{ fontSize: 12 }}>
           Sorted by Stream ID (Monotonic append-only index)
@@ -226,8 +283,13 @@ export default function AddressExplorerClient({
 
       {/* Streams list */}
       {streams.length === 0 ? (
-        <div className="card" style={{ textAlign: "center", padding: "48px 20px" }}>
-          <p style={{ fontSize: 16, margin: "0 0 12px 0", color: "var(--text)" }}>
+        <div
+          className="card"
+          style={{ textAlign: "center", padding: "48px 20px" }}
+        >
+          <p
+            style={{ fontSize: 16, margin: "0 0 12px 0", color: "var(--text)" }}
+          >
             No streams found for this address.
           </p>
           <p className="muted" style={{ margin: "0 0 20px 0" }}>
@@ -235,7 +297,11 @@ export default function AddressExplorerClient({
               ? "Try adjusting the filters above to view other stream directions or statuses."
               : "This address has not yet created or received streaming payments on StreamPay."}
           </p>
-          <Link href="/" className="page-btn" style={{ display: "inline-block" }}>
+          <Link
+            href="/"
+            className="page-btn"
+            style={{ display: "inline-block" }}
+          >
             Create a Stream
           </Link>
         </div>
@@ -250,13 +316,13 @@ export default function AddressExplorerClient({
               s.endTime,
               withdrawn,
               s.status,
-              BigInt(tickNow)
+              BigInt(tickNow),
             );
             const accruedNow = computeAccruedAt(
               deposit,
               s.startTime,
               s.endTime,
-              BigInt(tickNow)
+              BigInt(tickNow),
             );
 
             const isRecipient = address === s.recipient;
@@ -277,28 +343,53 @@ export default function AddressExplorerClient({
               s.status === "Active"
                 ? "status-active"
                 : s.status === "Cancelled"
-                ? "status-cancelled"
-                : "status-depleted";
+                  ? "status-cancelled"
+                  : "status-depleted";
 
             return (
               <article key={s.id} className="stream-card">
                 <div className="stream-card-header">
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 10,
+                      flexWrap: "wrap",
+                    }}
+                  >
                     <Link
                       href={`/stream/${s.id}`}
                       className="mono"
-                      style={{ fontSize: 16, fontWeight: 700, color: "var(--accent2)" }}
+                      style={{
+                        fontSize: 16,
+                        fontWeight: 700,
+                        color: "var(--accent2)",
+                      }}
                     >
                       Stream #{s.id}
                     </Link>
                     <span className={`status-badge ${statusClass}`}>
                       {s.status}
                     </span>
-                    <span className="badge-pill" style={{ background: isRecipient ? "rgba(61,220,132,0.12)" : "rgba(139,124,255,0.12)", color: isRecipient ? "var(--green)" : "var(--accent)" }}>
+                    <span
+                      className="badge-pill"
+                      style={{
+                        background: isRecipient
+                          ? "rgba(61,220,132,0.12)"
+                          : "rgba(139,124,255,0.12)",
+                        color: isRecipient ? "var(--green)" : "var(--accent)",
+                      }}
+                    >
                       {isRecipient ? "Incoming" : "Outgoing"}
                     </span>
                     {s.cancelable ? (
-                      <span className="badge-pill" style={{ background: "rgba(255,255,255,0.06)", color: "var(--muted)" }}>
+                      <span
+                        className="badge-pill"
+                        style={{
+                          background: "rgba(255,255,255,0.06)",
+                          color: "var(--muted)",
+                        }}
+                      >
                         Cancelable
                       </span>
                     ) : null}
@@ -318,7 +409,10 @@ export default function AddressExplorerClient({
                 </div>
 
                 {/* Progress bar */}
-                <div className="progress-track" title={`${progressPct}% accrued, ${withdrawnPct}% claimed`}>
+                <div
+                  className="progress-track"
+                  title={`${progressPct}% accrued, ${withdrawnPct}% claimed`}
+                >
                   <div
                     className="progress-fill"
                     style={{ width: `${progressPct}%` }}
@@ -336,39 +430,83 @@ export default function AddressExplorerClient({
                   }}
                 >
                   <div>
-                    <div className="muted" style={{ fontSize: 11, textTransform: "uppercase" }}>Available Now</div>
+                    <div
+                      className="muted"
+                      style={{ fontSize: 11, textTransform: "uppercase" }}
+                    >
+                      Available Now
+                    </div>
                     <div
                       className="mono"
                       data-asof={asOfTimestamp}
-                      style={{ fontSize: 16, fontWeight: 700, color: availableNow > 0n ? "var(--green)" : "var(--text)" }}
+                      style={{
+                        fontSize: 16,
+                        fontWeight: 700,
+                        color:
+                          availableNow > 0n ? "var(--green)" : "var(--text)",
+                      }}
                     >
                       {formatAmount(availableNow)}
                     </div>
                   </div>
 
                   <div>
-                    <div className="muted" style={{ fontSize: 11, textTransform: "uppercase" }}>Total Deposit</div>
-                    <div className="mono" style={{ fontSize: 14 }}>{formatAmount(deposit)}</div>
+                    <div
+                      className="muted"
+                      style={{ fontSize: 11, textTransform: "uppercase" }}
+                    >
+                      Total Deposit
+                    </div>
+                    <div className="mono" style={{ fontSize: 14 }}>
+                      {formatAmount(deposit)}
+                    </div>
                   </div>
 
                   <div>
-                    <div className="muted" style={{ fontSize: 11, textTransform: "uppercase" }}>Claimed / Withdrawn</div>
-                    <div className="mono" style={{ fontSize: 14, color: "var(--muted)" }}>{formatAmount(withdrawn)}</div>
+                    <div
+                      className="muted"
+                      style={{ fontSize: 11, textTransform: "uppercase" }}
+                    >
+                      Claimed / Withdrawn
+                    </div>
+                    <div
+                      className="mono"
+                      style={{ fontSize: 14, color: "var(--muted)" }}
+                    >
+                      {formatAmount(withdrawn)}
+                    </div>
                   </div>
 
                   <div>
-                    <div className="muted" style={{ fontSize: 11, textTransform: "uppercase" }}>Window</div>
+                    <div
+                      className="muted"
+                      style={{ fontSize: 11, textTransform: "uppercase" }}
+                    >
+                      Window
+                    </div>
                     <div style={{ fontSize: 12, color: "var(--muted)" }}>
                       {formatDate(s.startTime)} → {formatDate(s.endTime)}
                     </div>
                   </div>
                 </div>
 
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--line)" }}>
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    marginTop: 8,
+                    paddingTop: 8,
+                    borderTop: "1px solid var(--line)",
+                  }}
+                >
                   <span className="muted mono" style={{ fontSize: 11 }}>
                     Token: {truncateAddress(s.token)}
                   </span>
-                  <Link href={`/stream/${s.id}`} style={{ fontSize: 12, color: "var(--accent)" }}>
+                  <Link
+                    href={`/stream/${s.id}`}
+                    style={{ fontSize: 12, color: "var(--accent)" }}
+                  >
                     Inspect stream →
                   </Link>
                 </div>
@@ -418,9 +556,10 @@ export default function AddressExplorerClient({
         }}
       >
         <strong style={{ color: "var(--text)" }}>Stability Guarantee: </strong>
-        StreamPay stream IDs are strictly monotonic and append-only. Cursor pagination partitions on
-        immutable stream ID bounds rather than volatile record offsets, completely eliminating page-shift
-        glitches and duplicated entries when streams are concurrently cancelled or completed.
+        StreamPay stream IDs are strictly monotonic and append-only. Cursor
+        pagination partitions on immutable stream ID bounds rather than volatile
+        record offsets, completely eliminating page-shift glitches and
+        duplicated entries when streams are concurrently cancelled or completed.
       </aside>
     </main>
   );

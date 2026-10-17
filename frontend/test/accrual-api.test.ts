@@ -2,10 +2,16 @@ import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
 import { handleAccrualRequest } from "../lib/accrual-handler.ts";
 import { RpcBudgetManager } from "../lib/budget-manager.ts";
-import { type IStreamFetcher, type StreamFetcherResult } from "../lib/indexer-client.ts";
+import {
+  type IStreamFetcher,
+  type StreamFetcherResult,
+} from "../lib/indexer-client.ts";
 import { type StreamData } from "../lib/curve.ts";
 
-function createMockFetcher(streams: Record<string, StreamData>, lagSeconds = 5): IStreamFetcher {
+function createMockFetcher(
+  streams: Record<string, StreamData>,
+  lagSeconds = 5,
+): IStreamFetcher {
   return {
     async fetchStream(id: string): Promise<StreamFetcherResult | null> {
       const stream = streams[id];
@@ -47,8 +53,14 @@ describe("Accrual Curve Endpoint: GET /accrual/:id", () => {
     const budgetManager = new RpcBudgetManager();
     const fetcher = createMockFetcher({ "1": testStream }, 10);
 
-    const req = new Request("http://localhost:3000/accrual/1?from=1000&to=1200&step=50");
-    const res = await handleAccrualRequest(req, { id: "1" }, { budgetManager, indexerClient: fetcher });
+    const req = new Request(
+      "http://localhost:3000/accrual/1?from=1000&to=1200&step=50",
+    );
+    const res = await handleAccrualRequest(
+      req,
+      { id: "1" },
+      { budgetManager, indexerClient: fetcher },
+    );
 
     assert.strictEqual(res.status, 200);
     assert.strictEqual(res.headers.get("content-type"), "application/json");
@@ -65,7 +77,10 @@ describe("Accrual Curve Endpoint: GET /accrual/:id", () => {
     assert.strictEqual(res.headers.get("age"), "10");
 
     // Cache-Control for active stream
-    assert.strictEqual(res.headers.get("cache-control"), "public, max-age=5, stale-while-revalidate=15");
+    assert.strictEqual(
+      res.headers.get("cache-control"),
+      "public, max-age=5, stale-while-revalidate=15",
+    );
 
     const json = (await res.json()) as {
       streamId: string;
@@ -85,19 +100,35 @@ describe("Accrual Curve Endpoint: GET /accrual/:id", () => {
     const fetcher = createMockFetcher({ "1": testStream });
 
     // Initial request to get ETag
-    const req1 = new Request("http://localhost:3000/accrual/1?from=1000&to=1200&step=50");
-    const res1 = await handleAccrualRequest(req1, { id: "1" }, { budgetManager, indexerClient: fetcher });
+    const req1 = new Request(
+      "http://localhost:3000/accrual/1?from=1000&to=1200&step=50",
+    );
+    const res1 = await handleAccrualRequest(
+      req1,
+      { id: "1" },
+      { budgetManager, indexerClient: fetcher },
+    );
     const etag = res1.headers.get("etag")!;
 
     // Conditional request with If-None-Match
-    const req2 = new Request("http://localhost:3000/accrual/1?from=1000&to=1200&step=50", {
-      headers: { "if-none-match": etag },
-    });
-    const res2 = await handleAccrualRequest(req2, { id: "1" }, { budgetManager, indexerClient: fetcher });
+    const req2 = new Request(
+      "http://localhost:3000/accrual/1?from=1000&to=1200&step=50",
+      {
+        headers: { "if-none-match": etag },
+      },
+    );
+    const res2 = await handleAccrualRequest(
+      req2,
+      { id: "1" },
+      { budgetManager, indexerClient: fetcher },
+    );
 
     assert.strictEqual(res2.status, 304);
     assert.strictEqual(res2.headers.get("etag"), etag);
-    assert.strictEqual(res2.headers.get("x-state-hash"), res1.headers.get("x-state-hash"));
+    assert.strictEqual(
+      res2.headers.get("x-state-hash"),
+      res1.headers.get("x-state-hash"),
+    );
 
     // 304 must have no body
     const bodyText = await res2.text();
@@ -109,24 +140,42 @@ describe("Accrual Curve Endpoint: GET /accrual/:id", () => {
     const fetcher = createMockFetcher({ "1": testStream });
 
     // from > to
-    const req1 = new Request("http://localhost:3000/accrual/1?from=2000&to=1000&step=10");
-    const res1 = await handleAccrualRequest(req1, { id: "1" }, { budgetManager, indexerClient: fetcher });
+    const req1 = new Request(
+      "http://localhost:3000/accrual/1?from=2000&to=1000&step=10",
+    );
+    const res1 = await handleAccrualRequest(
+      req1,
+      { id: "1" },
+      { budgetManager, indexerClient: fetcher },
+    );
     assert.strictEqual(res1.status, 400);
-    const json1 = await res1.json() as { error: string };
+    const json1 = (await res1.json()) as { error: string };
     assert.strictEqual(json1.error, "FROM_GREATER_THAN_TO");
 
     // step <= 0
-    const req2 = new Request("http://localhost:3000/accrual/1?from=1000&to=2000&step=0");
-    const res2 = await handleAccrualRequest(req2, { id: "1" }, { budgetManager, indexerClient: fetcher });
+    const req2 = new Request(
+      "http://localhost:3000/accrual/1?from=1000&to=2000&step=0",
+    );
+    const res2 = await handleAccrualRequest(
+      req2,
+      { id: "1" },
+      { budgetManager, indexerClient: fetcher },
+    );
     assert.strictEqual(res2.status, 400);
-    const json2 = await res2.json() as { error: string };
+    const json2 = (await res2.json()) as { error: string };
     assert.strictEqual(json2.error, "INVALID_STEP_POSITIVE");
 
     // Unbounded computation limit
-    const req3 = new Request("http://localhost:3000/accrual/1?from=0&to=100000&step=1");
-    const res3 = await handleAccrualRequest(req3, { id: "1" }, { budgetManager, indexerClient: fetcher });
+    const req3 = new Request(
+      "http://localhost:3000/accrual/1?from=0&to=100000&step=1",
+    );
+    const res3 = await handleAccrualRequest(
+      req3,
+      { id: "1" },
+      { budgetManager, indexerClient: fetcher },
+    );
     assert.strictEqual(res3.status, 400);
-    const json3 = await res3.json() as { error: string };
+    const json3 = (await res3.json()) as { error: string };
     assert.strictEqual(json3.error, "POINT_LIMIT_EXCEEDED");
   });
 
@@ -134,11 +183,17 @@ describe("Accrual Curve Endpoint: GET /accrual/:id", () => {
     const budgetManager = new RpcBudgetManager();
     const fetcher = createMockFetcher({ "1": testStream });
 
-    const req = new Request("http://localhost:3000/accrual/999?from=1000&to=2000&step=100");
-    const res = await handleAccrualRequest(req, { id: "999" }, { budgetManager, indexerClient: fetcher });
+    const req = new Request(
+      "http://localhost:3000/accrual/999?from=1000&to=2000&step=100",
+    );
+    const res = await handleAccrualRequest(
+      req,
+      { id: "999" },
+      { budgetManager, indexerClient: fetcher },
+    );
 
     assert.strictEqual(res.status, 404);
-    const json = await res.json() as { error: string };
+    const json = (await res.json()) as { error: string };
     assert.strictEqual(json.error, "StreamNotFound");
   });
 
@@ -147,8 +202,14 @@ describe("Accrual Curve Endpoint: GET /accrual/:id", () => {
     // Simulate indexer lagging by 120 seconds (> 60s threshold)
     const fetcher = createMockFetcher({ "1": testStream }, 120);
 
-    const req = new Request("http://localhost:3000/accrual/1?from=1000&to=1200&step=50");
-    const res = await handleAccrualRequest(req, { id: "1" }, { budgetManager, indexerClient: fetcher });
+    const req = new Request(
+      "http://localhost:3000/accrual/1?from=1000&to=1200&step=50",
+    );
+    const res = await handleAccrualRequest(
+      req,
+      { id: "1" },
+      { budgetManager, indexerClient: fetcher },
+    );
 
     assert.strictEqual(res.status, 200);
     assert.strictEqual(res.headers.get("x-indexer-lag"), "120");
@@ -158,35 +219,62 @@ describe("Accrual Curve Endpoint: GET /accrual/:id", () => {
 
   it("returns 429 with Retry-After when client rate budget is exhausted", async () => {
     // 2 requests allowed
-    const budgetManager = new RpcBudgetManager({ clientLimit: 2, clientWindowSeconds: 60 });
+    const budgetManager = new RpcBudgetManager({
+      clientLimit: 2,
+      clientWindowSeconds: 60,
+    });
     const fetcher = createMockFetcher({ "1": testStream });
 
     const reqOptions = {
       headers: { "x-forwarded-for": "198.51.100.1" },
     };
 
-    const req1 = new Request("http://localhost:3000/accrual/1?from=1000&to=1200&step=50", reqOptions);
-    const res1 = await handleAccrualRequest(req1, { id: "1" }, { budgetManager, indexerClient: fetcher });
+    const req1 = new Request(
+      "http://localhost:3000/accrual/1?from=1000&to=1200&step=50",
+      reqOptions,
+    );
+    const res1 = await handleAccrualRequest(
+      req1,
+      { id: "1" },
+      { budgetManager, indexerClient: fetcher },
+    );
     assert.strictEqual(res1.status, 200);
 
-    const req2 = new Request("http://localhost:3000/accrual/1?from=1000&to=1200&step=50", reqOptions);
-    const res2 = await handleAccrualRequest(req2, { id: "1" }, { budgetManager, indexerClient: fetcher });
+    const req2 = new Request(
+      "http://localhost:3000/accrual/1?from=1000&to=1200&step=50",
+      reqOptions,
+    );
+    const res2 = await handleAccrualRequest(
+      req2,
+      { id: "1" },
+      { budgetManager, indexerClient: fetcher },
+    );
     assert.strictEqual(res2.status, 200);
 
     // 3rd request from same client exceeds limit
     // When no snapshot cached in budgetManager: returns 429
-    const req3 = new Request("http://localhost:3000/accrual/2?from=1000&to=1200&step=50", reqOptions);
-    const res3 = await handleAccrualRequest(req3, { id: "2" }, { budgetManager, indexerClient: fetcher });
+    const req3 = new Request(
+      "http://localhost:3000/accrual/2?from=1000&to=1200&step=50",
+      reqOptions,
+    );
+    const res3 = await handleAccrualRequest(
+      req3,
+      { id: "2" },
+      { budgetManager, indexerClient: fetcher },
+    );
 
     assert.strictEqual(res3.status, 429);
     assert.ok(res3.headers.get("retry-after"));
-    const json3 = await res3.json() as { error: string; retryAfter: number };
+    const json3 = (await res3.json()) as { error: string; retryAfter: number };
     assert.strictEqual(json3.error, "TooManyRequests");
     assert.ok(json3.retryAfter > 0);
   });
 
   it("serves stale response with X-Cache: STALE when rate-limited but safe cached state exists", async () => {
-    const budgetManager = new RpcBudgetManager({ clientLimit: 1, clientWindowSeconds: 60 });
+    const budgetManager = new RpcBudgetManager({
+      clientLimit: 1,
+      clientWindowSeconds: 60,
+    });
     const fetcher = createMockFetcher({ "1": testStream });
 
     // Store a snapshot in the budget manager's transient cache
@@ -200,13 +288,27 @@ describe("Accrual Curve Endpoint: GET /accrual/:id", () => {
     };
 
     // 1st request consumes client token
-    const req1 = new Request("http://localhost:3000/accrual/1?from=1000&to=1200&step=50", reqOptions);
-    const res1 = await handleAccrualRequest(req1, { id: "1" }, { budgetManager, indexerClient: fetcher });
+    const req1 = new Request(
+      "http://localhost:3000/accrual/1?from=1000&to=1200&step=50",
+      reqOptions,
+    );
+    const res1 = await handleAccrualRequest(
+      req1,
+      { id: "1" },
+      { budgetManager, indexerClient: fetcher },
+    );
     assert.strictEqual(res1.status, 200);
 
     // 2nd request exceeds budget, but falls back to cached snapshot
-    const req2 = new Request("http://localhost:3000/accrual/1?from=1000&to=1200&step=50", reqOptions);
-    const res2 = await handleAccrualRequest(req2, { id: "1" }, { budgetManager, indexerClient: fetcher });
+    const req2 = new Request(
+      "http://localhost:3000/accrual/1?from=1000&to=1200&step=50",
+      reqOptions,
+    );
+    const res2 = await handleAccrualRequest(
+      req2,
+      { id: "1" },
+      { budgetManager, indexerClient: fetcher },
+    );
 
     assert.strictEqual(res2.status, 200);
     assert.strictEqual(res2.headers.get("x-cache"), "STALE");
@@ -223,10 +325,19 @@ describe("Accrual Curve Endpoint: GET /accrual/:id", () => {
     };
     const fetcher = createMockFetcher({ "2": cancelledStream });
 
-    const req = new Request("http://localhost:3000/accrual/2?from=1000&to=1200&step=50");
-    const res = await handleAccrualRequest(req, { id: "2" }, { budgetManager, indexerClient: fetcher });
+    const req = new Request(
+      "http://localhost:3000/accrual/2?from=1000&to=1200&step=50",
+    );
+    const res = await handleAccrualRequest(
+      req,
+      { id: "2" },
+      { budgetManager, indexerClient: fetcher },
+    );
 
     assert.strictEqual(res.status, 200);
-    assert.strictEqual(res.headers.get("cache-control"), "public, max-age=3600, immutable");
+    assert.strictEqual(
+      res.headers.get("cache-control"),
+      "public, max-age=3600, immutable",
+    );
   });
 });

@@ -11,7 +11,7 @@ const rateLimitBuckets = new Map<string, { count: number; resetAt: number }>();
  */
 export function createVerificationChallenge(
   address: string,
-  ttlSeconds = CHALLENGE_TTL_SECONDS
+  ttlSeconds = CHALLENGE_TTL_SECONDS,
 ): ChallengeMessage {
   const nonce = randomBytes(16).toString("hex");
   const now = Math.floor(Date.now() / 1000);
@@ -46,7 +46,7 @@ export function createVerificationChallenge(
 export function verifySignatureChallenge(
   challengeText: string,
   signature: string | Buffer | Uint8Array,
-  expectedAddress: string
+  expectedAddress: string,
 ): { valid: boolean; reason?: string } {
   const now = Math.floor(Date.now() / 1000);
 
@@ -74,12 +74,18 @@ export function verifySignatureChallenge(
 
   // 3. Check expiration
   if (now > expiresAt) {
-    return { valid: false, reason: "Challenge message has expired. Please request a new one." };
+    return {
+      valid: false,
+      reason: "Challenge message has expired. Please request a new one.",
+    };
   }
 
   // 4. Check replay attack protection
   if (!usedNonces.has(nonce)) {
-    return { valid: false, reason: "Challenge nonce is invalid or has already been consumed." };
+    return {
+      valid: false,
+      reason: "Challenge nonce is invalid or has already been consumed.",
+    };
   }
 
   // 5. Verify ed25519 signature
@@ -100,12 +106,21 @@ export function verifySignatureChallenge(
       return { valid: false, reason: "Invalid signature type." };
     }
 
-    const isVerified = keypair.verify(Buffer.from(challengeText, "utf8"), Buffer.from(sigBuffer));
+    const isVerified = keypair.verify(
+      Buffer.from(challengeText, "utf8"),
+      Buffer.from(sigBuffer),
+    );
     if (!isVerified) {
-      return { valid: false, reason: "Ed25519 cryptographic signature verification failed." };
+      return {
+        valid: false,
+        reason: "Ed25519 cryptographic signature verification failed.",
+      };
     }
   } catch (err) {
-    return { valid: false, reason: `Signature verification error: ${err instanceof Error ? err.message : String(err)}` };
+    return {
+      valid: false,
+      reason: `Signature verification error: ${err instanceof Error ? err.message : String(err)}`,
+    };
   }
 
   // Consume nonce on successful verification
@@ -120,7 +135,7 @@ export function verifySignatureChallenge(
 export function checkRateLimit(
   address: string,
   maxAttempts = 15,
-  windowSeconds = 900 // 15 minutes
+  windowSeconds = 900, // 15 minutes
 ): boolean {
   const now = Math.floor(Date.now() / 1000);
   const bucket = rateLimitBuckets.get(address);

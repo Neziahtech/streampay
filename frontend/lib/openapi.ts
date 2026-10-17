@@ -124,14 +124,20 @@ export function generateOpenApiSpec(): OpenApiSpec {
               headers: {
                 ETag: { $ref: "#/components/headers/ETag" },
                 "X-State-Hash": { $ref: "#/components/headers/X-State-Hash" },
-                "X-As-Of-Ledger": { $ref: "#/components/headers/X-As-Of-Ledger" },
-                "X-As-Of-Timestamp": { $ref: "#/components/headers/X-As-Of-Timestamp" },
+                "X-As-Of-Ledger": {
+                  $ref: "#/components/headers/X-As-Of-Ledger",
+                },
+                "X-As-Of-Timestamp": {
+                  $ref: "#/components/headers/X-As-Of-Timestamp",
+                },
                 Age: { $ref: "#/components/headers/Age" },
                 "X-Indexer-Lag": { $ref: "#/components/headers/X-Indexer-Lag" },
                 Warning: { $ref: "#/components/headers/Warning" },
                 "X-Cache": { $ref: "#/components/headers/X-Cache" },
                 "Cache-Control": { $ref: "#/components/headers/Cache-Control" },
-                "X-RateLimit-Remaining": { $ref: "#/components/headers/X-RateLimit-Remaining" },
+                "X-RateLimit-Remaining": {
+                  $ref: "#/components/headers/X-RateLimit-Remaining",
+                },
               },
               content: {
                 "application/json": {
@@ -149,7 +155,8 @@ export function generateOpenApiSpec(): OpenApiSpec {
               },
             },
             "400": {
-              description: "Invalid query parameters or requested point limit exceeded.",
+              description:
+                "Invalid query parameters or requested point limit exceeded.",
               content: {
                 "application/json": {
                   schema: { $ref: "#/components/schemas/ErrorResponse" },
@@ -169,11 +176,15 @@ export function generateOpenApiSpec(): OpenApiSpec {
                 "Rate budget exhausted (client rate limit or shared upstream Soroban RPC node budget).",
               headers: {
                 "Retry-After": { $ref: "#/components/headers/Retry-After" },
-                "X-RateLimit-Remaining": { $ref: "#/components/headers/X-RateLimit-Remaining" },
+                "X-RateLimit-Remaining": {
+                  $ref: "#/components/headers/X-RateLimit-Remaining",
+                },
               },
               content: {
                 "application/json": {
-                  schema: { $ref: "#/components/schemas/RateLimitErrorResponse" },
+                  schema: {
+                    $ref: "#/components/schemas/RateLimitErrorResponse",
+                  },
                 },
               },
             },
@@ -221,7 +232,8 @@ export function generateOpenApiSpec(): OpenApiSpec {
             },
             asOfTimestamp: {
               type: "integer",
-              description: "Unix timestamp in seconds corresponding to as-of state",
+              description:
+                "Unix timestamp in seconds corresponding to as-of state",
               example: 1700000000,
             },
             stateHash: {
@@ -250,7 +262,10 @@ export function generateOpenApiSpec(): OpenApiSpec {
           required: ["error", "message"],
           properties: {
             error: { type: "string", example: "INVALID_QUERY_PARAMS" },
-            message: { type: "string", example: "Query parameter 'step' must be greater than zero." },
+            message: {
+              type: "string",
+              example: "Query parameter 'step' must be greater than zero.",
+            },
           },
         },
         RateLimitErrorResponse: {
@@ -260,7 +275,8 @@ export function generateOpenApiSpec(): OpenApiSpec {
             error: { type: "string", example: "TooManyRequests" },
             message: {
               type: "string",
-              example: "Client rate budget exhausted. Please retry after 12 seconds.",
+              example:
+                "Client rate budget exhausted. Please retry after 12 seconds.",
             },
             retryAfter: { type: "integer", example: 12 },
           },
@@ -284,19 +300,23 @@ export function generateOpenApiSpec(): OpenApiSpec {
           schema: { type: "string" },
         },
         Age: {
-          description: "Age in seconds of the indexed state compared to wall-clock time",
+          description:
+            "Age in seconds of the indexed state compared to wall-clock time",
           schema: { type: "integer" },
         },
         "X-Indexer-Lag": {
-          description: "Lag in seconds between indexed state and current network tip",
+          description:
+            "Lag in seconds between indexed state and current network tip",
           schema: { type: "integer" },
         },
         Warning: {
-          description: "RFC 9110 Warning header emitted when indexer exceeds lag threshold",
+          description:
+            "RFC 9110 Warning header emitted when indexer exceeds lag threshold",
           schema: { type: "string" },
         },
         "X-Cache": {
-          description: "Cache status ('STALE' when served under degraded or budget-exhausted conditions)",
+          description:
+            "Cache status ('STALE' when served under degraded or budget-exhausted conditions)",
           schema: { type: "string" },
         },
         "Cache-Control": {

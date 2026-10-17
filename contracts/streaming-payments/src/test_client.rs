@@ -41,6 +41,7 @@ pub trait StreamingPaymentsApi {
     fn top_up(env: Env, stream_id: u64, amount: i128) -> Result<(), StreamError>;
     fn get_stream(env: Env, stream_id: u64) -> Result<Stream, StreamError>;
     fn available(env: Env, stream_id: u64) -> Result<i128, StreamError>;
+    fn sweep(env: Env, stream_id: u64) -> Result<(), StreamError>;
     fn recipient_streams(env: Env, recipient: Address, offset: u32, limit: u32) -> Vec<u64>;
     fn sender_streams(env: Env, sender: Address, offset: u32, limit: u32) -> Vec<u64>;
 

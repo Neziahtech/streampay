@@ -6,7 +6,7 @@ describe("parseBatchCsv", () => {
   it("parses a header and computes the funded amount with integer math", () => {
     assert.deepEqual(
       parseBatchCsv("address,rate,duration\r\nGrecipient,25,3600"),
-      [{ recipient: "Grecipient", deposit: "90000", duration: "3600" }]
+      [{ recipient: "Grecipient", deposit: "90000", duration: "3600" }],
     );
   });
 
@@ -18,12 +18,15 @@ describe("parseBatchCsv", () => {
   it("rejects a deposit that exceeds the contract's i128 range", () => {
     assert.throws(
       () => parseBatchCsv(`Grecipient,${1n << 126n},2`),
-      /i128 deposit limit/
+      /i128 deposit limit/,
     );
   });
 
   it("rejects durations longer than the contract maximum", () => {
-    assert.throws(() => parseBatchCsv("Grecipient,1,3155760001"), /100-year stream limit/);
+    assert.throws(
+      () => parseBatchCsv("Grecipient,1,3155760001"),
+      /100-year stream limit/,
+    );
   });
 
   it("rejects malformed and empty batches", () => {

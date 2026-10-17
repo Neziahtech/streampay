@@ -130,6 +130,15 @@ pub enum Branch {
     PolicyNotInitialized,
     /// `policy_accept_handoff` / `policy_cancel_handoff`: no handoff pending.
     PolicyNoPendingHandoff,
+    // ------------------------------------------------------ dust protection
+    /// `create_stream` / `create_streams`: deposit amount is below `MIN_STREAM_AMOUNT`.
+    StreamTooSmall,
+    /// `withdraw` / `withdraw_max`: claimable balance is below `MIN_CLAIM_AMOUNT`.
+    ClaimAmountTooSmall,
+    /// `sweep`: stream is not fully depleted (remaining_balance != 0).
+    StreamNotDepleted,
+    /// `sweep`: stream has not reached its `end_time`.
+    StreamNotExpired,
     // ------------------------------------------------ upgrade & freeze
     /// The contract is currently frozen for maintenance or upgrade.
     ContractFrozen,
@@ -151,7 +160,7 @@ impl Branch {
     /// Every branch, in declaration order. The matrix test walks this list and
     /// the coverage test requires each [`StreamError`] variant to be produced by
     /// one of these (or retired).
-    pub const ALL: [Branch; 49] = [
+    pub const ALL: [Branch; 53] = [
         Branch::CreateDepositNonPositive,
         Branch::CreateStartTimeInPast,
         Branch::CreateInvalidTimeRange,
@@ -194,6 +203,10 @@ impl Branch {
         Branch::PolicyNoQueuedChange,
         Branch::PolicyNotInitialized,
         Branch::PolicyNoPendingHandoff,
+        Branch::StreamTooSmall,
+        Branch::ClaimAmountTooSmall,
+        Branch::StreamNotDepleted,
+        Branch::StreamNotExpired,
         Branch::ContractFrozen,
         Branch::MigrationNotFrozen,
         Branch::ExecuteUpgradeNoPending,
@@ -290,6 +303,10 @@ impl Branch {
                 "policy_set_timelock_delay",
             ],
             Branch::PolicyNoPendingHandoff => &["policy_accept_handoff", "policy_cancel_handoff"],
+            Branch::StreamTooSmall => &["create_stream", "create_streams"],
+            Branch::ClaimAmountTooSmall => &["withdraw", "withdraw_max"],
+            Branch::StreamNotDepleted => &["sweep"],
+            Branch::StreamNotExpired => &["sweep"],
             Branch::ContractFrozen => &[
                 "create_stream",
                 "create_streams",
@@ -353,6 +370,10 @@ impl Branch {
             Branch::PolicyNoQueuedChange => StreamError::PolicyNoQueuedChange,
             Branch::PolicyNotInitialized => StreamError::PolicyNotInitialized,
             Branch::PolicyNoPendingHandoff => StreamError::PolicyNoPendingHandoff,
+            Branch::StreamTooSmall => StreamError::StreamTooSmall,
+            Branch::ClaimAmountTooSmall => StreamError::ClaimAmountTooSmall,
+            Branch::StreamNotDepleted => StreamError::StreamNotDepleted,
+            Branch::StreamNotExpired => StreamError::StreamNotExpired,
             Branch::ContractFrozen => StreamError::ContractFrozen,
             Branch::MigrationNotFrozen => StreamError::ContractNotFrozen,
             Branch::ExecuteUpgradeNoPending | Branch::CancelUpgradeNoPending => {
@@ -441,6 +462,10 @@ impl Branch {
             Branch::PolicyNoQueuedChange => "no policy change is queued for the specified asset",
             Branch::PolicyNotInitialized => "the policy module has not been initialized",
             Branch::PolicyNoPendingHandoff => "no admin handoff proposal is pending",
+            Branch::StreamTooSmall => "deposit is below MIN_STREAM_AMOUNT (dust protection)",
+            Branch::ClaimAmountTooSmall => "claimable balance is below MIN_CLAIM_AMOUNT (not worth claiming)",
+            Branch::StreamNotDepleted => "stream still has remaining balance (not fully depleted)",
+            Branch::StreamNotExpired => "stream has not reached its end_time",
             Branch::ContractFrozen => "the contract is frozen for maintenance or upgrade",
             Branch::MigrationNotFrozen => "storage migration requires the contract to be frozen",
             Branch::ExecuteUpgradeNoPending => "execute_upgrade called with no upgrade pending",
