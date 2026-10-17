@@ -1,0 +1,21 @@
+{
+  "name": "@streampay/testnet-canary",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Scheduled StreamPay lifecycle canary against Stellar testnet, with actionable failure alerts.",
+  "type": "module",
+  "scripts": {
+    "canary": "tsx src/index.ts",
+    "dry-run": "tsx src/index.ts --dry-run",
+    "test": "node --import tsx --test test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@stellar/stellar-sdk": "^17.2.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

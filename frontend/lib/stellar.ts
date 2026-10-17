@@ -8,8 +8,6 @@
  */
 import {
   Account,
-  Address,
-  nativeToScVal,
   Networks,
   rpc,
   scValToNative,
@@ -55,22 +53,6 @@ export interface StreamArgs {
 
 import type { StreamView } from "./pagination";
 export type { StreamView };
-
-function scAddr(s: string) {
-  return nativeToScVal(new Address(s), { type: "address" });
-}
-
-function u64(id: string | number | bigint) {
-  return nativeToScVal(BigInt(id), { type: "u64" });
-}
-
-function i128(v: string) {
-  return nativeToScVal(BigInt(v), { type: "i128" });
-}
-
-function u32(v: number) {
-  return nativeToScVal(BigInt(v), { type: "u32" });
-}
 
 /**
  * Network label for localStorage keys — stream ids are per-network facts and
@@ -380,7 +362,7 @@ export async function withdrawFromStream(
 ): Promise<void> {
   await send(
     recipient,
-    contract().call("withdraw", u64(streamId), i128(amount)),
+    withdrawOperation(contract(), streamId, amount),
     () => undefined
   );
 }
@@ -395,7 +377,7 @@ export async function withdrawMaxFromStream(
 ): Promise<bigint> {
   return send(
     recipient,
-    contract().call("withdraw_max", u64(streamId)),
+    withdrawMaxOperation(contract(), streamId),
     (v) => BigInt(scValToNative(v) as bigint)
   );
 }
@@ -412,7 +394,7 @@ export async function topUpStream(
   if (stream) await ensureAllowance(sender, stream.token, amount);
   await send(
     sender,
-    contract().call("top_up", u64(streamId), i128(amount)),
+    topUpOperation(contract(), streamId, amount),
     () => undefined
   );
 }
@@ -423,7 +405,7 @@ export async function cancelStream(
 ): Promise<void> {
   await send(
     caller,
-    contract().call("cancel_stream", scAddr(caller), u64(streamId)),
+    cancelStreamOperation(contract(), caller, streamId),
     () => undefined
   );
 }
@@ -483,8 +465,6 @@ export async function readAvailable(streamId: string): Promise<bigint> {
   }
   return BigInt(scValToNative(retval) as bigint);
 }
-
-const MAX_PAGE_SIZE = 50; // mirrors the contract's MAX_PAGE_SIZE
 
 /** One page of stream ids from an address index view (read-only). */
 async function readStreamIdsPage(

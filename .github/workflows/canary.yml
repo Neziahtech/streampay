@@ -1,0 +1,107 @@
+name: Testnet canary
+
+# Scheduled synthetic monitoring: a throwaway wallet runs the whole stream
+# lifecycle on public testnet (create -> partial claim -> max claim -> cancel)
+# through the same operation builders the frontend uses.
+#
+# Setup (one time):
+#   * Repository variable CANARY_CONTRACT_ID = the deployed testnet contract.
+#   * Optional secrets:
+#       CANARY_SENDER_SECRET     stable sender key (default: fresh key each run)
+#       CANARY_RECIPIENT_SECRET  stable recipient key
+#       CANARY_ALERT_WEBHOOK     Slack incoming webhook or generic JSON endpoint
+#   * Optional variables: CANARY_TOKEN_ID, CANARY_DEPOSIT, CANARY_STREAM_SECONDS,
+#     CANARY_RPC_URL.
+#
+# Each run is self-healing: fresh keys are generated and funded with friendbot,
+# and no wallet state is reused. The workflow never targets mainnet.
+
+on:
+  schedule:
+    # Every 30 minutes. GitHub may delay scheduled runs under load.
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+    inputs:
+      force_fail_at:
+        description: "Inject a failure at a step to verify the alert path"
+        type: choice
+        required: false
+        default: ""
+        options:
+          - ""
+          - prepare
+          - create-stream
+          - wait-accrual
+          - withdraw-partial
+          - wait-accrual-2
+          - withdraw-max
+          - cancel
+          - verify
+
+permissions:
+  contents: read
+
+concurrency:
+  group: testnet-canary
+  cancel-in-progress: false
+
+jobs:
+  canary:
+    name: Testnet lifecycle
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CANARY_CONTRACT_ID: ${{ vars.CANARY_CONTRACT_ID }}
+      CANARY_TOKEN_ID: ${{ vars.CANARY_TOKEN_ID }}
+      CANARY_DEPOSIT: ${{ vars.CANARY_DEPOSIT }}
+      CANARY_STREAM_SECONDS: ${{ vars.CANARY_STREAM_SECONDS }}
+      CANARY_RPC_URL: ${{ vars.CANARY_RPC_URL }}
+      CANARY_SENDER_SECRET: ${{ secrets.CANARY_SENDER_SECRET }}
+      CANARY_RECIPIENT_SECRET: ${{ secrets.CANARY_RECIPIENT_SECRET }}
+      CANARY_ALERT_WEBHOOK: ${{ secrets.CANARY_ALERT_WEBHOOK }}
+      CANARY_FORCE_FAIL_AT: ${{ inputs.force_fail_at }}
+      CANARY_REPORT_PATH: ${{ github.workspace }}/canary-report.json
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Full history so the failure report can attribute the run to the
+          # merge that last changed the contract.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            tools/canary/package-lock.json
+            frontend/package-lock.json
+
+      # The canary imports the frontend's contract-ops builders, so the
+      # frontend dependency tree must be installed too.
+      - name: Install frontend + canary dependencies
+        run: |
+          npm ci --no-audit --no-fund --prefix frontend
+          npm ci --no-audit --no-fund --prefix tools/canary
+
+      - name: Run lifecycle canary
+        working-directory: tools/canary
+        run: npm run canary -- --report "$CANARY_REPORT_PATH"
+
+      - name: Upload canary report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: canary-report
+          path: ${{ env.CANARY_REPORT_PATH }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Job summary
+        if: always()
+        run: |
+          if [ -f "$CANARY_REPORT_PATH" ]; then
+            python3 tools/canary/scripts/summary.py "$CANARY_REPORT_PATH" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::no canary report was produced"
+          fi

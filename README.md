@@ -236,6 +236,24 @@ STREAMPAY_CONTRACT_ID=C... npm run scan    # one pass; --watch to loop
 npm run rent -- --streams 1000             # rent + cost projection
 ```
 
+## Testnet canary
+
+[`tools/canary`](./tools/canary) is a scheduled synthetic monitor. A throwaway
+testnet wallet runs the whole lifecycle — create, partial claim, max claim,
+cancel — using the frontend's own contract-operation builders, then asserts the
+resulting contract state. Failures produce a report with the exact step,
+simulation-vs-submission failure class, RPC excerpt, and XDR, plus a Slack
+webhook/annotation alert and merge attribution.
+
+```bash
+npm ci --prefix frontend && npm ci --prefix tools/canary
+CANARY_CONTRACT_ID=C... npm run --prefix tools/canary dry-run
+CANARY_CONTRACT_ID=C... npm run --prefix tools/canary canary
+```
+
+See [`tools/canary/README.md`](./tools/canary/README.md) for setup and the
+forced-failure alert demo.
+
 ## Repo layout
 
 ```text
