@@ -16,6 +16,7 @@ import {
   type StreamView,
 } from "@/lib/stellar";
 import { loadStreamIds, saveStreamId } from "@/lib/storage";
+import { useStreamEvents, toStreamView } from "@/lib/useStreamEvents";
 import StreamForm from "@/components/StreamForm";
 import BatchStreamForm from "@/components/BatchStreamForm";
 import StreamList from "@/components/StreamList";
@@ -89,6 +90,53 @@ export default function Home() {
       toast.error(describeError(e));
     }
   }
+
+  // Live real-time stream event push from indexer via SSE
+  const {
+    isLive,
+    isPollingFallback,
+    status: sseStatus,
+    lastEventAt,
+    reconnect: reconnectSse,
+  } = useStreamEvents({
+    address,
+    enabled: Boolean(address),
+    onEvent: (event) => {
+      if (event.eventType === "stream_created") {
+        if (event.stream) {
+          const view = toStreamView(event.stream);
+          setStreams((prev) => [view, ...prev.filter((x) => x.id !== view.id)]);
+        } else {
+          void refresh(event.streamId);
+        }
+        if (address) saveStreamId(address, event.streamId);
+        toast.info(`⚡ Live update: Stream #${event.streamId} created.`);
+      } else if (event.stream) {
+        const view = toStreamView(event.stream);
+        setStreams((prev) => prev.map((s) => (s.id === view.id ? view : s)));
+        toast.info(`⚡ Live update: Stream #${event.streamId} (${event.eventType}).`);
+      } else {
+        void refresh(event.streamId);
+      }
+    },
+    onFallbackPoll: async () => {
+      if (!address) return;
+      try {
+        const [asRecipient, asSender] = await Promise.all([
+          fetchStreamsFor(address, "recipient"),
+          fetchStreamsFor(address, "sender"),
+        ]);
+        const byId = new Map<string, StreamView>();
+        for (const s of [...asRecipient, ...asSender]) byId.set(s.id, s);
+        const found = [...byId.values()].sort((a, b) => Number(b.id) - Number(a.id));
+        setStreams(found);
+        for (const s of found) saveStreamId(address, s.id);
+      } catch {
+        // Silent on background poll errors to avoid disrupting user
+      }
+    },
+    fallbackPollIntervalMs: 12_000,
+  });
 
   async function fetchStreamById() {
     const id = lookupId.trim();
@@ -228,11 +276,110 @@ export default function Home() {
       </section>
 
       <section className="card">
-        <h2>Your streams</h2>
-        <div className="row">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px", flexWrap: "wrap", gap: "8px" }}>
+          <h2 style={{ margin: 0 }}>Your streams</h2>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "12px" }}>
+            {isLive && (
+              <span
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  color: "#4ade80",
+                  background: "rgba(74, 222, 128, 0.1)",
+                  padding: "4px 10px",
+                  borderRadius: "999px",
+                  border: "1px solid rgba(74, 222, 128, 0.3)",
+                  fontWeight: 600,
+                }}
+                title="Connected to indexer live event feed via Server-Sent Events"
+              >
+                <span
+                  style={{
+                    width: "8px",
+                    height: "8px",
+                    borderRadius: "50%",
+                    background: "#4ade80",
+                    boxShadow: "0 0 8px #4ade80",
+                  }}
+                />
+                Live (SSE)
+              </span>
+            )}
+            {isPollingFallback && (
+              <span
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  color: "#fbbf24",
+                  background: "rgba(251, 191, 36, 0.1)",
+                  padding: "4px 10px",
+                  borderRadius: "999px",
+                  border: "1px solid rgba(251, 191, 36, 0.3)",
+                  fontSize: "12px",
+                }}
+                title="SSE feed disconnected. Polling fallback active (every 12s)."
+              >
+                <span
+                  style={{
+                    width: "8px",
+                    height: "8px",
+                    borderRadius: "50%",
+                    background: "#fbbf24",
+                  }}
+                />
+                Fallback Polling
+                <button
+                  type="button"
+                  onClick={reconnectSse}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    color: "inherit",
+                    textDecoration: "underline",
+                    cursor: "pointer",
+                    padding: 0,
+                    marginLeft: "4px",
+                    fontSize: "11px",
+                  }}
+                >
+                  Reconnect
+                </button>
+              </span>
+            )}
+            {!isLive && !isPollingFallback && sseStatus === "connecting" && (
+              <span
+                style={{
+                  color: "#94a3b8",
+                  fontSize: "12px",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                }}
+              >
+                <span
+                  style={{
+                    width: "8px",
+                    height: "8px",
+                    borderRadius: "50%",
+                    background: "#94a3b8",
+                  }}
+                />
+                Connecting stream feed…
+              </span>
+            )}
+          </div>
+        </div>
+        <div className="row" style={{ alignItems: "center" }}>
           <button onClick={discover} title="Scan the on-chain address indexes">
             Discover on-chain
           </button>
+          {lastEventAt && (
+            <span className="muted" style={{ fontSize: "12px" }}>
+              Last live event: {lastEventAt.toLocaleTimeString()}
+            </span>
+          )}
         </div>
         <StreamList
           streams={streams}

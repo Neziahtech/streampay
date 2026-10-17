@@ -2,7 +2,7 @@ import express from "express";
 import { nativeToScVal } from "@stellar/stellar-sdk";
 import { decodeEvent } from "./decoder.js";
 import { StreamStore } from "./store.js";
-import type { RpcEvent } from "./types.js";
+import type { DecodedEvent, RpcEvent, Stream } from "./types.js";
 
 export function createApp(store: StreamStore): express.Express {
   const app = express();
@@ -14,6 +14,98 @@ export function createApp(store: StreamStore): express.Express {
       status: "ok",
       lastLedger: store.getState("lastLedger") ?? null,
       cursor: store.getState("cursor") ?? null,
+    });
+  });
+
+  // GET /events/stream (SSE push endpoint)
+  app.get("/events/stream", (req, res) => {
+    const address = req.query.address as string | undefined;
+    const streamId = req.query.streamId as string | undefined;
+    const lastEventId = (req.headers["last-event-id"] as string | undefined) ?? (req.query.lastEventId as string | undefined);
+
+    if (address && !/^[GCB][A-Z2-7]{55}$/.test(address)) {
+      return res.status(400).json({ error: "invalid Stellar address" });
+    }
+    if (streamId && !/^\d+$/.test(streamId)) {
+      return res.status(400).json({ error: "stream id must be an unsigned integer" });
+    }
+
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      "Connection": "keep-alive",
+      "X-Accel-Buffering": "no",
+      "Access-Control-Allow-Origin": "*",
+    });
+
+    if (typeof (res as unknown as { flushHeaders?: () => void }).flushHeaders === "function") {
+      (res as unknown as { flushHeaders: () => void }).flushHeaders();
+    }
+
+    // Initial keepalive greeting
+    res.write(": ok\n\n");
+
+    const formatSse = (evt: {
+      id: string;
+      streamId: string;
+      name: string;
+      ledger: number;
+      ledgerClosedAt: string;
+      payload: Record<string, unknown>;
+      stream?: unknown;
+    }): string => {
+      const data = JSON.stringify({
+        id: evt.id,
+        streamId: evt.streamId,
+        eventType: evt.name,
+        ledger: evt.ledger,
+        ledgerClosedAt: evt.ledgerClosedAt,
+        data: evt.payload,
+        stream: evt.stream,
+      });
+      return `id: ${evt.id}\nevent: ${evt.name}\ndata: ${data}\n\n`;
+    };
+
+    // Replay historical events if lastEventId was supplied
+    if (lastEventId) {
+      const historical = store.getEventsAfter(lastEventId, address, streamId);
+      for (const evt of historical) {
+        res.write(formatSse(evt));
+      }
+    }
+
+    // Subscribe to live events
+    const onLiveEvent = (event: DecodedEvent, stream?: Stream) => {
+      if (streamId && event.streamId !== streamId) {
+        return;
+      }
+      if (address && stream && stream.sender !== address && stream.recipient !== address) {
+        return;
+      }
+      res.write(
+        formatSse({
+          id: event.id,
+          streamId: event.streamId,
+          name: event.name,
+          ledger: event.ledger,
+          ledgerClosedAt: event.ledgerClosedAt,
+          payload: event.data as Record<string, unknown>,
+          stream,
+        })
+      );
+    };
+
+    store.on("event", onLiveEvent);
+
+    // Heartbeat ping every 15 seconds to prevent reverse proxy/load-balancer timeouts
+    const pingInterval = setInterval(() => {
+      res.write(": ping\n\n");
+    }, 15000);
+
+    req.on("close", () => {
+      clearInterval(pingInterval);
+      store.off("event", onLiveEvent);
+      res.end();
     });
   });
 

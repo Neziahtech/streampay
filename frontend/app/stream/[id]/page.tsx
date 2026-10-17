@@ -14,6 +14,7 @@ import {
   type StreamView,
 } from "@/lib/stellar";
 import { computeAvailable, StreamSnapshot } from "@/lib/accrual";
+import { useStreamEvents } from "@/lib/useStreamEvents";
 import { useToast } from "@/components/toast";
 
 function fmtUnits(v: bigint): string {
@@ -56,12 +57,26 @@ export default function StreamDetail() {
     }
   }, [id, toast]);
 
+  // Live real-time stream push via SSE with polling fallback when disconnected
+  const streamAddress = address || stream?.recipient || stream?.sender || null;
+
+  const { isLive } = useStreamEvents({
+    address: streamAddress,
+    streamId: id,
+    enabled: Boolean(id && streamAddress),
+    onEvent: (event) => {
+      if (event.streamId === id) {
+        void reload();
+      }
+    },
+    onFallbackPoll: reload,
+    fallbackPollIntervalMs: 15_000,
+  });
+
   useEffect(() => {
     void (async () => {
       await reload();
     })();
-    const t = setInterval(() => void reload(), 15_000); // live accrual
-    return () => clearInterval(t);
   }, [reload]);
 
   useEffect(() => {
@@ -157,7 +172,36 @@ export default function StreamDetail() {
 
   return (
     <main className="wrap">
-      <p className="kicker mono">STREAM #{stream.id}</p>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <p className="kicker mono">STREAM #{stream.id}</p>
+        {isLive && (
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "6px",
+              color: "#4ade80",
+              background: "rgba(74, 222, 128, 0.1)",
+              padding: "2px 8px",
+              borderRadius: "999px",
+              border: "1px solid rgba(74, 222, 128, 0.3)",
+              fontSize: "11px",
+              fontWeight: 600,
+            }}
+          >
+            <span
+              style={{
+                width: "6px",
+                height: "6px",
+                borderRadius: "50%",
+                background: "#4ade80",
+                boxShadow: "0 0 6px #4ade80",
+              }}
+            />
+            Live SSE
+          </span>
+        )}
+      </div>
       <h1>
         {stream.status === "Active" ? "⚡ Streaming" : `⏹ ${stream.status}`}
       </h1>

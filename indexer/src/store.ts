@@ -1,12 +1,14 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { EventEmitter } from "node:events";
 import type { DecodedEvent, Stream } from "./types.js";
 
-export class StreamStore {
+export class StreamStore extends EventEmitter {
   readonly db: Database.Database;
 
   constructor(path: string) {
+    super();
     if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
     this.db = new Database(path);
     this.db.pragma("journal_mode = WAL");
@@ -39,22 +41,41 @@ export class StreamStore {
   }
 
   ingest(event: DecodedEvent): void {
-    this.db.transaction(() => this.ingestWithinTransaction(event))();
+    let changed = false;
+    let stream: Stream | undefined;
+    this.db.transaction(() => {
+      changed = this.ingestWithinTransaction(event);
+      if (changed) {
+        stream = this.getStream(event.streamId);
+      }
+    })();
+    if (changed) {
+      this.emit("event", event, stream);
+    }
   }
 
   ingestPage(events: DecodedEvent[], cursor: string | undefined, latestLedger: number): void {
+    const ingested: Array<{ event: DecodedEvent; stream?: Stream }> = [];
     this.db.transaction(() => {
-      for (const event of events) this.ingestWithinTransaction(event);
+      for (const event of events) {
+        const changed = this.ingestWithinTransaction(event);
+        if (changed) {
+          ingested.push({ event, stream: this.getStream(event.streamId) });
+        }
+      }
       if (cursor) this.setState("cursor", cursor);
       this.setState("lastLedger", String(latestLedger));
     })();
+    for (const item of ingested) {
+      this.emit("event", item.event, item.stream);
+    }
   }
 
-  private ingestWithinTransaction(event: DecodedEvent): void {
+  private ingestWithinTransaction(event: DecodedEvent): boolean {
     const inserted = this.db.prepare(`INSERT OR IGNORE INTO events
       (id, stream_id, name, ledger, ledger_closed_at, payload) VALUES (?, ?, ?, ?, ?, ?)`)
       .run(event.id, event.streamId, event.name, event.ledger, event.ledgerClosedAt, JSON.stringify(event.data, (_key, value: unknown) => typeof value === "bigint" ? value.toString() : value));
-    if (inserted.changes === 0) return;
+    if (inserted.changes === 0) return false;
 
     const d = event.data;
     const existing = this.db.prepare("SELECT * FROM streams WHERE stream_id = ?").get(event.streamId) as Record<string, unknown> | undefined;
@@ -97,7 +118,7 @@ export class StreamStore {
       }
       case "stream_paused": patch.status = "paused"; break;
       case "stream_resumed": patch.status = "active"; break;
-      default: return;
+      default: return false;
     }
 
     const current = existing ?? {};
@@ -126,6 +147,7 @@ export class StreamStore {
       cancelable=excluded.cancelable, status=excluded.status, cancelled_by=excluded.cancelled_by,
       recipient_amount=excluded.recipient_amount, sender_amount=excluded.sender_amount,
       last_ledger=excluded.last_ledger, updated_at=excluded.updated_at`).run(row);
+    return true;
   }
 
   getStream(id: string): Stream | undefined {
@@ -147,6 +169,72 @@ export class StreamStore {
       try { parsed = JSON.parse(row.payload); } catch {}
       return { ...row, payload: parsed };
     });
+  }
+
+  getEventsAfter(
+    lastEventId: string,
+    address?: string,
+    streamId?: string
+  ): Array<{
+    id: string;
+    streamId: string;
+    name: string;
+    ledger: number;
+    ledgerClosedAt: string;
+    payload: Record<string, unknown>;
+    stream?: Stream;
+  }> {
+    const target = this.db.prepare("SELECT rowid FROM events WHERE id = ?").get(lastEventId) as { rowid: number } | undefined;
+    if (!target) return [];
+
+    let query = "SELECT id, stream_id, name, ledger, ledger_closed_at, payload FROM events WHERE rowid > ?";
+    const params: (string | number)[] = [target.rowid];
+
+    if (streamId) {
+      query += " AND stream_id = ?";
+      params.push(streamId);
+    }
+
+    query += " ORDER BY rowid ASC LIMIT 250";
+
+    const rows = this.db.prepare(query).all(...params) as Array<{
+      id: string;
+      stream_id: string;
+      name: string;
+      ledger: number;
+      ledger_closed_at: string;
+      payload: string;
+    }>;
+
+    const results: Array<{
+      id: string;
+      streamId: string;
+      name: string;
+      ledger: number;
+      ledgerClosedAt: string;
+      payload: Record<string, unknown>;
+      stream?: Stream;
+    }> = [];
+
+    for (const r of rows) {
+      let parsed: Record<string, unknown> = {};
+      try { parsed = JSON.parse(r.payload); } catch {}
+      const st = this.getStream(r.stream_id);
+      if (address && st && st.sender !== address && st.recipient !== address) {
+        continue;
+      }
+      results.push({
+        id: r.id,
+        streamId: r.stream_id,
+        name: r.name,
+        ledger: r.ledger,
+        ledgerClosedAt: r.ledger_closed_at,
+        payload: parsed,
+        stream: st,
+      });
+    }
+
+    return results;
   }
 
   private toStream(row: Record<string, unknown>): Stream {
