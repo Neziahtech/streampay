@@ -20,6 +20,12 @@ import {
 } from "@stellar/stellar-sdk";
 import { signTransaction } from "@stellar/freighter-api";
 import type { BatchStreamEntry } from "./batch";
+import {
+  globalFrontendTracer,
+  W3CTraceContextPropagator,
+  traceCorrelationRegistry,
+} from "./telemetry";
+import { sanitizeAddress } from "./privacy";
 
 const RPC_URL =
   process.env.NEXT_PUBLIC_SOROBAN_RPC_URL ||
@@ -378,10 +384,53 @@ export async function withdrawFromStream(
   streamId: string,
   amount: string
 ): Promise<void> {
-  await send(
-    recipient,
-    contract().call("withdraw", u64(streamId), i128(amount)),
-    () => undefined
+  return globalFrontendTracer.withSpan(
+    "browser.claim_click",
+    async (span) => {
+      span.setAttributes({
+        "user.action": "withdraw",
+        "stream.id": streamId,
+        "recipient.address": sanitizeAddress(recipient),
+        "amount": amount,
+      });
+
+      const carrier: Record<string, string> = {};
+      W3CTraceContextPropagator.inject(span.context, carrier);
+
+      try {
+        if (typeof fetch !== "undefined") {
+          const res = await fetch("/api/claim", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              ...carrier,
+            },
+            body: JSON.stringify({
+              streamId,
+              recipient,
+              amount,
+              max: false,
+            }),
+          });
+          if (res.ok) {
+            const data = (await res.json().catch(() => ({}))) as { txHash?: string };
+            if (data.txHash) {
+              span.setAttribute("soroban.tx_hash", data.txHash);
+              traceCorrelationRegistry.register(data.txHash, span.context, streamId);
+            }
+          }
+        }
+      } catch {
+        // Fallthrough to direct wallet invocation
+      }
+
+      await send(
+        recipient,
+        contract().call("withdraw", u64(streamId), i128(amount)),
+        () => undefined
+      );
+    },
+    { kind: "CLIENT" }
   );
 }
 
@@ -393,10 +442,51 @@ export async function withdrawMaxFromStream(
   recipient: string,
   streamId: string
 ): Promise<bigint> {
-  return send(
-    recipient,
-    contract().call("withdraw_max", u64(streamId)),
-    (v) => BigInt(scValToNative(v) as bigint)
+  return globalFrontendTracer.withSpan(
+    "browser.claim_click",
+    async (span) => {
+      span.setAttributes({
+        "user.action": "claim_max",
+        "stream.id": streamId,
+        "recipient.address": sanitizeAddress(recipient),
+      });
+
+      const carrier: Record<string, string> = {};
+      W3CTraceContextPropagator.inject(span.context, carrier);
+
+      try {
+        if (typeof fetch !== "undefined") {
+          const res = await fetch("/api/claim", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              ...carrier,
+            },
+            body: JSON.stringify({
+              streamId,
+              recipient,
+              max: true,
+            }),
+          });
+          if (res.ok) {
+            const data = (await res.json().catch(() => ({}))) as { txHash?: string };
+            if (data.txHash) {
+              span.setAttribute("soroban.tx_hash", data.txHash);
+              traceCorrelationRegistry.register(data.txHash, span.context, streamId);
+            }
+          }
+        }
+      } catch {
+        // Fallthrough to direct wallet invocation
+      }
+
+      return send(
+        recipient,
+        contract().call("withdraw_max", u64(streamId)),
+        (v) => BigInt(scValToNative(v) as bigint)
+      );
+    },
+    { kind: "CLIENT" }
   );
 }
 

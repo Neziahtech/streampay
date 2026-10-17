@@ -2,6 +2,7 @@
 
 import { defaultIndexerMetrics, type IndexerMetricsRegistry } from './metrics.js';
 import type { IndexerStore } from './store.js';
+import { defaultIndexerTracer, type SpanContext } from './telemetry.js';
 
 export interface PollerConfig {
   rpcUrl: string;
@@ -29,7 +30,16 @@ export class EventPoller {
     this.currentLedger = config.startLedger;
   }
 
-  public async pollOnce(mockEvents?: Array<{ topic: string; ledger: number; ledgerTimestamp: number; data: string }>): Promise<void> {
+  public async pollOnce(
+    mockEvents?: Array<{
+      topic: string;
+      ledger: number;
+      ledgerTimestamp: number;
+      data: string;
+      txHash?: string;
+      linkedSpanContext?: SpanContext;
+    }>
+  ): Promise<void> {
     const startTime = Date.now();
     try {
       this.metrics.rpcRequestsTotal.inc(
@@ -51,6 +61,28 @@ export class EventPoller {
       const nowSeconds = Math.floor(Date.now() / 1000);
 
       for (const ev of events) {
+        const span = defaultIndexerTracer.startSpan("indexer.ingest_event", {
+          kind: "CONSUMER",
+          attributes: {
+            "event.name": ev.topic,
+            "ledger.sequence": ev.ledger,
+            "soroban.tx_hash": ev.txHash || "unknown",
+          },
+        });
+
+        // Event Seam Span Link (ledger-delayed cross-process continuation)
+        if (ev.linkedSpanContext) {
+          span.addLink({
+            context: ev.linkedSpanContext,
+            attributes: {
+              "link.relationship": "ledger_event_continuation",
+              "event.name": ev.topic,
+              "ledger.sequence": ev.ledger,
+              "soroban.tx_hash": ev.txHash || "unknown",
+            },
+          });
+        }
+
         // Core measurement: per-source lag histogram
         const eventLag = Math.max(0, nowSeconds - ev.ledgerTimestamp);
         this.metrics.eventLagSeconds.observe(
@@ -68,6 +100,8 @@ export class EventPoller {
 
         this.metrics.eventsProcessedTotal.inc({ topic: ev.topic, status: 'success' }, 1);
         this.currentLedger = Math.max(this.currentLedger, ev.ledger);
+        span.setStatus("OK");
+        span.end();
       }
 
       this.store.flush();
