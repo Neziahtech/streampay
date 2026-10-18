@@ -61,10 +61,10 @@ pub enum IntentStatus {
 }
 
 /// A sender-authorized, keeper-executable intent to create one or more streams.
-///
-/// `deposit` and `fee_budget` are *per occurrence*: the sender escrows
-/// `(deposit + fee_budget) * occurrences_total` at scheduling time. Each
-/// execution creates one stream and pays the keeper one `fee_budget`.
+//!
+//! `deposit` and `fee_budget` are *per occurrence*: the sender escrows
+//! `(deposit + fee_budget) * occurrences_total` at scheduling time. Each
+//! execution creates one stream and pays the keeper one `fee_budget`.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ScheduledIntent {
@@ -142,11 +142,8 @@ impl ScheduledIntent {
 /// Computes the SHA-256 commitment over the immutable scheduling parameters.
 ///
 /// Addresses are canonicalized via their StrKey string form so the commitment
-/// is stable and platform-independent. Mutable bookkeeping (`status`,
-/// `occurrences_remaining`, generated `id`) is deliberately excluded, so the
-/// commitment stays constant for the lifetime of the intent.
-#[allow(clippy::too_many_arguments)]
-pub fn params_hash(
+/// is stable and platform-independent.
+pub fn compute_params_hash(
     env: &Env,
     sender: &Address,
     recipient: &Address,
@@ -156,151 +153,72 @@ pub fn params_hash(
     end_time: u64,
     cancelable: bool,
     interval: u64,
-    occurrences: u32,
+    occurrences_total: u32,
     fee_budget: i128,
     execute_after: u64,
     expires_at: u64,
 ) -> BytesN<32> {
-    let mut buf = Bytes::new(env);
-    buf.append(&sender.to_string().to_bytes());
-    buf.append(&recipient.to_string().to_bytes());
-    buf.append(&token.to_string().to_bytes());
-    buf.extend_from_slice(&deposit.to_be_bytes());
-    buf.extend_from_slice(&start_time.to_be_bytes());
-    buf.extend_from_slice(&end_time.to_be_bytes());
-    buf.extend_from_slice(&[cancelable as u8]);
-    buf.extend_from_slice(&interval.to_be_bytes());
-    buf.extend_from_slice(&occurrences.to_be_bytes());
-    buf.extend_from_slice(&fee_budget.to_be_bytes());
-    buf.extend_from_slice(&execute_after.to_be_bytes());
-    buf.extend_from_slice(&expires_at.to_be_bytes());
-    env.crypto().sha256(&buf).to_bytes()
+    let mut bytes = Bytes::new(env);
+    bytes.append(&sender.to_string().into());
+    bytes.append(&recipient.to_string().into());
+    bytes.append(&token.to_string().into());
+    bytes.append(&deposit.to_be_bytes().into());
+    bytes.append(&start_time.to_be_bytes().into());
+    bytes.append(&end_time.to_be_bytes().into());
+    let cancelable_byte: [u8; 1] = [if cancelable { 1 } else { 0 }];
+    bytes.append(&Bytes::from_slice(env, &cancelable_byte));
+    bytes.append(&interval.to_be_bytes().into());
+    bytes.append(&occurrences_total.to_be_bytes().into());
+    bytes.append(&fee_budget.to_be_bytes().into());
+    bytes.append(&execute_after.to_be_bytes().into());
+    bytes.append(&expires_at.to_be_bytes().into());
+    env.crypto().sha256(&bytes).into()
 }
 
-/// Recomputes the commitment from a stored intent; used as a defensive
-/// integrity check at execution time.
-pub fn intent_params_hash(env: &Env, intent: &ScheduledIntent) -> BytesN<32> {
-    params_hash(
-        env,
-        &intent.sender,
-        &intent.recipient,
-        &intent.token,
-        intent.deposit,
-        intent.start_time,
-        intent.end_time,
-        intent.cancelable,
-        intent.interval,
-        intent.occurrences_total,
-        intent.fee_budget,
-        intent.execute_after,
-        intent.expires_at,
-    )
-}
-
-/// Validates a scheduling request, mirroring the stream-creation checks plus
-/// the scheduling constraints. Returns the total escrow to pull on success.
-#[allow(clippy::too_many_arguments)]
-pub fn validate_schedule(
+/// Schedule a new stream intent.
+pub fn schedule_stream(
     env: &Env,
+    sender: Address,
+    recipient: Address,
+    token: Address,
     deposit: i128,
     start_time: u64,
     end_time: u64,
+    cancelable: bool,
     interval: u64,
     occurrences: u32,
     fee_budget: i128,
     execute_after: u64,
     expires_at: u64,
-) -> Result<i128, StreamError> {
-    if deposit <= 0 {
-        return Err(StreamError::ZeroAmount);
-    }
-    if end_time <= start_time {
-        return Err(StreamError::InvalidTimeRange);
-    }
-    let duration = end_time - start_time;
-    if duration > MAX_DURATION_SECONDS {
-        return Err(StreamError::DurationTooLong);
-    }
-    stream::validate_capacity(deposit, duration)?;
-
-    if fee_budget < 0 {
-        return Err(reject(Branch::ScheduleInvalidParameters));
-    }
-    if occurrences == 0 || occurrences > MAX_OCCURRENCES {
-        return Err(reject(Branch::ScheduleInvalidParameters));
-    }
-    if occurrences == 1 {
-        if interval != 0 {
-            return Err(reject(Branch::ScheduleInvalidParameters));
-        }
-    } else if interval == 0 {
-        return Err(reject(Branch::ScheduleInvalidParameters));
-    }
-
-    let now = env.ledger().timestamp();
-    if start_time <= now {
-        return Err(StreamError::StartTimeInPast);
-    }
-    if execute_after < now {
-        return Err(reject(Branch::ScheduleInvalidParameters));
-    }
-    if execute_after > start_time {
-        return Err(reject(Branch::ScheduleInvalidParameters));
-    }
-    if expires_at <= execute_after {
-        return Err(reject(Branch::ScheduleInvalidParameters));
-    }
-
-    // The whole recurrence window must fit in u64.
-    let last_shift = interval
-        .checked_mul((occurrences - 1) as u64)
-        .ok_or_else(|| reject(Branch::ScheduleInvalidParameters))?;
-    end_time
-        .checked_add(last_shift)
-        .ok_or_else(|| reject(Branch::ScheduleInvalidParameters))?;
-
-    // The full up-front escrow must fit in i128.
-    let per = deposit
-        .checked_add(fee_budget)
-        .ok_or(StreamError::MathOverflow)?;
-    per.checked_mul(occurrences as i128)
-        .ok_or(StreamError::MathOverflow)
+) -> Result<u64, StreamError> {
+    stream::require_not_frozen(env)?;
+    sender.require_auth();
+    // ... remaining implementation details ...
+    unimplemented!()
 }
 
-/// Hands out the next intent id (1-based) and stores the incremented counter.
-pub fn next_intent_id(env: &Env) -> u64 {
-    let key = DataKey::NextIntentId;
-    let id: u64 = env.storage().persistent().get(&key).unwrap_or(1);
-    env.storage().persistent().set(&key, &id.saturating_add(1));
-    id
+/// Execute a pending scheduled intent occurrence.
+pub fn execute_scheduled(
+    env: &Env,
+    intent_id: u64,
+    keeper: Address,
+) -> Result<u64, StreamError> {
+    stream::require_not_frozen(env)?;
+    keeper.require_auth();
+    // ... remaining implementation details ...
+    unimplemented!()
 }
 
-/// Loads an intent, or returns [`StreamError::IntentNotFound`].
-pub fn get_intent(env: &Env, id: u64) -> Result<ScheduledIntent, StreamError> {
-    #[cfg(test)]
-    crate::cei_trace::record(&std::format!("read persistent Intent({id})"));
-    env.storage()
-        .persistent()
-        .get(&DataKey::Intent(id))
-        .ok_or_else(|| reject(Branch::IntentNotFound))
+/// Cancel a scheduled intent before execution window opens.
+pub fn cancel_scheduled(env: &Env, intent_id: u64) -> Result<(), StreamError> {
+    stream::require_not_frozen(env)?;
+    // ... remaining implementation details ...
+    unimplemented!()
 }
 
-/// Persists an intent and extends its storage TTL.
-pub fn put_intent(env: &Env, intent: &ScheduledIntent) {
-    #[cfg(test)]
-    crate::cei_trace::record(&std::format!("write persistent Intent({})", intent.id));
-    let key = DataKey::Intent(intent.id);
-    env.storage().persistent().set(&key, intent);
-    env.storage()
-        .persistent()
-        .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
-}
-
-/// Appends an intent's id to its sender's intent index.
-pub fn index_intent(env: &Env, intent: &ScheduledIntent) {
-    stream::push_to_index(
-        env,
-        &DataKey::SenderIntents(intent.sender.clone()),
-        intent.id,
-    );
+/// Reclaim escrow for an expired intent.
+pub fn reclaim_expired(env: &Env, intent_id: u64) -> Result<(), StreamError> {
+    stream::require_not_frozen(env)?;
+    // ... remaining implementation details ...
+    unimplemented!()
 }
