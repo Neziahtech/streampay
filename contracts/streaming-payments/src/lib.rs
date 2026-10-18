@@ -1008,6 +1008,7 @@ impl StreamingPayments {
         execute_after: u64,
         expires_at: u64,
     ) -> Result<u64, StreamError> {
+        Self::require_not_frozen(&env)?;
         sender.require_auth();
 
         let total_escrow = schedule::validate_schedule(
@@ -1110,6 +1111,7 @@ impl StreamingPayments {
         intent_id: u64,
         keeper: Address,
     ) -> Result<u64, StreamError> {
+        Self::require_not_frozen(&env)?;
         keeper.require_auth();
 
         let mut intent = schedule::get_intent(&env, intent_id)?;
