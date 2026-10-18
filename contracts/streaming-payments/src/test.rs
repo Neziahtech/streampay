@@ -3431,7 +3431,9 @@ fn run_value_conservation_property(seed: u64, steps: usize) {
                     if stream.status == StreamStatus::Active {
                         let by_recipient = rng.below(2) == 0;
                         if by_recipient && stream.cancelable {
-                            client.mock_all_auths().cancel_stream(&stream.recipient, &id);
+                            client
+                                .mock_all_auths()
+                                .cancel_stream(&stream.recipient, &id);
                         } else if !by_recipient {
                             client.mock_all_auths().cancel_stream(&stream.sender, &id);
                         }
@@ -3444,9 +3446,12 @@ fn run_value_conservation_property(seed: u64, steps: usize) {
                 let status = client.treasury_status(&tokens[ti]);
                 if status.collectible > 0 {
                     let amount = 1 + rng.below(status.collectible as u64) as i128;
-                    client
-                        .mock_all_auths()
-                        .withdraw_treasury(&governor, &tokens[ti], &vault, &amount);
+                    client.mock_all_auths().withdraw_treasury(
+                        &governor,
+                        &tokens[ti],
+                        &vault,
+                        &amount,
+                    );
                 }
             }
             _ => {
@@ -3506,7 +3511,6 @@ fn run_value_conservation_property(seed: u64, steps: usize) {
 }
 
 // ------------------------------------------------------------ policy tests --
-
 
 #[test]
 fn policy_uninitialized_allows_any_asset_without_regression() {
@@ -5133,11 +5137,9 @@ fn test_stream_policy_governance_and_resolution() {
         min_rate: 2,
         max_rate: 500,
     };
-    f.client.mock_all_auths().set_stream_policy(
-        &f.governor,
-        &Some(token2.clone()),
-        &token_policy,
-    );
+    f.client
+        .mock_all_auths()
+        .set_stream_policy(&f.governor, &Some(token2.clone()), &token_policy);
     assert_eq!(
         f.client.get_stream_policy(&Some(token2)),
         Some(token_policy)
@@ -5241,7 +5243,10 @@ fn test_stream_policy_creation_enforcement() {
         &(now + 2 * DAY),
         &true,
     );
-    assert_eq!(res.unwrap_err().unwrap(), StreamError::PolicyRateAboveCeiling);
+    assert_eq!(
+        res.unwrap_err().unwrap(),
+        StreamError::PolicyRateAboveCeiling
+    );
 
     // 6. Valid stream succeeds
     let valid_id = f.client.mock_all_auths().create_stream(
@@ -5309,11 +5314,17 @@ fn test_stream_policy_grandfathering_matrix() {
     // Grandfathering check B: If top-up pushes rate above max_rate ceiling, it violates policy
     // Adding +86,400 again -> total deposit = 259,200 -> rate = 3 > max_rate(2)
     let res = f.client.mock_all_auths().try_top_up(&stream_id, &86_400);
-    assert_eq!(res.unwrap_err().unwrap(), StreamError::PolicyRateAboveCeiling);
+    assert_eq!(
+        res.unwrap_err().unwrap(),
+        StreamError::PolicyRateAboveCeiling
+    );
 
     // Grandfathering check C: Cancellation always succeeds regardless of policy (Anti-brick invariant)
     f.advance_time(2 * DAY); // reach after start
-    let cancel_res = f.client.mock_all_auths().try_cancel_stream(&f.sender, &stream_id);
+    let cancel_res = f
+        .client
+        .mock_all_auths()
+        .try_cancel_stream(&f.sender, &stream_id);
     assert!(cancel_res.is_ok());
     assert_eq!(
         f.client.get_stream(&stream_id).status,
@@ -5332,14 +5343,12 @@ fn test_stream_policy_multi_token_boundaries() {
         .register_stellar_asset_contract_v2(Address::generate(&f.env));
     let token2 = sac2.address();
     StellarAssetClient::new(&f.env, &token2).mint(&f.sender, &DEPOSIT);
-    TokenClient::new(&f.env, &token2)
-        .mock_all_auths()
-        .approve(
-            &f.sender,
-            &f.client.address,
-            &DEPOSIT,
-            &200,
-        );
+    TokenClient::new(&f.env, &token2).mock_all_auths().approve(
+        &f.sender,
+        &f.client.address,
+        &DEPOSIT,
+        &200,
+    );
 
     // Set Global policy: min_deposit = 10_000
     f.client.mock_all_auths().set_stream_policy(
@@ -5407,4 +5416,3 @@ fn test_stream_policy_multi_token_boundaries() {
     );
     assert!(id2 > 0);
 }
-

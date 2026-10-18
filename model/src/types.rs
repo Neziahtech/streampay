@@ -89,4 +89,3 @@ pub struct ModelStreamPolicy {
     pub max_duration: u64,
     pub min_deposit: i128,
 }
-

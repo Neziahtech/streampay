@@ -340,8 +340,9 @@ impl Branch {
             Branch::PolicyDepositBelowFloor
             | Branch::PolicyRateBelowFloor
             | Branch::PolicyRateAboveCeiling => &["create_stream", "create_streams", "top_up"],
-            Branch::PolicyDurationBelowFloor
-            | Branch::PolicyDurationAboveCeiling => &["create_stream", "create_streams"],
+            Branch::PolicyDurationBelowFloor | Branch::PolicyDurationAboveCeiling => {
+                &["create_stream", "create_streams"]
+            }
             Branch::StreamTooSmall => &["create_stream", "create_streams"],
             Branch::ClaimAmountTooSmall => &["withdraw", "withdraw_max"],
             Branch::StreamNotDepleted => &["sweep"],
