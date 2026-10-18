@@ -1184,3 +1184,194 @@ fn schedule_emits_expected_event() {
         [scheduled.to_xdr(&f.env, &f.client.address)],
     );
 }
+    };
+    assert_eq!(
+        events.filter_by_contract(&f.client.address),
+        [cancelled.to_xdr(&f.env, &f.client.address)],
+    );
+
+    // A cancelled intent cannot be executed.
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_execute_scheduled(&id, &f.keeper)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::IntentNotPending);
+}
+
+#[test]
+fn cancel_after_window_opens_reverts() {
+    let f = Fixture::setup();
+    let now = f.now();
+    let id = f.client.mock_all_auths().schedule_stream(
+        &f.sender,
+        &f.recipient,
+        &f.token,
+        &DEPOSIT,
+        &(now + 5 * DAY),
+        &(now + 15 * DAY),
+        &false,
+        &0,
+        &1,
+        &FEE,
+        &(now + DAY),
+        &(now + 30 * DAY),
+    );
+    f.advance(DAY); // now == execute_after
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_cancel_scheduled(&f.sender, &id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::IntentNotCancellable);
+}
+
+#[test]
+fn cancel_after_expiry_reverts() {
+    let f = Fixture::setup();
+    let now = f.now();
+    let id = f.client.mock_all_auths().schedule_stream(
+        &f.sender,
+        &f.recipient,
+        &f.token,
+        &DEPOSIT,
+        &(now + 5 * DAY),
+        &(now + 15 * DAY),
+        &false,
+        &0,
+        &1,
+        &FEE,
+        &(now + DAY),
+        &(now + 2 * DAY),
+    );
+    f.advance(5 * DAY); // past expiry
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_cancel_scheduled(&f.sender, &id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::IntentExpired);
+}
+
+#[test]
+fn cancel_requires_sender() {
+    let f = Fixture::setup();
+    let id = f.schedule_one_shot(DEPOSIT, DAY, 10 * DAY, FEE);
+    let attacker = Address::generate(&f.env);
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_cancel_scheduled(&attacker, &id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::NotAuthorized);
+}
+
+#[test]
+fn cancel_unknown_intent_reverts() {
+    let f = Fixture::setup();
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_cancel_scheduled(&f.sender, &999)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::IntentNotFound);
+}
+
+// ------------------------------------------------------------ reclaim -------
+
+#[test]
+fn reclaim_before_expiry_reverts() {
+    let f = Fixture::setup();
+    let now = f.now();
+    let id = f.client.mock_all_auths().schedule_stream(
+        &f.sender,
+        &f.recipient,
+        &f.token,
+        &DEPOSIT,
+        &(now + DAY),
+        &(now + 11 * DAY),
+        &false,
+        &0,
+        &1,
+        &FEE,
+        &now,
+        &(now + 10 * DAY),
+    );
+    let err = f.client.try_reclaim_expired(&id).unwrap_err().unwrap();
+    assert_eq!(err, StreamError::IntentNotExpired);
+}
+
+#[test]
+fn reclaim_after_expiry_refunds_sender_permissionlessly() {
+    let f = Fixture::setup();
+    let now = f.now();
+    let sender_before = f.balance(&f.sender);
+    let id = f.client.mock_all_auths().schedule_stream(
+        &f.sender,
+        &f.recipient,
+        &f.token,
+        &DEPOSIT,
+        &(now + DAY),
+        &(now + 11 * DAY),
+        &false,
+        &0,
+        &1,
+        &FEE,
+        &now,
+        &(now + 5 * DAY),
+    );
+
+    f.advance(5 * DAY);
+    f.client.reclaim_expired(&id);
+    let events = f.env.events().all();
+
+    assert_eq!(f.client.get_intent(&id).status, IntentStatus::Expired);
+    assert_eq!(f.balance(&f.sender), sender_before);
+    assert_eq!(f.contract_balance(), 0);
+
+    let expired = crate::ScheduledIntentExpired {
+        intent_id: id,
+        sender: f.sender.clone(),
+        refund: DEPOSIT + FEE,
+    };
+    assert_eq!(
+        events.filter_by_contract(&f.client.address),
+        [expired.to_xdr(&f.env, &f.client.address)],
+    );
+}
+
+#[test]
+fn reclaim_twice_reverts() {
+    let f = Fixture::setup();
+    let now = f.now();
+    let id = f.client.mock_all_auths().schedule_stream(
+        &f.sender,
+        &f.recipient,
+        &f.token,
+        &DEPOSIT,
+        &(now + DAY),
+        &(now + 11 * DAY),
+        &false,
+        &0,
+        &1,
+        &FEE,
+        &now,
+        &(now + 5 * DAY),
+    );
+    f.advance(5 * DAY);
+    f.client.reclaim_expired(&id);
+    let err = f.client.try_reclaim_expired(&id).unwrap_err().unwrap();
+    assert_eq!(err, StreamError::IntentNotPending);
+}
+
+#[test]
+fn reclaim_unknown_intent_reverts() {
+    let f = Fixture::setup();
+    let err = f.client.try_reclaim_expired(&999).unwrap_err().unwrap();
+    assert_eq!(err, StreamError::IntentNotFound);
+}
