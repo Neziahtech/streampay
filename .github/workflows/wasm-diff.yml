@@ -73,10 +73,11 @@ jobs:
           curl -fsSL https://github.com/stellar/stellar-cli/releases/download/v28.1.0/stellar-cli-28.1.0-x86_64-unknown-linux-gnu.tar.gz | tar xz
           sudo install stellar /usr/local/bin/stellar
 
-      - name: Install wabt (wasm-objdump)
+      - name: Install pinned wabt (wasm-objdump 1.0.34)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y wabt
+          curl -fsSL https://github.com/WebAssembly/wabt/releases/download/1.0.34/wabt-1.0.34-ubuntu.tar.gz | tar xz
+          sudo install wabt-1.0.34/bin/wasm-objdump /usr/local/bin/wasm-objdump
+          rm -rf wabt-1.0.34
 
       - name: Install pinned wasm-opt and wasm-dis (Binaryen version_116)
         run: |
@@ -85,7 +86,7 @@ jobs:
           sudo install binaryen-version_116/bin/wasm-dis /usr/local/bin/wasm-dis
           rm -rf binaryen-version_116
 
-      - name: Verify pinned toolchain versions (rustc & wasm-opt)
+      - name: Verify pinned toolchain versions (rustc, binaryen, stellar-cli, wabt)
         run: |
           echo "=== Pinned Toolchain Version Verification ==="
           rustc --version
