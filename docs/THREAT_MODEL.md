@@ -15,10 +15,10 @@ This document is the authoritative **threat model and audit-intake specification
 ### Intended Audience and Scope Orientation
 An external auditor reviewing StreamPay should use this document to:
 1. **Clarify Scope Boundaries**: Eliminate guesswork regarding what is formally guaranteed by the smart contract versus what is an accepted operational or external risk.
-2. **Review Invariant Adherence**: Test every contract entrypoint, branch, and edge case against the mathematical and architectural invariants defined in [§4](#4-assets-and-security-invariants).
-3. **Verify the Adversary × Component Matrix**: Evaluate how each of the 7 identified adversary classes is countered across the 4 architectural components in [§7](#7-the-adversary--component-matrix).
-4. **Inspect Unmitigated & Partially Mitigated Gaps**: Review pre-identified residual risks in [§9](#9-accepted-open-risks-register) and ready-to-file security enhancements in [§11](#11-gap-issues).
-5. **Analyze Full State Exposure**: Review the candid evaluation of on-chain information leakage in [§10](#10-the-honest-weakness-full-contract-state-exposure).
+2. **Review Invariant Adherence**: Test every contract entrypoint, branch, and edge case against the mathematical and architectural invariants defined in [§3](#3-assets-and-security-invariants).
+3. **Verify the Adversary × Component Matrix**: Evaluate how each of the 7 identified adversary classes is countered across the 4 architectural components in [§6](#6-the-adversary--component-matrix).
+4. **Inspect Unmitigated & Partially Mitigated Gaps**: Review pre-identified residual risks in [§8](#8-accepted-open-risks-register) and ready-to-file security enhancements in [§10](#10-gap-issues-drafts-ready-for-filing).
+5. **Analyze Full State Exposure**: Review the candid evaluation of on-chain information leakage in [§9](#9-the-honest-weakness-full-contract-state-exposure-analysis).
 
 ---
 

@@ -7,5 +7,8 @@ Dockerfile  text eol=lf
 *.yml       text eol=lf
 *.yaml      text eol=lf
 
+# Golden test files use LF
+contracts/streaming-payments/test_orderings/*.txt text eol=lf
+
 # Default: auto-normalize everything else.
 *           text=auto

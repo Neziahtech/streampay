@@ -6,10 +6,22 @@
 //! intermediate products) and returns [`StreamError::MathOverflow`] instead of
 //! overflowing or panicking.
 
-use soroban_sdk::{contracttype, Address, Env, MuxedAddress, Vec};
+use soroban_sdk::{contracttype, Address, BytesN, Env, MuxedAddress, Vec};
 
 use crate::errors::StreamError;
 use crate::surface::{self, Branch};
+
+/// Minimum delay for an upgrade proposal timelock: 24 hours.
+pub const MIN_UPGRADE_DELAY_SECONDS: u64 = 86_400;
+
+/// Initial schema version (v1).
+pub const INITIAL_SCHEMA_VERSION: u32 = 1;
+
+/// Target schema version after migration (v2).
+pub const TARGET_SCHEMA_VERSION: u32 = 2;
+
+/// Maximum number of streams processed per migration call.
+pub const MAX_MIGRATION_BATCH_SIZE: u32 = 50;
 
 /// Maximum supported stream duration: 100 years, including leap days
 /// (36,525 days). Bounds worst-case rate multiplications and rejects
@@ -20,6 +32,17 @@ pub const MAX_DURATION_SECONDS: u64 = 3_155_760_000;
 /// Callers asking for more are clamped down; this bounds per-call footprint
 /// of the address-index views.
 pub const MAX_PAGE_SIZE: u32 = 50;
+
+/// Minimum number of stream entries permitted in a batch.
+pub const MIN_BATCH: u32 = 1;
+
+/// Maximum number of stream entries permitted in a batch.
+///
+/// Bounded to 25 because each stream creation emits a `StreamCreated` event
+/// and a token `transfer` event (~600 bytes combined). At 25 streams, event
+/// size is ~15.5 KB, safely within Soroban's network limit of 16,384 bytes (16 KB),
+/// and consumes ~16.2M CPU instructions (~16% of the 100M transaction budget).
+pub const MAX_BATCH: u32 = 25;
 
 /// TTL maintenance, in ledgers (~5 seconds per ledger on Stellar mainnet).
 ///
@@ -69,6 +92,38 @@ impl Stream {
     }
 }
 
+/// Parameters for creating a single stream within a batch creation call.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchEntry {
+    pub sender: Address,
+    pub recipient: Address,
+    pub token: Address,
+    pub deposit: i128,
+    pub start_time: u64,
+    pub end_time: u64,
+    pub cancelable: bool,
+}
+
+/// Proposed contract upgrade pending timelock expiration.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingUpgrade {
+    pub new_wasm_hash: BytesN<32>,
+    pub unlock_time: u64,
+}
+
+/// Progress report for on-chain storage migration.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MigrationStatus {
+    pub current_version: u32,
+    pub target_version: u32,
+    pub cursor: u64,
+    pub total_streams: u64,
+    pub is_complete: bool,
+}
+
 /// Storage keys for the contract.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -106,6 +161,14 @@ pub enum DataKey {
     /// Fee charged for one stream at creation time (persistent storage;
     /// written only when the fee rounds above zero, so absent == 0).
     StreamFee(u64),
+    /// Schema version for storage layout evolution (instance storage).
+    SchemaVersion,
+    /// Freeze state: when true, all state-mutating entrypoints revert (instance storage).
+    ContractFrozen,
+    /// Proposed contract upgrade pending timelock expiration (instance storage).
+    PendingUpgrade,
+    /// Highest stream id processed by storage migration (instance storage).
+    MigrationCursor,
 }
 
 /// Seconds elapsed of the stream window at the current ledger time.
@@ -224,6 +287,8 @@ pub fn reserve_stream_ids(env: &Env, count: u32) -> Result<u64, StreamError> {
 
 /// Loads a stream, or returns [`StreamError::StreamNotFound`].
 pub fn get_stream(env: &Env, id: u64) -> Result<Stream, StreamError> {
+    #[cfg(test)]
+    crate::cei_trace::record(&std::format!("read persistent Stream({id})"));
     env.storage()
         .persistent()
         .get(&DataKey::Stream(id))
@@ -232,6 +297,8 @@ pub fn get_stream(env: &Env, id: u64) -> Result<Stream, StreamError> {
 
 /// Persists a stream and extends its storage TTL.
 pub fn put_stream(env: &Env, stream: &Stream) {
+    #[cfg(test)]
+    crate::cei_trace::record(&std::format!("write persistent Stream({})", stream.id));
     let key = DataKey::Stream(stream.id);
     env.storage().persistent().set(&key, stream);
     env.storage()
@@ -298,4 +365,85 @@ pub fn page_stream_ids(env: &Env, key: &DataKey, offset: u32, limit: u32) -> Vec
         i += 1;
     }
     page
+}
+
+/// Returns the current schema version (defaults to INITIAL_SCHEMA_VERSION if unset).
+pub fn schema_version(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::SchemaVersion)
+        .unwrap_or(INITIAL_SCHEMA_VERSION)
+}
+
+/// Persists the new schema version and extends instance storage TTL.
+pub fn set_schema_version(env: &Env, version: u32) {
+    env.storage()
+        .instance()
+        .set(&DataKey::SchemaVersion, &version);
+    env.storage()
+        .instance()
+        .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+}
+
+/// Checks whether the contract is currently frozen.
+pub fn is_frozen(env: &Env) -> bool {
+    #[cfg(test)]
+    crate::cei_trace::record("read instance ContractFrozen");
+    env.storage()
+        .instance()
+        .get(&DataKey::ContractFrozen)
+        .unwrap_or(false)
+}
+
+/// Updates the contract freeze state and extends instance storage TTL.
+pub fn set_frozen(env: &Env, frozen: bool) {
+    #[cfg(test)]
+    crate::cei_trace::record("write instance ContractFrozen");
+    env.storage()
+        .instance()
+        .set(&DataKey::ContractFrozen, &frozen);
+    env.storage()
+        .instance()
+        .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+}
+
+/// Returns the pending contract upgrade proposal, if one exists.
+pub fn pending_upgrade(env: &Env) -> Option<PendingUpgrade> {
+    env.storage().instance().get(&DataKey::PendingUpgrade)
+}
+
+/// Sets the pending contract upgrade proposal and extends instance storage TTL.
+pub fn set_pending_upgrade(env: &Env, pending: &PendingUpgrade) {
+    env.storage()
+        .instance()
+        .set(&DataKey::PendingUpgrade, pending);
+    env.storage()
+        .instance()
+        .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+}
+
+/// Removes any pending contract upgrade proposal and extends instance storage TTL.
+pub fn remove_pending_upgrade(env: &Env) {
+    env.storage().instance().remove(&DataKey::PendingUpgrade);
+    env.storage()
+        .instance()
+        .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+}
+
+/// Returns the current migration cursor (highest stream id migrated so far).
+pub fn migration_cursor(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKey::MigrationCursor)
+        .unwrap_or(0)
+}
+
+/// Sets the migration cursor and extends instance storage TTL.
+pub fn set_migration_cursor(env: &Env, cursor: u64) {
+    env.storage()
+        .instance()
+        .set(&DataKey::MigrationCursor, &cursor);
+    env.storage()
+        .instance()
+        .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
 }

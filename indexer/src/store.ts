@@ -2,14 +2,19 @@ import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { DecodedEvent, Stream } from "./types.js";
+import { WebhookStore } from "./webhooks/store.js";
+import { OutboxStore, newOutboxEventFromDecoded } from "./outbox/store.js";
 
 export class StreamStore {
   readonly db: Database.Database;
+  readonly webhooks: WebhookStore;
+  readonly outbox: OutboxStore;
 
   constructor(path: string) {
     if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
     this.db = new Database(path);
     this.db.pragma("journal_mode = WAL");
+    this.db.pragma("busy_timeout = 5000");
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS streams (
         stream_id TEXT PRIMARY KEY, sender TEXT, recipient TEXT, token TEXT,
@@ -27,6 +32,8 @@ export class StreamStore {
       CREATE INDEX IF NOT EXISTS events_stream ON events(stream_id, ledger);
       CREATE TABLE IF NOT EXISTS indexer_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     `);
+    this.webhooks = new WebhookStore(this.db);
+    this.outbox = new OutboxStore(this.db);
   }
 
   close(): void { this.db.close(); }
@@ -39,22 +46,41 @@ export class StreamStore {
   }
 
   ingest(event: DecodedEvent): void {
-    this.db.transaction(() => this.ingestWithinTransaction(event))();
+    this.db.transaction(() => this.ingestWithinTransaction(event, event.pagingToken))();
   }
 
   ingestPage(events: DecodedEvent[], cursor: string | undefined, latestLedger: number): void {
     this.db.transaction(() => {
-      for (const event of events) this.ingestWithinTransaction(event);
+      for (const event of events) this.ingestWithinTransaction(event, cursor ?? event.pagingToken);
       if (cursor) this.setState("cursor", cursor);
       this.setState("lastLedger", String(latestLedger));
     })();
   }
 
-  private ingestWithinTransaction(event: DecodedEvent): void {
+  private ingestWithinTransaction(event: DecodedEvent, ledgerCursor: string): void {
     const inserted = this.db.prepare(`INSERT OR IGNORE INTO events
       (id, stream_id, name, ledger, ledger_closed_at, payload) VALUES (?, ?, ?, ?, ?, ?)`)
       .run(event.id, event.streamId, event.name, event.ledger, event.ledgerClosedAt, JSON.stringify(event.data, (_key, value: unknown) => typeof value === "bigint" ? value.toString() : value));
     if (inserted.changes === 0) return;
+
+    // Transactional outbox: the delivery-intent journal is committed in the
+    // same transaction as the event row, so intents can never be lost.
+    // Deliberately NOT wrapped in try/catch — any failure must roll back the
+    // whole ingestion transaction.
+    this.outbox.enqueueWithinTransaction(newOutboxEventFromDecoded(event, ledgerCursor));
+
+    // Queue webhook deliveries for subscribers
+    try {
+      this.webhooks.queueDeliveriesForEvent({
+        id: event.id,
+        name: event.name,
+        streamId: event.streamId,
+        ledgerClosedAt: event.ledgerClosedAt,
+        data: event.data as Record<string, unknown>,
+      });
+    } catch (err) {
+      console.error("Failed to queue webhook delivery for event:", err);
+    }
 
     const d = event.data;
     const existing = this.db.prepare("SELECT * FROM streams WHERE stream_id = ?").get(event.streamId) as Record<string, unknown> | undefined;

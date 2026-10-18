@@ -3,7 +3,7 @@
 //! Per-stream events are keyed by `stream_id`; `StreamsCreated` is keyed by
 //! sender and carries the batch ids. Non-topic fields are event data.
 
-use soroban_sdk::{contractevent, Address, Vec};
+use soroban_sdk::{contractevent, Address, BytesN, Vec};
 
 /// Emitted when a new stream is created and its deposit pulled in.
 #[contractevent]
@@ -227,4 +227,63 @@ pub struct PolicyHandoffAccepted {
 pub struct PolicyHandoffCancelled {
     #[topic]
     pub proposed_admin: Address,
+}
+
+/// Emitted when a contract upgrade is proposed with a timelock delay.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpgradeProposed {
+    #[topic]
+    pub new_wasm_hash: BytesN<32>,
+    pub unlock_time: u64,
+    pub proposer: Address,
+}
+
+/// Emitted when a pending contract upgrade is cancelled by the governor.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpgradeCancelled {
+    #[topic]
+    pub new_wasm_hash: BytesN<32>,
+    pub cancelled_by: Address,
+}
+
+/// Emitted when a contract upgrade is executed after its timelock has elapsed.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractUpgraded {
+    #[topic]
+    pub new_wasm_hash: BytesN<32>,
+    pub executed_by: Address,
+}
+
+/// Emitted when the contract freeze state is toggled by the governor.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContractFrozenStateChanged {
+    #[topic]
+    pub frozen: bool,
+    pub changed_by: Address,
+}
+
+/// Emitted when a batch of streams is migrated to a new storage schema version.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StorageMigrated {
+    #[topic]
+    pub from_version: u32,
+    #[topic]
+    pub to_version: u32,
+    pub start_id: u64,
+    pub end_id: u64,
+    pub is_complete: bool,
+}
+
+/// Emitted when a stream policy floor/ceiling configuration is updated.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamPolicySet {
+    pub token: Option<Address>,
+    pub old_policy: Option<crate::policy::StreamPolicy>,
+    pub new_policy: crate::policy::StreamPolicy,
 }

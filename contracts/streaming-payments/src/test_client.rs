@@ -6,11 +6,14 @@
 //! `#[contractclient]`. The client still targets the real contract address
 //! (`Client::new(&env, &streaming_contract_address)`), so it drives the actual
 //! implementation without building Wasm.
-#![cfg(test)]
+#![cfg(any(test, feature = "testutils"))]
 
-use soroban_sdk::{contractclient, Address, Env, Vec};
+use soroban_sdk::{contractclient, Address, BytesN, Env, Vec};
 
-use crate::{FeeScan, ScheduledIntent, Stream, StreamError, StreamInput, TreasuryStatus};
+use crate::{
+    BatchEntry, FeeScan, MigrationStatus, PendingUpgrade, ScheduledIntent, Stream, StreamError,
+    StreamInput, StreamPolicy, TreasuryStatus,
+};
 
 /// Interface of the StreamPay streaming-payments contract.
 #[contractclient(name = "StreamingPaymentsClient")]
@@ -32,6 +35,11 @@ pub trait StreamingPaymentsApi {
         sender: Address,
         inputs: Vec<StreamInput>,
     ) -> Result<Vec<u64>, StreamError>;
+    fn create_streams_batch(
+        env: Env,
+        entries: Vec<BatchEntry>,
+    ) -> Result<Vec<Result<u64, StreamError>>, StreamError>;
+
     fn withdraw(env: Env, stream_id: u64, amount: i128) -> Result<(), StreamError>;
     fn withdraw_max(env: Env, stream_id: u64) -> Result<i128, StreamError>;
     fn cancel_stream(env: Env, caller: Address, stream_id: u64) -> Result<(), StreamError>;
@@ -95,4 +103,30 @@ pub trait StreamingPaymentsApi {
     fn policy_set_timelock_delay(env: Env, delay: u64) -> Result<(), StreamError>;
     fn policy_is_asset_allowed(env: Env, asset: Address) -> bool;
     fn policy_get_queued_asset(env: Env, asset: Address) -> Option<crate::QueuedAssetChange>;
+    fn set_stream_policy(
+        env: Env,
+        caller: Address,
+        token: Option<Address>,
+        policy: StreamPolicy,
+    ) -> Result<(), StreamError>;
+    fn get_stream_policy(env: Env, token: Option<Address>) -> Option<StreamPolicy>;
+    fn schema_version(env: Env) -> u32;
+    fn is_frozen(env: Env) -> bool;
+    fn set_frozen(env: Env, caller: Address, frozen: bool) -> Result<(), StreamError>;
+    fn propose_upgrade(
+        env: Env,
+        caller: Address,
+        new_wasm_hash: BytesN<32>,
+        delay_seconds: u64,
+    ) -> Result<(), StreamError>;
+    fn cancel_upgrade(env: Env, caller: Address) -> Result<(), StreamError>;
+    fn execute_upgrade(env: Env, caller: Address) -> Result<(), StreamError>;
+    fn pending_upgrade(env: Env) -> Option<PendingUpgrade>;
+    fn migrate_storage(
+        env: Env,
+        caller: Address,
+        start_id: u64,
+        count: u32,
+    ) -> Result<MigrationStatus, StreamError>;
+    fn migration_progress(env: Env) -> MigrationStatus;
 }

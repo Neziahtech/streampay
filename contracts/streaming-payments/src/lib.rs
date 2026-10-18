@@ -48,6 +48,9 @@
 extern crate std;
 
 #[cfg(test)]
+mod cei_trace;
+mod client_parity_test;
+#[cfg(test)]
 mod differential_harness;
 #[cfg(test)]
 mod differential_test;
@@ -63,30 +66,35 @@ mod stream;
 pub mod surface;
 #[cfg(test)]
 mod test;
-#[cfg(test)]
-mod test_client;
+#[cfg(any(test, feature = "testutils"))]
+pub mod test_client;
 mod treasury;
 pub mod verification;
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, token::TokenClient, Address, ConversionError, Env,
-    Error as SorobanError, InvokeError, MuxedAddress, Vec,
+    contract, contractimpl, contracttype, token::TokenClient, Address, BytesN, ConversionError,
+    Env, Error as SorobanError, InvokeError, MuxedAddress, Vec,
 };
 
 use surface::Branch;
 
 pub use errors::StreamError;
 pub use events::{
-    FeeCharged, FeeWithdrawn, PolicyAssetExecuted, PolicyAssetQueued, PolicyHandoffAccepted,
-    PolicyHandoffCancelled, PolicyHandoffProposed, PolicyInitialized, ScheduledIntentCancelled,
-    ScheduledIntentExpired, ScheduledStreamExecuted, StreamCancelled, StreamCreated,
-    StreamScheduled, StreamToppedUp, StreamsCreated, Withdrawn,
+    ContractFrozenStateChanged, ContractUpgraded, FeeCharged, FeeWithdrawn, PolicyAssetExecuted,
+    PolicyAssetQueued, PolicyHandoffAccepted, PolicyHandoffCancelled, PolicyHandoffProposed,
+    PolicyInitialized, ScheduledIntentCancelled, ScheduledIntentExpired, ScheduledStreamExecuted,
+    StorageMigrated, StreamCancelled, StreamCreated, StreamPolicySet, StreamScheduled,
+    StreamToppedUp, StreamsCreated, UpgradeCancelled, UpgradeProposed, Withdrawn,
 };
-pub use policy::QueuedAssetChange;
+pub use policy::{validate_stream_args, validate_top_up_args, QueuedAssetChange, StreamPolicy};
 pub use schedule::{IntentStatus, ScheduledIntent, MAX_OCCURRENCES};
 // `streamed_at` is re-exported for the fuzz target and downstream rate
 // calculators: it is a pure function requiring no `Env`.
-pub use stream::{streamed_at, Stream, StreamStatus, MAX_DURATION_SECONDS, MAX_PAGE_SIZE};
+pub use stream::{
+    streamed_at, BatchEntry, MigrationStatus, PendingUpgrade, Stream, StreamStatus,
+    INITIAL_SCHEMA_VERSION, MAX_BATCH, MAX_DURATION_SECONDS, MAX_MIGRATION_BATCH_SIZE,
+    MAX_PAGE_SIZE, MIN_BATCH, MIN_UPGRADE_DELAY_SECONDS, TARGET_SCHEMA_VERSION,
+};
 pub use treasury::{fee_amount, FeeScan, Treasury, TreasuryStatus, BPS_DENOMINATOR, MAX_FEE_BPS};
 
 /// Parameters for one stream in a [`StreamingPayments::create_streams`] call.
@@ -143,6 +151,8 @@ fn pull(
     amount: i128,
     on_failure: Branch,
 ) -> Result<(), StreamError> {
+    #[cfg(test)]
+    cei_trace::record("transfer_from token");
     let res = TokenClient::new(env, token).try_transfer_from(
         &env.current_contract_address(),
         payer,
@@ -161,6 +171,13 @@ fn push(
     amount: i128,
     on_failure: Branch,
 ) -> Result<(), StreamError> {
+    #[cfg(test)]
+    cei_trace::record(match on_failure {
+        Branch::RecipientPayoutFailed => "transfer recipient payout",
+        Branch::SenderRefundFailed => "transfer sender refund",
+        Branch::TreasuryPayoutFailed => "transfer treasury payout",
+        _ => "transfer token",
+    });
     let res = TokenClient::new(env, token).try_transfer(
         &env.current_contract_address(),
         recipient,
@@ -171,6 +188,15 @@ fn push(
 
 #[contractimpl]
 impl StreamingPayments {
+    /// Internal helper: verifies that mutating entrypoints are not called
+    /// while the contract is frozen for maintenance or upgrade.
+    fn require_not_frozen(env: &Env) -> Result<(), StreamError> {
+        if stream::is_frozen(env) {
+            return Err(surface::reject(Branch::ContractFrozen));
+        }
+        Ok(())
+    }
+
     /// Deploy-time constructor: binds the treasury governor.
     ///
     /// Binding governance in the deployment transaction (rather than via a
@@ -221,6 +247,7 @@ impl StreamingPayments {
         end_time: u64,
         cancelable: bool,
     ) -> Result<u64, StreamError> {
+        Self::require_not_frozen(&env)?;
         sender.require_auth();
 
         let now = env.ledger().timestamp();
@@ -229,6 +256,10 @@ impl StreamingPayments {
         // Policy check: if the policy module is active, the asset must be on
         // the allowlist. Uninitialized policy permits all assets (opt-in).
         policy::check_asset_allowed(&env, &token)?;
+
+        let stream_policy = policy::get_stream_policy(&env, Some(token.clone()));
+        let duration = end_time - start_time;
+        policy::validate_stream_args(stream_policy.as_ref(), deposit_amount, duration)?;
 
         // Protocol fee, computed at the deposit boundary only. The accrual
         // math (`deposit`, `streamed_at`, cancel splits) never sees it.
@@ -353,6 +384,8 @@ impl StreamingPayments {
         stream::put_stream(env, &stream);
         stream::index_stream(env, &stream);
 
+        #[cfg(test)]
+        cei_trace::record("event StreamCreated");
         StreamCreated {
             stream_id: id,
             sender,
@@ -381,6 +414,7 @@ impl StreamingPayments {
         sender: Address,
         inputs: Vec<StreamInput>,
     ) -> Result<Vec<u64>, StreamError> {
+        Self::require_not_frozen(&env)?;
         let mut ids = Vec::new(&env);
         let count = inputs.len();
         if count == 0 {
@@ -403,6 +437,10 @@ impl StreamingPayments {
                 input.end_time,
             )?;
             policy::check_asset_allowed(&env, &input.token)?;
+
+            let stream_policy = policy::get_stream_policy(&env, Some(input.token.clone()));
+            let duration = input.end_time - input.start_time;
+            policy::validate_stream_args(stream_policy.as_ref(), input.deposit_amount, duration)?;
 
             let fee = treasury::fee_amount(input.deposit_amount, fee_bps)?;
             let pull_amount = input
@@ -507,6 +545,112 @@ impl StreamingPayments {
         Ok(ids)
     }
 
+    /// Creates a batch of payment streams in a single transaction.
+    ///
+    /// Semantics are all-or-nothing per entry but best-effort across the batch:
+    /// each entry validates its parameters and attempts its own deposit pull.
+    /// Failures are reported per-entry in the returned vector without aborting
+    /// or rolling back successfully created sibling streams.
+    ///
+    /// The entire batch call reverts if `entries` is empty ([`StreamError::BatchEmpty`])
+    /// or exceeds [`MAX_BATCH`] ([`StreamError::BatchTooLarge`]).
+    pub fn create_streams_batch(
+        env: Env,
+        entries: Vec<BatchEntry>,
+    ) -> Result<Vec<Result<u64, StreamError>>, StreamError> {
+        let count = entries.len();
+        if count < stream::MIN_BATCH {
+            return Err(surface::reject(Branch::CreateBatchEmpty));
+        }
+        if count > stream::MAX_BATCH {
+            return Err(surface::reject(Branch::CreateBatchTooLarge));
+        }
+
+        let mut results = Vec::new(&env);
+        let mut authorized_senders = Vec::new(&env);
+        for entry in entries.iter() {
+            if !authorized_senders.contains(&entry.sender) {
+                entry.sender.require_auth();
+                authorized_senders.push_back(entry.sender.clone());
+            }
+            let res = Self::create_single_batch_entry(&env, &entry);
+            results.push_back(res);
+        }
+
+        Ok(results)
+    }
+
+    fn create_single_batch_entry(env: &Env, entry: &BatchEntry) -> Result<u64, StreamError> {
+        Self::validate_stream_creation(
+            env.ledger().timestamp(),
+            entry.deposit,
+            entry.start_time,
+            entry.end_time,
+        )?;
+
+        let fee_bps = treasury::current_fee_bps(env);
+        let fee = treasury::fee_amount(entry.deposit, fee_bps)?;
+        let pull_amount = entry
+            .deposit
+            .checked_add(fee)
+            .ok_or(StreamError::MathOverflow)?;
+
+        let pull_res = TokenClient::new(env, &entry.token).try_transfer_from(
+            &env.current_contract_address(),
+            &entry.sender,
+            &env.current_contract_address(),
+            &pull_amount,
+        );
+        match pull_res {
+            Ok(Ok(())) => {}
+            _ => return Err(StreamError::AmountExceedsAvailable),
+        }
+
+        let id = stream::next_stream_id(env);
+        let s = Stream {
+            id,
+            sender: entry.sender.clone(),
+            recipient: entry.recipient.clone(),
+            token: entry.token.clone(),
+            deposit: entry.deposit,
+            withdrawn: 0,
+            start_time: entry.start_time,
+            end_time: entry.end_time,
+            cancelable: entry.cancelable,
+            status: StreamStatus::Active,
+        };
+        stream::put_stream(env, &s);
+        stream::index_stream(env, &s);
+        if fee > 0 {
+            treasury::apply_fee(env, &entry.token, id, fee)?;
+        }
+
+        StreamCreated {
+            stream_id: id,
+            sender: entry.sender.clone(),
+            recipient: entry.recipient.clone(),
+            token: entry.token.clone(),
+            deposit: entry.deposit,
+            start_time: entry.start_time,
+            end_time: entry.end_time,
+            cancelable: entry.cancelable,
+        }
+        .publish(env);
+
+        if fee > 0 {
+            FeeCharged {
+                stream_id: id,
+                token: s.token.clone(),
+                payer: s.sender.clone(),
+                amount: fee,
+                fee_bps,
+            }
+            .publish(env);
+        }
+
+        Ok(id)
+    }
+
     /// Withdraws up to `amount` of the accrued-but-unwithdrawn balance and
     /// pays it to the stream recipient. Only the recipient can call this
     /// (their authorization is required).
@@ -543,6 +687,7 @@ impl StreamingPayments {
     /// sequences in `test.rs` (`race_*`); the race table lives in
     /// `docs/ARCHITECTURE.md` §6.1.
     pub fn withdraw(env: Env, stream_id: u64, amount: i128) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
         if amount <= 0 {
             return Err(surface::reject(Branch::WithdrawAmountNonPositive));
         }
@@ -568,6 +713,7 @@ impl StreamingPayments {
     /// with [`StreamError::RecipientPayoutFailed`] if the token refuses the
     /// payout (state rolls back unchanged).
     pub fn withdraw_max(env: Env, stream_id: u64) -> Result<i128, StreamError> {
+        Self::require_not_frozen(&env)?;
         let mut s = Self::authorize_withdrawal(&env, stream_id)?;
 
         let amount = stream::available_amount(&env, &s)?;
@@ -603,6 +749,8 @@ impl StreamingPayments {
         }
         stream::put_stream(env, s);
 
+        #[cfg(test)]
+        cei_trace::record("event Withdrawn");
         Withdrawn {
             stream_id: s.id,
             recipient: s.recipient.clone(),
@@ -653,6 +801,7 @@ impl StreamingPayments {
     /// Pinned by the `race_*` regression tests in `test.rs`; see
     /// `docs/ARCHITECTURE.md` §6.1 for the race table.
     pub fn cancel_stream(env: Env, caller: Address, stream_id: u64) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
         caller.require_auth();
 
         let mut s = stream::get_stream(&env, stream_id)?;
@@ -679,6 +828,8 @@ impl StreamingPayments {
             .ok_or_else(|| surface::reject(Branch::CancelSplitOverflow))?;
         stream::put_stream(&env, &s);
 
+        #[cfg(test)]
+        cei_trace::record("event StreamCancelled");
         StreamCancelled {
             stream_id,
             cancelled_by: caller,
@@ -735,6 +886,7 @@ impl StreamingPayments {
     /// retroactively re-baselining accrual is lossy for the recipient; see
     /// `docs/ARCHITECTURE.md` for the design considerations and roadmap.
     pub fn top_up(env: Env, stream_id: u64, amount: i128) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
         if amount <= 0 {
             return Err(surface::reject(Branch::TopUpAmountNonPositive));
         }
@@ -749,6 +901,9 @@ impl StreamingPayments {
             .checked_add(amount)
             .ok_or_else(|| surface::reject(Branch::TopUpDepositOverflow))?;
         stream::validate_capacity(new_deposit, s.duration())?;
+
+        let stream_policy = policy::get_stream_policy(&env, Some(s.token.clone()));
+        policy::validate_top_up_args(stream_policy.as_ref(), new_deposit, s.duration())?;
 
         // Interaction: pull the added funds from the sender. A token-side
         // failure maps to a distinct code; the effects below never run, and
@@ -765,6 +920,8 @@ impl StreamingPayments {
         s.deposit = new_deposit;
         stream::put_stream(&env, &s);
 
+        #[cfg(test)]
+        cei_trace::record("event StreamToppedUp");
         StreamToppedUp {
             stream_id,
             sender: s.sender.clone(),
@@ -1002,6 +1159,8 @@ impl StreamingPayments {
         // Pay the keeper its escrowed fee for this occurrence.
         let fee_paid = intent.fee_budget;
         if fee_paid > 0 {
+            #[cfg(test)]
+            cei_trace::record("transfer keeper fee");
             TokenClient::new(&env, &intent.token).transfer(
                 &env.current_contract_address(),
                 stream::muxed(&keeper),
@@ -1009,6 +1168,8 @@ impl StreamingPayments {
             );
         }
 
+        #[cfg(test)]
+        cei_trace::record("event ScheduledStreamExecuted");
         ScheduledStreamExecuted {
             intent_id,
             keeper,
@@ -1057,6 +1218,8 @@ impl StreamingPayments {
         schedule::put_intent(&env, &intent);
 
         if refund > 0 {
+            #[cfg(test)]
+            cei_trace::record("transfer scheduled refund");
             TokenClient::new(&env, &intent.token).transfer(
                 &env.current_contract_address(),
                 stream::muxed(&intent.sender),
@@ -1064,6 +1227,8 @@ impl StreamingPayments {
             );
         }
 
+        #[cfg(test)]
+        cei_trace::record("event ScheduledIntentCancelled");
         ScheduledIntentCancelled {
             intent_id,
             sender: intent.sender.clone(),
@@ -1100,6 +1265,8 @@ impl StreamingPayments {
         schedule::put_intent(&env, &intent);
 
         if refund > 0 {
+            #[cfg(test)]
+            cei_trace::record("transfer scheduled refund");
             TokenClient::new(&env, &intent.token).transfer(
                 &env.current_contract_address(),
                 stream::muxed(&intent.sender),
@@ -1107,6 +1274,8 @@ impl StreamingPayments {
             );
         }
 
+        #[cfg(test)]
+        cei_trace::record("event ScheduledIntentExpired");
         ScheduledIntentExpired {
             intent_id,
             sender: intent.sender.clone(),
@@ -1233,6 +1402,8 @@ impl StreamingPayments {
             .ok_or(StreamError::MathOverflow)?;
         treasury::put_treasury(&env, &token, &t);
 
+        #[cfg(test)]
+        cei_trace::record("event FeeWithdrawn");
         FeeWithdrawn {
             token: token.clone(),
             governor: caller,
@@ -1382,5 +1553,248 @@ impl StreamingPayments {
     /// Returns the queued allowlist change for `asset`, if any.
     pub fn policy_get_queued_asset(env: Env, asset: Address) -> Option<QueuedAssetChange> {
         policy::get_queued_asset(&env, &asset)
+    }
+
+    /// Sets governance policy floors and ceilings for streams of `token`, or global default if `token` is None.
+    /// Governor-only.
+    ///
+    /// Governance timelock hook: this setter gates via `treasury::require_governor` and will route
+    /// through the timelocked proposal queue once governance timelocks are enabled across all operations.
+    pub fn set_stream_policy(
+        env: Env,
+        caller: Address,
+        token: Option<Address>,
+        policy: StreamPolicy,
+    ) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
+        treasury::require_governor(&env, &caller)?;
+        policy::set_stream_policy(&env, token, policy)
+    }
+
+    /// Queries the effective stream policy for `token` (falling back to global policy if unset).
+    pub fn get_stream_policy(env: Env, token: Option<Address>) -> Option<StreamPolicy> {
+        policy::get_stream_policy(&env, token)
+    }
+
+    // --------------------------------------------- upgrade & migration --
+
+    /// Returns the current schema version of stored contract state.
+    pub fn schema_version(env: Env) -> u32 {
+        stream::schema_version(&env)
+    }
+
+    /// Returns whether mutating contract operations are currently frozen.
+    pub fn is_frozen(env: Env) -> bool {
+        stream::is_frozen(&env)
+    }
+
+    /// Sets the freeze state of the contract. Governor-only.
+    ///
+    /// When frozen, mutating stream entrypoints (create, withdraw, withdraw_max,
+    /// cancel, top_up) revert with [`StreamError::ContractFrozen`], but read views
+    /// remain accessible.
+    pub fn set_frozen(env: Env, caller: Address, frozen: bool) -> Result<(), StreamError> {
+        treasury::require_governor(&env, &caller)?;
+        stream::set_frozen(&env, frozen);
+
+        ContractFrozenStateChanged {
+            frozen,
+            changed_by: caller,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Proposes a Wasm bytecode upgrade with an enforced timelock delay. Governor-only.
+    ///
+    /// `delay_seconds` must be at least [`MIN_UPGRADE_DELAY_SECONDS`] (24 hours).
+    /// Overwrites any existing proposal.
+    pub fn propose_upgrade(
+        env: Env,
+        caller: Address,
+        new_wasm_hash: BytesN<32>,
+        delay_seconds: u64,
+    ) -> Result<(), StreamError> {
+        treasury::require_governor(&env, &caller)?;
+        if delay_seconds < stream::MIN_UPGRADE_DELAY_SECONDS {
+            return Err(surface::reject(Branch::UpgradeDelayTooShort));
+        }
+        let now = env.ledger().timestamp();
+        let unlock_time = now
+            .checked_add(delay_seconds)
+            .ok_or(StreamError::MathOverflow)?;
+
+        let pending = PendingUpgrade {
+            new_wasm_hash: new_wasm_hash.clone(),
+            unlock_time,
+        };
+        stream::set_pending_upgrade(&env, &pending);
+
+        UpgradeProposed {
+            new_wasm_hash,
+            unlock_time,
+            proposer: caller,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Cancels a pending upgrade proposal. Governor-only.
+    ///
+    /// Reverts with [`StreamError::NoPendingUpgrade`] if no proposal is pending.
+    pub fn cancel_upgrade(env: Env, caller: Address) -> Result<(), StreamError> {
+        treasury::require_governor(&env, &caller)?;
+        let pending = stream::pending_upgrade(&env)
+            .ok_or_else(|| surface::reject(Branch::CancelUpgradeNoPending))?;
+        stream::remove_pending_upgrade(&env);
+
+        UpgradeCancelled {
+            new_wasm_hash: pending.new_wasm_hash,
+            cancelled_by: caller,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Executes a pending upgrade proposal once its timelock delay has elapsed. Governor-only.
+    ///
+    /// Updates the contract executable via [`env.deployer().update_current_contract_wasm`]
+    /// and clears the pending upgrade.
+    pub fn execute_upgrade(env: Env, caller: Address) -> Result<(), StreamError> {
+        treasury::require_governor(&env, &caller)?;
+        let pending = stream::pending_upgrade(&env)
+            .ok_or_else(|| surface::reject(Branch::ExecuteUpgradeNoPending))?;
+        let now = env.ledger().timestamp();
+        if now < pending.unlock_time {
+            return Err(surface::reject(Branch::TimelockNotExpired));
+        }
+
+        env.deployer()
+            .update_current_contract(soroban_sdk::ContractExecutable::Wasm(
+                pending.new_wasm_hash.clone(),
+            ));
+        stream::remove_pending_upgrade(&env);
+
+        ContractUpgraded {
+            new_wasm_hash: pending.new_wasm_hash,
+            executed_by: caller,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Read-only view of any pending upgrade proposal.
+    pub fn pending_upgrade(env: Env) -> Option<PendingUpgrade> {
+        stream::pending_upgrade(&env)
+    }
+
+    /// Migrates a batch of streams from schema v1 to schema v2. Governor-only.
+    ///
+    /// Requires the contract to be frozen ([`StreamError::ContractNotFrozen`]).
+    /// `count` is clamped to [`MAX_MIGRATION_BATCH_SIZE`] (50 streams per call).
+    /// If `start_id == 0`, migration resumes from `migration_cursor + 1`.
+    /// When the cursor reaches `total_streams`, the schema version is bumped to v2.
+    /// Calling this after migration is complete reverts with [`StreamError::AlreadyMigrated`].
+    pub fn migrate_storage(
+        env: Env,
+        caller: Address,
+        start_id: u64,
+        count: u32,
+    ) -> Result<MigrationStatus, StreamError> {
+        treasury::require_governor(&env, &caller)?;
+        if !stream::is_frozen(&env) {
+            return Err(surface::reject(Branch::MigrationNotFrozen));
+        }
+        let current_version = stream::schema_version(&env);
+        if current_version >= stream::TARGET_SCHEMA_VERSION {
+            return Err(surface::reject(Branch::AlreadyMigrated));
+        }
+
+        let total = Self::total_streams(env.clone());
+        let batch_size = count.clamp(1, stream::MAX_MIGRATION_BATCH_SIZE) as u64;
+
+        if total == 0 {
+            stream::set_schema_version(&env, stream::TARGET_SCHEMA_VERSION);
+            stream::set_migration_cursor(&env, 0);
+
+            StorageMigrated {
+                from_version: current_version,
+                to_version: stream::TARGET_SCHEMA_VERSION,
+                start_id: 0,
+                end_id: 0,
+                is_complete: true,
+            }
+            .publish(&env);
+
+            return Ok(MigrationStatus {
+                current_version: stream::TARGET_SCHEMA_VERSION,
+                target_version: stream::TARGET_SCHEMA_VERSION,
+                cursor: 0,
+                total_streams: 0,
+                is_complete: true,
+            });
+        }
+
+        let cursor = stream::migration_cursor(&env);
+        let effective_start = if start_id == 0 {
+            cursor.saturating_add(1)
+        } else {
+            start_id
+        };
+        let effective_start = effective_start.clamp(1, total);
+        let end_id = (effective_start.saturating_add(batch_size).saturating_sub(1)).min(total);
+
+        // Migrate each stream in the batch: read, verify, touch TTL, re-store.
+        for id in effective_start..=end_id {
+            if let Ok(s) = stream::get_stream(&env, id) {
+                stream::put_stream(&env, &s);
+            }
+        }
+
+        let new_cursor = cursor.max(end_id);
+        stream::set_migration_cursor(&env, new_cursor);
+        let is_complete = new_cursor >= total;
+        let new_version = if is_complete {
+            stream::set_schema_version(&env, stream::TARGET_SCHEMA_VERSION);
+            stream::TARGET_SCHEMA_VERSION
+        } else {
+            current_version
+        };
+
+        StorageMigrated {
+            from_version: current_version,
+            to_version: new_version,
+            start_id: effective_start,
+            end_id,
+            is_complete,
+        }
+        .publish(&env);
+
+        Ok(MigrationStatus {
+            current_version: new_version,
+            target_version: stream::TARGET_SCHEMA_VERSION,
+            cursor: new_cursor,
+            total_streams: total,
+            is_complete,
+        })
+    }
+
+    /// Read-only snapshot of storage migration progress.
+    pub fn migration_progress(env: Env) -> MigrationStatus {
+        let current_version = stream::schema_version(&env);
+        let cursor = stream::migration_cursor(&env);
+        let total = Self::total_streams(env);
+        let is_complete = current_version >= stream::TARGET_SCHEMA_VERSION;
+        MigrationStatus {
+            current_version,
+            target_version: stream::TARGET_SCHEMA_VERSION,
+            cursor,
+            total_streams: total,
+            is_complete,
+        }
     }
 }

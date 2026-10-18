@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { isConnected, requestAccess } from "@stellar/freighter-api";
 import {
   createStream,
@@ -15,6 +16,7 @@ import {
   type StreamView,
 } from "@/lib/stellar";
 import { loadStreamIds, saveStreamId } from "@/lib/storage";
+import { checkWalletNetwork } from "@/lib/network";
 import StreamForm from "@/components/StreamForm";
 import BatchStreamForm from "@/components/BatchStreamForm";
 import StreamList from "@/components/StreamList";
@@ -46,6 +48,9 @@ export default function Home() {
       }
       setAddress(address);
       toast.success(`Connected as ${address.slice(0, 8)}…`);
+      // Surface a wallet/app network mismatch here instead of letting it
+      // arrive later as an opaque signing error (issue #33).
+      await checkWalletNetwork();
       // Rehydrate the cached list (ids only; state is always read fresh).
       const cached = loadStreamIds(address);
       if (cached.length > 0) {
@@ -114,8 +119,20 @@ export default function Home() {
   if (!address) {
     return (
       <main className="wrap">
-        <div className="kicker mono">SOROBAN · STELLAR</div>
-        <h1>⚡ StreamPay</h1>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap" }}>
+          <div>
+            <div className="kicker mono">SOROBAN · STELLAR</div>
+            <h1>⚡ StreamPay</h1>
+          </div>
+          <div style={{ display: "flex", gap: "16px", alignItems: "center" }}>
+            <Link href="/docs" style={{ color: "#38bdf8", fontSize: "0.85rem", textDecoration: "none" }}>
+              API Docs ↗
+            </Link>
+            <Link href="/listings" style={{ color: "var(--accent2)", fontSize: "14px", textDecoration: "none" }}>
+              Browse Discovery Directory →
+            </Link>
+          </div>
+        </div>
         <p className="muted">
           Continuous, per-second payment streams — payroll, vesting,
           subscriptions. Connect Freighter to begin.
@@ -146,23 +163,28 @@ export default function Home() {
 
   return (
     <main className="wrap">
-      <h1>⚡ StreamPay</h1>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-        <p className="muted">
-          Connected: <code>{address}</code>
-        </p>
-        <a
-          href="/simulator"
-          style={{
-            color: "var(--accent2)",
-            textDecoration: "none",
-            fontSize: "13px",
-            fontWeight: 600,
-          }}
-        >
-          Accrual Simulator →
-        </a>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap" }}>
+        <h1>⚡ StreamPay</h1>
+        <div style={{ display: "flex", gap: "16px", alignItems: "baseline" }}>
+          <a
+            href="/simulator"
+            style={{
+              color: "var(--accent2)",
+              textDecoration: "none",
+              fontSize: "13px",
+              fontWeight: 600,
+            }}
+          >
+            Accrual Simulator →
+          </a>
+          <Link href="/listings" style={{ color: "var(--accent2)", fontSize: "14px", textDecoration: "none" }}>
+            Browse Discovery Directory →
+          </Link>
+        </div>
       </div>
+      <p className="muted">
+        Connected: <code>{address}</code>
+      </p>
 
       <StreamForm
         onCreate={async (args) => {

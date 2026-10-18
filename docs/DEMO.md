@@ -427,6 +427,33 @@ To view and interact with the stream from the web UI:
 
 ---
 
+## Shareable Payment Links — Freelancer Invoice Walkthrough
+
+Freelancers and DAOs can invoice clients with a single shareable link instead of onboarding payers through a manual wallet tutorial:
+
+### 1. Generating a Payment Link
+From the stream details page (`/stream/[id]`), click **"Copy Shareable Payment Link"**. This generates a deterministic, privacy-blinded URL:
+```text
+https://streampay.finance/pay/eyJkIjp7InZlcnNpb24iOjEsInN0cmVhbUlkIjoiNDIiLCJjb250cmFjdEhpbnQiOiJDRExaRkMiLCJibGluZGVkUmVjaXBpZW50IjoiZjNhOGMyYjQxOTg3ZTIxYSIsInNhbHQiOiI4YzkxYjJjMyJ9LCJjIjoiZDc0MmEzYjEifQ
+```
+
+### 2. Client Opens Invoice (Zero-Login / Zero-Wallet)
+- The client pastes or clicks the link in any browser or messaging app.
+- Messaging apps (Slack, Discord, Telegram, Twitter/X) render rich dynamic OpenGraph cards (e.g. `Active Stream — 500 USDC | StreamPay`).
+- The link resolves directly against the Stellar network client-side.
+- The visitor sees the real-time linear accrual ticker, progress bar, token contract, and stream timeline.
+- **Privacy Guaranteed**: The payee's full Stellar public key is never shown in plain text or leaked to URL unfurlers; it remains protected behind a cryptographic commitment.
+
+### 3. Claiming with Freighter
+1. The freelancer clicks **"Connect Freighter & Claim"**.
+2. Freighter opens to connect the wallet.
+3. StreamPay verifies that the connected wallet address matches the blinded commitment.
+4. If verified, the **"Claim [Amount] Tokens"** action unlocks.
+5. Clicking Claim submits an atomic `withdraw_max` transaction to Stellar Soroban.
+6. A verified **Receipt View** appears with the transaction hash and a direct link to Stellar Expert.
+
+---
+
 ## Common Errors & Troubleshooting
 
 | Error Code / Message | Cause | Resolution |

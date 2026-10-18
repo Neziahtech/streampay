@@ -125,6 +125,32 @@ pub enum StreamError {
     PolicyNotInitialized = 34,
     /// No admin handoff proposal is pending.
     PolicyNoPendingHandoff = 35,
+    /// The contract is currently frozen for maintenance or upgrade.
+    ContractFrozen = 36,
+    /// The operation requires the contract to be frozen.
+    ContractNotFrozen = 37,
+    /// An upgrade operation was attempted but no upgrade is pending.
+    NoPendingUpgrade = 38,
+    /// The upgrade timelock delay has not yet expired.
+    TimelockNotExpired = 39,
+    /// The proposed upgrade delay is shorter than the minimum timelock.
+    UpgradeDelayTooShort = 40,
+    /// The storage migration has already been completed.
+    AlreadyMigrated = 41,
+    /// Stream rate is below the governance policy floor.
+    PolicyRateBelowFloor = 42,
+    /// Stream rate exceeds the governance policy ceiling.
+    PolicyRateAboveCeiling = 43,
+    /// Stream duration is below the governance policy floor.
+    PolicyDurationBelowFloor = 44,
+    /// Stream duration exceeds the governance policy ceiling.
+    PolicyDurationAboveCeiling = 45,
+    /// Stream deposit is below the governance policy floor.
+    PolicyDepositBelowFloor = 46,
+    /// Batch creation was requested with zero entries.
+    BatchEmpty = 47,
+    /// Batch creation was requested with more entries than MAX_BATCH.
+    BatchTooLarge = 48,
 }
 
 impl StreamError {
@@ -167,6 +193,19 @@ impl StreamError {
         StreamError::PolicyNoQueuedChange,
         StreamError::PolicyNotInitialized,
         StreamError::PolicyNoPendingHandoff,
+        StreamError::ContractFrozen,
+        StreamError::ContractNotFrozen,
+        StreamError::NoPendingUpgrade,
+        StreamError::TimelockNotExpired,
+        StreamError::UpgradeDelayTooShort,
+        StreamError::AlreadyMigrated,
+        StreamError::PolicyRateBelowFloor,
+        StreamError::PolicyRateAboveCeiling,
+        StreamError::PolicyDurationBelowFloor,
+        StreamError::PolicyDurationAboveCeiling,
+        StreamError::PolicyDepositBelowFloor,
+        StreamError::BatchEmpty,
+        StreamError::BatchTooLarge,
     ];
 
     /// The stable numeric value carried across the contract boundary
