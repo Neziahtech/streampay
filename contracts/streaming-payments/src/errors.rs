@@ -70,35 +70,90 @@ pub enum StreamError {
     /// A treasury withdrawal exceeds the fees collected minus fees already
     /// withdrawn for that token.
     InsufficientTreasuryBalance = 17,
+    /// No scheduled intent exists with the provided id.
+    IntentNotFound = 18,
+    /// The scheduled intent is not pending (already executed, cancelled, or
+    /// expired), so the operation is not permitted.
+    IntentNotPending = 19,
+    /// Execution was attempted before the intent's `execute_after` (for the
+    /// next outstanding occurrence).
+    IntentNotYetExecutable = 20,
+    /// Execution or cancellation was attempted at/after the intent's
+    /// `expires_at`; the funds are reclaimable via `reclaim_expired`.
+    IntentExpired = 21,
+    /// The sender tried to cancel an intent whose execution window has already
+    /// opened; cancellation is only allowed before `execute_after`.
+    IntentNotCancellable = 22,
+    /// The scheduling parameters are inconsistent (bad occurrence/interval
+    /// combination, negative fee budget, ordering of `execute_after` /
+    /// `start_time` / `expires_at`, or an overflowing recurrence window).
+    InvalidScheduleParameters = 23,
+    /// A defensive integrity check failed: the stored intent's parameters no
+    /// longer hash to the commitment recorded when it was scheduled.
+    IntentParamsMismatch = 24,
+    /// `reclaim_expired` was called before the intent's `expires_at`.
+    IntentNotExpired = 25,
     /// The token pull in `create_stream` / `create_stream_vested` failed: the
     /// sender's balance or allowance was insufficient (the pull covers
     /// `deposit_amount + fee`), or the asset refused the transfer
     /// (frozen/unauthorized/deauthorized holder, or any non-compliant token).
     /// Nothing is persisted when it fails, so no stream id is consumed.
-    DepositTransferFailed = 18,
+    DepositTransferFailed = 26,
     /// The token pull in `top_up` failed (see
     /// [`StreamError::DepositTransferFailed`]; the stream's deposit is left
     /// untouched).
-    TopUpTransferFailed = 19,
+    TopUpTransferFailed = 27,
     /// The payout of accrued funds to the stream recipient failed — from
     /// `withdraw`, `withdraw_max`, or the recipient leg of `cancel_stream`.
     /// State changes made before the transfer are rolled back with the error.
-    RecipientPayoutFailed = 20,
+    RecipientPayoutFailed = 28,
     /// The refund of unaccrued funds back to the sender failed during
     /// `cancel_stream` (the recipient leg, if any, was already paid).
     /// The cancellation is rolled back in full, so the stream stays active.
-    SenderRefundFailed = 21,
+    SenderRefundFailed = 29,
     /// The payout of collected protocol fees failed in `withdraw_treasury`.
     /// The recorded withdrawal and the `FeeWithdrawn` event are rolled back
     /// with it, so the fee ledger stays unchanged.
-    TreasuryPayoutFailed = 22,
+    TreasuryPayoutFailed = 30,
+    /// The asset is not permitted by the policy module allowlist.
+    PolicyAssetNotAllowed = 31,
+    /// The timelock delay has not elapsed for this queued policy change.
+    PolicyTimelockNotElapsed = 32,
+    /// No policy change is queued for the specified asset.
+    PolicyNoQueuedChange = 33,
+    /// The policy module has not been initialized.
+    PolicyNotInitialized = 34,
+    /// No admin handoff proposal is pending.
+    PolicyNoPendingHandoff = 35,
+    /// The contract is currently frozen for maintenance or upgrade.
+    ContractFrozen = 36,
+    /// The operation requires the contract to be frozen.
+    ContractNotFrozen = 37,
+    /// An upgrade operation was attempted but no upgrade is pending.
+    NoPendingUpgrade = 38,
+    /// The upgrade timelock delay has not yet expired.
+    TimelockNotExpired = 39,
+    /// The proposed upgrade delay is shorter than the minimum timelock.
+    UpgradeDelayTooShort = 40,
+    /// The storage migration has already been completed.
+    AlreadyMigrated = 41,
+    /// Stream rate is below the governance policy floor.
+    PolicyRateBelowFloor = 42,
+    /// Stream rate exceeds the governance policy ceiling.
+    PolicyRateAboveCeiling = 43,
+    /// Stream duration is below the governance policy floor.
+    PolicyDurationBelowFloor = 44,
+    /// Stream duration exceeds the governance policy ceiling.
+    PolicyDurationAboveCeiling = 45,
+    /// Stream deposit is below the governance policy floor.
+    PolicyDepositBelowFloor = 46,
     /// A withdrawal or `withdraw_max` was attempted before the stream's cliff
     /// time has been reached; nothing is claimable yet.
-    CliffNotReached = 23,
+    CliffNotReached = 47,
     /// The vesting schedule passed to `create_stream_vested` is invalid:
     /// steps are empty, not sorted, extend past `end_time`, or their rates
     /// do not sum to exactly `10_000` bps (100 % of the deposit).
-    InvalidSchedule = 24,
+    InvalidSchedule = 48,
 }
 
 impl StreamError {
@@ -123,11 +178,35 @@ impl StreamError {
         StreamError::NotGovernor,
         StreamError::NoPendingGovernor,
         StreamError::InsufficientTreasuryBalance,
+        StreamError::IntentNotFound,
+        StreamError::IntentNotPending,
+        StreamError::IntentNotYetExecutable,
+        StreamError::IntentExpired,
+        StreamError::IntentNotCancellable,
+        StreamError::InvalidScheduleParameters,
+        StreamError::IntentParamsMismatch,
+        StreamError::IntentNotExpired,
         StreamError::DepositTransferFailed,
         StreamError::TopUpTransferFailed,
         StreamError::RecipientPayoutFailed,
         StreamError::SenderRefundFailed,
         StreamError::TreasuryPayoutFailed,
+        StreamError::PolicyAssetNotAllowed,
+        StreamError::PolicyTimelockNotElapsed,
+        StreamError::PolicyNoQueuedChange,
+        StreamError::PolicyNotInitialized,
+        StreamError::PolicyNoPendingHandoff,
+        StreamError::ContractFrozen,
+        StreamError::ContractNotFrozen,
+        StreamError::NoPendingUpgrade,
+        StreamError::TimelockNotExpired,
+        StreamError::UpgradeDelayTooShort,
+        StreamError::AlreadyMigrated,
+        StreamError::PolicyRateBelowFloor,
+        StreamError::PolicyRateAboveCeiling,
+        StreamError::PolicyDurationBelowFloor,
+        StreamError::PolicyDurationAboveCeiling,
+        StreamError::PolicyDepositBelowFloor,
         StreamError::CliffNotReached,
         StreamError::InvalidSchedule,
     ];

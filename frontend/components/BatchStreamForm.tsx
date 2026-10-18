@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import { parseBatchCsv, type BatchStreamEntry } from "@/lib/batch";
 
 export default function BatchStreamForm({
@@ -17,6 +17,17 @@ export default function BatchStreamForm({
   const [cancelable, setCancelable] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+
+  // Stable IDs for ARIA associations (WCAG 1.3.1 / 4.1.2)
+  const formId = useId();
+  const headingId = `${formId}-heading`;
+  const formDescId = `${formId}-desc`;
+  const tokenId = `${formId}-token`;
+  const tokenHintId = `${formId}-token-hint`;
+  const csvId = `${formId}-csv`;
+  const csvHintId = `${formId}-csv-hint`;
+  const cancelableId = `${formId}-cancelable`;
+  const errorId = `${formId}-error`;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -40,31 +51,70 @@ export default function BatchStreamForm({
   }
 
   return (
-    <form className="card" onSubmit={submit}>
-      <h2>Create payroll batch</h2>
-      <label htmlFor="batch-token">Token contract id (shared by all rows)</label>
+    <form
+      className="card"
+      onSubmit={submit}
+      aria-labelledby={headingId}
+      aria-describedby={formDescId}
+      noValidate
+    >
+      <h2 id={headingId}>Create payroll batch</h2>
+
+      <p id={formDescId} className="sr-only">
+        Create multiple payment streams at once by providing a shared token
+        contract and a CSV list of recipients. Required fields are marked with
+        an asterisk (*).
+      </p>
+
+      {/* Token contract field */}
+      <label htmlFor={tokenId}>
+        Token contract id (shared by all rows){" "}
+        <span aria-hidden="true">*</span>
+        <span className="sr-only">(required)</span>
+      </label>
       <input
-        id="batch-token"
+        id={tokenId}
         type="text"
         required
         placeholder="C… (SAC id)"
         value={token}
         onChange={(e) => setToken(e.target.value)}
+        aria-describedby={tokenHintId}
+        autoComplete="off"
       />
-      <label htmlFor="batch-csv">CSV rows: address,rate,duration</label>
+      <span id={tokenHintId} className="sr-only">
+        The Stellar Asset Contract ID shared by every stream in this batch.
+        Starts with the letter C.
+      </span>
+
+      {/* CSV field */}
+      <label htmlFor={csvId}>
+        CSV rows: address,rate,duration{" "}
+        <span aria-hidden="true">*</span>
+        <span className="sr-only">(required)</span>
+      </label>
       <textarea
-        id="batch-csv"
+        id={csvId}
         required
         rows={7}
         placeholder={"address,rate,duration\nG…,1000,2592000"}
         value={csv}
         onChange={(e) => setCsv(e.target.value)}
+        aria-describedby={`${csvHintId}${error ? ` ${errorId}` : ""}`}
+        aria-invalid={error ? true : undefined}
       />
+      <span id={csvHintId} className="sr-only">
+        One recipient per line. Columns: Stellar public key, rate in smallest
+        token units per second, duration in seconds. Include a header row
+        (address,rate,duration) or start directly with data rows.
+      </span>
+
+      {/* Cancelable select */}
       <div className="row">
         <div>
-          <label htmlFor="batch-cancelable">Recipients may cancel?</label>
+          <label htmlFor={cancelableId}>Recipients may cancel?</label>
           <select
-            id="batch-cancelable"
+            id={cancelableId}
             value={cancelable ? "yes" : "no"}
             onChange={(e) => setCancelable(e.target.value === "yes")}
           >
@@ -73,13 +123,21 @@ export default function BatchStreamForm({
           </select>
         </div>
       </div>
+
       <p className="muted">
         Rate is in smallest token units per second; duration is in seconds.
         Each deposit is rate × duration and starts immediately. Approve the
         summed deposits (plus any configured fees) before submitting. The
         contract applies this batch atomically.
       </p>
-      {error && <p className="err">{error}</p>}
+
+      {/* Error — role="alert" so SR reads it immediately (WCAG 4.1.3) */}
+      {error && (
+        <p id={errorId} className="err" role="alert" aria-live="assertive">
+          {error}
+        </p>
+      )}
+
       <button type="submit" disabled={busy}>
         {busy ? "Creating batch…" : "Create batch"}
       </button>

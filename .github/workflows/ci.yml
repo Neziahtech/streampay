@@ -44,6 +44,12 @@ jobs:
       - name: Unit + property tests
         run: cargo test -p streampay-contract --locked
 
+      - name: CEI operation-order goldens
+        run: cargo test -p streampay-contract --lib operation_order_matches_golden --locked
+
+      - name: Reference model + differential tests
+        run: cargo test -p streampay-model --locked
+
       # The error-surface table is generated from the contract's branch
       # instrumentation. Regenerate it and fail if the committed artifact has
       # drifted — this also fails on any error code with zero coverage or any
@@ -92,11 +98,37 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install CLI dependencies for cross-client parity
+        run: npm install --prefix ../tools/streampay-cli --no-package-lock --ignore-scripts --no-audit --no-fund
+
       - name: Lint
         run: npm run lint
 
       - name: Typecheck
         run: npm run typecheck
+
+      - name: Regenerate differential vectors
+        run: node ../scripts/generate-vectors.mjs
+
+      - name: Differential tests (against shared vector corpus)
+        run: node --experimental-strip-types --test lib/oracle.test.ts
+
+      - name: Client parity smoke tests
+        run: npm run test:parity
+
+      # -----------------------------------------------------------------------
+      # WCAG 2.1 AA accessibility gate (issue #98)
+      #
+      # Runs axe-core against HTML snapshots of every page and component.
+      # Any new violation fails the build. Baseline exceptions are documented
+      # with justification comments in frontend/test/a11y.test.ts.
+      #
+      # The test file uses Node's built-in test runner + jsdom so no browser
+      # is required; it runs in the same Node 22 environment as the other
+      # frontend tests and completes in < 30 s.
+      # -----------------------------------------------------------------------
+      - name: Accessibility audit (axe WCAG 2.1 AA gate)
+        run: node --experimental-strip-types --test test/a11y.test.ts
 
       - name: Build
         run: npm run build
@@ -165,6 +197,29 @@ jobs:
       - name: Dependency audit
         run: npm audit --omit=dev --audit-level=high
 
+  cli-parity:
+    name: CLI — client parity smoke
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools/streampay-cli
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Install CLI dependencies
+        run: npm install --no-package-lock --ignore-scripts --no-audit --no-fund
+
+      - name: CLI tests including parity fixtures
+        run: npm test
+
+      # `npm run typecheck` is intentionally not gated here yet: it surfaces
+      # pre-existing cli.ts debt (diagnostic-event/footprint decoding against
+      # the SDK 17 xdr renames, noUncheckedIndexedAccess in the arg parser)
+      # that needs an RPC-backed follow-up before it can be fixed safely.
 
   supply-chain:
     name: Security — advisories / licenses

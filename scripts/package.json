@@ -8,6 +8,7 @@
   },
   "scripts": {
     "verify-fees": "node verify-fees.ts",
+    "demo-anchor": "node anchor_offramp_demo.js",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

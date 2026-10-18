@@ -33,6 +33,8 @@ Everything is on-chain and trust-minimized: no admin key, no upgrade path, funds
 
 A stream is a half-open window `[start_time, end_time)`. At any ledger timestamp the contract computes `deposit × elapsed / duration` with checked math (products widened to `u128`, results floored to whole token units and capped at the deposit). **Every edge case you can think of — withdrawing before start, after end, cancelling a never-started stream, topping up after end — is covered by a unit test** (see `contracts/streaming-payments/src/test.rs`).
 
+How it works in depth, including the design invariants and the Soroban-specific traps contributors keep rediscovering (`extend_ttl` on missing keys, `#[contractimpl]` signature rules, the sdk-28 build path): [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md).
+
 ## Architecture overview
 
 ```text
@@ -75,6 +77,12 @@ Metrics, alerting stack, and operational diagnosis: [`docs/RUNBOOK.md`](./docs/R
 | `available(stream_id) → i128` | — (read-only) | — | — |
 | `recipient_streams(address, offset, limit) → Vec<u64>` | — (read-only) | — | — |
 | `sender_streams(address, offset, limit) → Vec<u64>` | — (read-only) | — | — |
+| `schedule_stream(sender, recipient, token, deposit, start, end, cancelable, interval, occurrences, fee_budget, execute_after, expires_at) → u64` | anyone (sender auth required) | pulls `(deposit+fee)×occurrences` in | `StreamScheduled` |
+| `execute_scheduled(intent_id, keeper) → u64` | anyone (keeper auth required) | pays keeper the fee | `StreamCreated`, `ScheduledStreamExecuted` |
+| `cancel_scheduled(sender, intent_id)` | intent sender, before the window | refunds outstanding escrow | `ScheduledIntentCancelled` |
+| `reclaim_expired(intent_id)` | anyone, after `expires_at` | refunds outstanding escrow to sender | `ScheduledIntentExpired` |
+| `get_intent(intent_id) → ScheduledIntent` | — (read-only) | — | — |
+| `sender_intents(address, offset, limit) → Vec<u64>` | — (read-only) | — | — |
 | `set_fee_bps(caller, new_fee_bps)` | treasury governor | — | — |
 | `nominate_governor(caller, new_governor)` | treasury governor | — | — |
 | `accept_governor(caller)` | nominated governor | — | — |
@@ -103,7 +111,28 @@ Any SEP-41-compatible asset can fund a stream: an issued asset via its
 Stellar Asset Contract id (e.g. USDC on testnet) or **native XLM** via its
 own SAC — the frontend's asset selector resolves the choice for you.
 
-Creating a stream requires a prior token approval: `token.approve(sender, <contract id>, deposit, exp)` — the UI checks the allowance and signs the approval only when it is short. All failures return typed `StreamError` codes (no panics) — see `contracts/streaming-payments/src/errors.rs`. Token-transfer failures carry their own codes (`DepositTransferFailed` 18, `TopUpTransferFailed` 19, `RecipientPayoutFailed` 20, `SenderRefundFailed` 21, `TreasuryPayoutFailed` 22): a token's own error numbers live in the same `Error(Contract, #N)` namespace and are never allowed to masquerade as StreamPay's.
+Creating a stream requires a prior token approval: `token.approve(sender, <contract id>, deposit, exp)` — the UI checks the allowance and signs the approval only when it is short. All failures return typed `StreamError` codes (no panics) — see `contracts/streaming-payments/src/errors.rs`. Token-transfer failures carry their own codes (`DepositTransferFailed` 26, `TopUpTransferFailed` 27, `RecipientPayoutFailed` 28, `SenderRefundFailed` 29, `TreasuryPayoutFailed` 30): a token's own error numbers live in the same `Error(Contract, #N)` namespace and are never allowed to masquerade as StreamPay's.
+
+### Scheduled intents (keeper-executable cron)
+
+`sender` can pre-authorize one or many future stream creations and escrow the
+up-front cost; a permissionless keeper then materializes each occurrence and
+collects the escrowed `fee_budget`. This gives payroll/vesting an on-chain cron
+without a sender signing key online. Funds are escrowed for **all** occurrences
+at scheduling time, so a keeper can never run an unfunded intent. New `StreamError`
+codes 18–25 cover the intent lifecycle.
+
+**Keeper in one command:** [`./scripts/keeper.sh`](./scripts/keeper.sh)
+
+```bash
+CONTRACT_ID=C... KEEPER=my-keeper ONCE=1 INTENTS="1 2 3" ./scripts/keeper.sh
+CONTRACT_ID=C... KEEPER=my-keeper SENDER=G... MIN_FEE=1000000 RECLAIM=1 \
+  ./scripts/keeper.sh
+```
+
+The full threat model (replay, keeper front-running, under-funded-keeper
+griefing, liveness) and the testnet run log live in
+[`docs/SCHEDULED_INTENTS.md`](./docs/SCHEDULED_INTENTS.md).
 
 ## Protocol fees (optional)
 
@@ -153,9 +182,9 @@ Fuzz the accrual math (nightly, optional):
 cd fuzz && cargo +nightly fuzz run streamed_at -- -max_total_time=60
 ```
 
-**Live testnet demo in one command:** [`./scripts/deploy_testnet.sh`](./scripts/deploy_testnet.sh)
-deploys the contract, mints a demo token, and opens a 1-hour stream — full
-walkthrough in [`docs/DEMO.md`](./docs/DEMO.md).
+**Testnet Demo & Walkthrough:**
+- **One-command deploy & demo stream:** [`./scripts/deploy_testnet.sh`](./scripts/deploy_testnet.sh) deploys the contract, mints demo SAC tokens, and opens an active 1-hour stream.
+- **Full lifecycle walkthrough:** See [`docs/DEMO.md`](./docs/DEMO.md) for step-by-step CLI commands (`create_stream` → `withdraw` / `withdraw_max` → `cancel_stream`), expected outputs, and troubleshooting.
 
 Run the frontend:
 
@@ -175,6 +204,15 @@ stellar contract deploy \
   --source deployer --network testnet \
   -- --governor "$(stellar keys address deployer)"
 ```
+
+## Headless CLI
+
+The TypeScript CLI supports stream creation, withdrawals, cancellation,
+top-ups, and recipient `claim-all`, with environment, encrypted-file, and
+hardware-wallet handoff signers. Dry-runs use Soroban RPC transaction
+simulation and report its footprint and event-derived token deltas. It
+requires Node.js ≥ 22.6; setup, JSON schema v1, and exit codes are documented
+in [`tools/streampay-cli`](./tools/streampay-cli/README.md).
 
 ## TTL & rent operations
 
@@ -201,11 +239,12 @@ npm run rent -- --streams 1000             # rent + cost projection
 ## Repo layout
 
 ```text
-contracts/streaming-payments/   the contract (lib.rs, stream.rs, treasury.rs, errors.rs, events.rs, test.rs)
+contracts/streaming-payments/   the contract (lib.rs, stream.rs, schedule.rs, treasury.rs, errors.rs, events.rs, test.rs, schedule_test.rs)
 frontend/                       minimal Next.js UI (Freighter wallet)
 indexer/                        Soroban event indexer (TypeScript + SQLite + REST API)
 fuzz/                           cargo-fuzz harness for the accrual math (own workspace)
-scripts/                        deploy_testnet.sh + the release/promotion pipeline scripts
+scripts/deploy_testnet.sh       one-command testnet demo
+scripts/keeper.sh               reference keeper for scheduled intents
 scripts/verify-fees.ts          public fee-ledger audit (anyone can run, no keys)
 deployments/                    append-only promotion records + interface baselines
 infra/ttl-sentinel/             storage TTL + rent sentinel (scan, alerts, optional funded extender)
@@ -214,6 +253,7 @@ infra/indexer/                  event indexer service with Prometheus metrics & 
 infra/reconciler/               continuous state reconciler and truth verification daemon
 docs/RUNBOOK.md                 operational diagnosis runbook for all alert rules
 docs/ARCHITECTURE.md            design deep-dive
+docs/SCHEDULED_INTENTS.md       scheduled intents: keeper guide + threat model
 docs/DEPLOY_PIPELINE.md         sandbox → testnet → mainnet-canary promotion design
 docs/CANARY_RUNBOOK.md          mainnet canary + rollback procedure
 docs/DEMO.md                    verified testnet walkthrough
@@ -235,7 +275,9 @@ CHANGELOG.md                    release history (Keep a Changelog)
   event indexer service, `pause_stream` (good first issue)
 - **v0.3** — ✅ fuzzing in CI (`cargo-fuzz` on the rate math, scheduled),
   multi-token batch stream creation
-- **v0.4** — full web UI polish (accrual charts), ✅ testnet demo script
+- **v0.4** — full web UI polish (accrual charts), ✅ testnet demo script,
+  ✅ keeper-executable scheduled intents (`schedule_stream` /
+  `execute_scheduled`, `scripts/keeper.sh`)
 - **v0.5** — ✅ optional protocol-fee treasury: boundary-charged fees,
   governor-gated withdrawals, open verification
   (`verify_treasury` + `scripts/verify-fees.ts`), ✅ incident response drills

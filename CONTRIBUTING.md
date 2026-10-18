@@ -14,6 +14,20 @@ docs/                           ARCHITECTURE.md, GOOD_FIRST_ISSUES.md, DEMO.md
 .github/workflows/              ci.yml, fuzz.yml, release.yml
 ```
 
+## Quick-start (one-command local dev)
+
+To go from a fresh clone to a running local demo (contract built, deployed to a local sandbox network, frontend configured and running):
+
+```bash
+# Linux / macOS
+./scripts/dev.sh
+
+# Windows (PowerShell)
+.\scripts\dev.ps1
+```
+
+The bootstrap script verifies toolchain requirements (`stellar-cli >= 25.2.0`, Rust `wasm32v1-none`, Node.js), compiles the smart contract using `stellar contract build`, provisions/connects to a local Stellar sandbox, deploys the contract, writes `frontend/.env.local`, runs `npm ci`, and starts the frontend dev server. It is safe to re-run (idempotent).
+
 ## Setup (clean machine)
 
 1. Install Rust ≥ 1.85 (<https://rustup.rs>) and add the wasm target:
@@ -98,8 +112,10 @@ lint/typecheck/build when frontend files are touched) are the minimum gate.
 
 ### Docs
 
-- Update `docs/ARCHITECTURE.md` when behavior changes — it's the source of
-  truth for design decisions, including rejected alternatives.
+- Update [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) when behavior
+  changes — it's the source of truth for design decisions, including
+  rejected alternatives, the append-only public-interface rules (§13), and
+  the Soroban-specific traps to avoid rediscovering the hard way (§14).
 - Error codes and events are documented in tables; keep the tables in sync.
 
 ## Branch & PR process

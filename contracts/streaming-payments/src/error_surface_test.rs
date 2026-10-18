@@ -5,7 +5,7 @@ use std::vec::Vec;
 
 use soroban_sdk::testutils::Address as _;
 
-use crate::stream::streamed_at;
+use crate::stream::{streamed_at, DataKey};
 use crate::surface::{trace, Branch, Reachability, RETIRED_CODES};
 use crate::test::{Fixture, RefusingFixture};
 use crate::{StreamError, MAX_DURATION_SECONDS, MAX_FEE_BPS};
@@ -25,6 +25,25 @@ fn make_single_step_schedule(
     crate::Schedule { cliff_time: cliff, steps }
 }
 
+fn schedule_intent(f: &Fixture, execute_after: u64, expires_at: u64) -> u64 {
+    let now = f.env.ledger().timestamp();
+    f.client.mock_all_auths().schedule_stream(
+        &f.sender,
+        &f.recipient,
+        &f.token,
+        &DEPOSIT,
+        &(now + 2 * DAY),
+        &(now + 3 * DAY),
+        &false,
+        &0,
+        &1,
+        &0,
+        &execute_after,
+        &expires_at,
+    )
+}
+
+/// Unwraps the contract's rejection into its `StreamError`.
 macro_rules! rejected {
     ($call:expr) => {
         $call.expect_err("expected the contract to reject the call").unwrap()
@@ -150,6 +169,66 @@ fn probe(branch: Branch) -> Option<StreamError> {
                 &f.governor, &f.token, &f.recipient, &1,
             )))
         }
+        // ------------------------------------------------ scheduled intents
+        Branch::IntentNotFound => {
+            let f = Fixture::setup_quiet();
+            Some(rejected!(f.client.try_get_intent(&999)))
+        }
+        Branch::IntentNotPending => {
+            let f = Fixture::setup_quiet();
+            let now = f.env.ledger().timestamp();
+            let id = schedule_intent(&f, now, now + DAY);
+            let _ = f.client.mock_all_auths().execute_scheduled(&id, &f.recipient);
+            Some(rejected!(f.client.mock_all_auths().try_execute_scheduled(&id, &f.recipient)))
+        }
+        Branch::IntentNotYetExecutable => {
+            let f = Fixture::setup_quiet();
+            let now = f.env.ledger().timestamp();
+            let id = schedule_intent(&f, now + DAY, now + 3 * DAY);
+            Some(rejected!(f.client.mock_all_auths().try_execute_scheduled(&id, &f.recipient)))
+        }
+        Branch::IntentExpired => {
+            let f = Fixture::setup_quiet();
+            let now = f.env.ledger().timestamp();
+            let id = schedule_intent(&f, now, now + DAY);
+            f.advance_time(DAY);
+            Some(rejected!(f.client.mock_all_auths().try_execute_scheduled(&id, &f.recipient)))
+        }
+        Branch::IntentNotCancellable => {
+            let f = Fixture::setup_quiet();
+            let now = f.env.ledger().timestamp();
+            let id = schedule_intent(&f, now, now + DAY);
+            Some(rejected!(f.client.mock_all_auths().try_cancel_scheduled(&f.sender, &id)))
+        }
+        Branch::ScheduleInvalidParameters => {
+            let f = Fixture::setup_quiet();
+            let now = f.env.ledger().timestamp();
+            Some(rejected!(f.client.mock_all_auths().try_schedule_stream(
+                &f.sender, &f.recipient, &f.token, &DEPOSIT,
+                &(now + 2 * DAY), &(now + 3 * DAY), &false,
+                &0, &0, &0, &now, &(now + DAY),
+            )))
+        }
+        Branch::IntentParamsMismatch => {
+            let f = Fixture::setup_quiet();
+            let now = f.env.ledger().timestamp();
+            let id = schedule_intent(&f, now, now + DAY);
+            let contract = f.client.address.clone();
+            f.env.as_contract(&contract, || {
+                let mut intent: crate::ScheduledIntent = f.env
+                    .storage().persistent().get(&DataKey::Intent(id)).unwrap();
+                intent.deposit += 1;
+                f.env.storage().persistent().set(&DataKey::Intent(id), &intent);
+            });
+            Some(rejected!(f.client.mock_all_auths().try_execute_scheduled(&id, &f.recipient)))
+        }
+        Branch::IntentNotExpired => {
+            let f = Fixture::setup_quiet();
+            let now = f.env.ledger().timestamp();
+            let id = schedule_intent(&f, now, now + DAY);
+            Some(rejected!(f.client.try_reclaim_expired(&id)))
+        }
+        // ---------------------------------------------- token interactions
         Branch::CreateDepositTransferFailed => {
             let f = RefusingFixture::setup_quiet();
             f.refuse(false, true);
@@ -187,6 +266,7 @@ fn probe(branch: Branch) -> Option<StreamError> {
                 &f.governor, &f.token, &f.recipient, &1,
             )))
         }
+        // -------------------------------------------------------- schedule / cliff
         Branch::WithdrawBeforeCliff => {
             let f = Fixture::setup_quiet();
             let now = f.env.ledger().timestamp();
@@ -210,6 +290,145 @@ fn probe(branch: Branch) -> Option<StreamError> {
             Some(rejected!(f.client.mock_all_auths().try_create_stream_vested(
                 &f.sender, &f.recipient, &f.token, &DEPOSIT,
                 &(now + DAY), &(now + 10 * DAY), &false, &schedule,
+            )))
+        }
+        // ------------------------------------------------------------ policy
+        Branch::PolicyAssetNotAllowed => {
+            let f = Fixture::setup_quiet();
+            let admin = soroban_sdk::Address::generate(&f.env);
+            f.client.mock_all_auths().policy_init(&admin);
+            f.client.mock_all_auths().policy_set_timelock_delay(&0);
+            f.client.mock_all_auths().policy_propose_asset(&f.token, &false);
+            f.client.mock_all_auths().policy_execute_asset(&f.token);
+            let now = f.env.ledger().timestamp();
+            Some(rejected!(f.client.mock_all_auths().try_create_stream(
+                &f.sender, &f.recipient, &f.token, &DEPOSIT,
+                &(now + DAY), &(now + 2 * DAY), &false,
+            )))
+        }
+        Branch::PolicyTimelockNotElapsed => {
+            let f = Fixture::setup_quiet();
+            let admin = soroban_sdk::Address::generate(&f.env);
+            f.client.mock_all_auths().policy_init(&admin);
+            f.client.mock_all_auths().policy_propose_asset(&f.token, &false);
+            Some(rejected!(f.client.mock_all_auths().try_policy_execute_asset(&f.token)))
+        }
+        Branch::PolicyNoQueuedChange => {
+            let f = Fixture::setup_quiet();
+            let admin = soroban_sdk::Address::generate(&f.env);
+            f.client.mock_all_auths().policy_init(&admin);
+            Some(rejected!(f.client.mock_all_auths().try_policy_execute_asset(&f.token)))
+        }
+        Branch::PolicyNotInitialized => {
+            let f = Fixture::setup_quiet();
+            Some(rejected!(f.client.mock_all_auths().try_policy_execute_asset(&f.token)))
+        }
+        Branch::PolicyNoPendingHandoff => {
+            let f = Fixture::setup_quiet();
+            let admin = soroban_sdk::Address::generate(&f.env);
+            f.client.mock_all_auths().policy_init(&admin);
+            Some(rejected!(f.client.mock_all_auths().try_policy_accept_handoff()))
+        }
+        Branch::ContractFrozen => {
+            let f = Fixture::setup_quiet();
+            let now = f.env.ledger().timestamp();
+            f.client.mock_all_auths().set_frozen(&f.governor, &true);
+            Some(rejected!(f.client.mock_all_auths().try_create_stream(
+                &f.sender, &f.recipient, &f.token, &DEPOSIT,
+                &(now + DAY), &(now + 2 * DAY), &false,
+            )))
+        }
+        Branch::MigrationNotFrozen => {
+            let f = Fixture::setup_quiet();
+            Some(rejected!(f.client.mock_all_auths().try_migrate_storage(&f.governor, &0, &50)))
+        }
+        Branch::ExecuteUpgradeNoPending => {
+            let f = Fixture::setup_quiet();
+            Some(rejected!(f.client.mock_all_auths().try_execute_upgrade(&f.governor)))
+        }
+        Branch::CancelUpgradeNoPending => {
+            let f = Fixture::setup_quiet();
+            Some(rejected!(f.client.mock_all_auths().try_cancel_upgrade(&f.governor)))
+        }
+        Branch::TimelockNotExpired => {
+            let f = Fixture::setup_quiet();
+            let dummy_wasm_hash = soroban_sdk::BytesN::from_array(&f.env, &[0x42; 32]);
+            f.client.mock_all_auths().propose_upgrade(
+                &f.governor, &dummy_wasm_hash, &crate::MIN_UPGRADE_DELAY_SECONDS,
+            );
+            Some(rejected!(f.client.mock_all_auths().try_execute_upgrade(&f.governor)))
+        }
+        Branch::UpgradeDelayTooShort => {
+            let f = Fixture::setup_quiet();
+            let dummy_wasm_hash = soroban_sdk::BytesN::from_array(&f.env, &[0x42; 32]);
+            Some(rejected!(f.client.mock_all_auths().try_propose_upgrade(
+                &f.governor, &dummy_wasm_hash, &0,
+            )))
+        }
+        Branch::AlreadyMigrated => {
+            let f = Fixture::setup_quiet();
+            f.client.mock_all_auths().set_frozen(&f.governor, &true);
+            f.client.mock_all_auths().migrate_storage(&f.governor, &0, &50);
+            Some(rejected!(f.client.mock_all_auths().try_migrate_storage(&f.governor, &0, &50)))
+        }
+        Branch::PolicyDepositBelowFloor => {
+            let f = Fixture::setup_quiet();
+            let now = f.env.ledger().timestamp();
+            f.client.mock_all_auths().set_stream_policy(
+                &f.governor, &Some(f.token.clone()),
+                &crate::StreamPolicy { min_deposit: 1_000, min_duration: 0, max_duration: 0, min_rate: 0, max_rate: 0 },
+            );
+            Some(rejected!(f.client.mock_all_auths().try_create_stream(
+                &f.sender, &f.recipient, &f.token, &500,
+                &(now + DAY), &(now + 2 * DAY), &false,
+            )))
+        }
+        Branch::PolicyDurationBelowFloor => {
+            let f = Fixture::setup_quiet();
+            let now = f.env.ledger().timestamp();
+            f.client.mock_all_auths().set_stream_policy(
+                &f.governor, &Some(f.token.clone()),
+                &crate::StreamPolicy { min_deposit: 0, min_duration: 2 * DAY, max_duration: 0, min_rate: 0, max_rate: 0 },
+            );
+            Some(rejected!(f.client.mock_all_auths().try_create_stream(
+                &f.sender, &f.recipient, &f.token, &DEPOSIT,
+                &(now + DAY), &(now + DAY + 3600), &false,
+            )))
+        }
+        Branch::PolicyDurationAboveCeiling => {
+            let f = Fixture::setup_quiet();
+            let now = f.env.ledger().timestamp();
+            f.client.mock_all_auths().set_stream_policy(
+                &f.governor, &Some(f.token.clone()),
+                &crate::StreamPolicy { min_deposit: 0, min_duration: 0, max_duration: DAY, min_rate: 0, max_rate: 0 },
+            );
+            Some(rejected!(f.client.mock_all_auths().try_create_stream(
+                &f.sender, &f.recipient, &f.token, &DEPOSIT,
+                &(now + DAY), &(now + 3 * DAY), &false,
+            )))
+        }
+        Branch::PolicyRateBelowFloor => {
+            let f = Fixture::setup_quiet();
+            let now = f.env.ledger().timestamp();
+            f.client.mock_all_auths().set_stream_policy(
+                &f.governor, &Some(f.token.clone()),
+                &crate::StreamPolicy { min_deposit: 0, min_duration: 0, max_duration: 0, min_rate: 1_000, max_rate: 0 },
+            );
+            Some(rejected!(f.client.mock_all_auths().try_create_stream(
+                &f.sender, &f.recipient, &f.token, &100,
+                &(now + DAY), &(now + 2 * DAY), &false,
+            )))
+        }
+        Branch::PolicyRateAboveCeiling => {
+            let f = Fixture::setup_quiet();
+            let now = f.env.ledger().timestamp();
+            f.client.mock_all_auths().set_stream_policy(
+                &f.governor, &Some(f.token.clone()),
+                &crate::StreamPolicy { min_deposit: 0, min_duration: 0, max_duration: 0, min_rate: 0, max_rate: 10 },
+            );
+            Some(rejected!(f.client.mock_all_auths().try_create_stream(
+                &f.sender, &f.recipient, &f.token, &DEPOSIT,
+                &(now + DAY), &(now + 2 * DAY), &false,
             )))
         }
         Branch::AvailableBalanceOverflow | Branch::CancelSplitOverflow | Branch::PayoutOverflow => None,
@@ -302,11 +521,35 @@ fn stream_error_variant_list_is_exhaustive() {
             | StreamError::NotGovernor
             | StreamError::NoPendingGovernor
             | StreamError::InsufficientTreasuryBalance
+            | StreamError::IntentNotFound
+            | StreamError::IntentNotPending
+            | StreamError::IntentNotYetExecutable
+            | StreamError::IntentExpired
+            | StreamError::IntentNotCancellable
+            | StreamError::InvalidScheduleParameters
+            | StreamError::IntentParamsMismatch
+            | StreamError::IntentNotExpired
             | StreamError::DepositTransferFailed
             | StreamError::TopUpTransferFailed
             | StreamError::RecipientPayoutFailed
             | StreamError::SenderRefundFailed
             | StreamError::TreasuryPayoutFailed
+            | StreamError::PolicyAssetNotAllowed
+            | StreamError::PolicyTimelockNotElapsed
+            | StreamError::PolicyNoQueuedChange
+            | StreamError::PolicyNotInitialized
+            | StreamError::PolicyNoPendingHandoff
+            | StreamError::ContractFrozen
+            | StreamError::ContractNotFrozen
+            | StreamError::NoPendingUpgrade
+            | StreamError::TimelockNotExpired
+            | StreamError::UpgradeDelayTooShort
+            | StreamError::AlreadyMigrated
+            | StreamError::PolicyRateBelowFloor
+            | StreamError::PolicyRateAboveCeiling
+            | StreamError::PolicyDurationBelowFloor
+            | StreamError::PolicyDurationAboveCeiling
+            | StreamError::PolicyDepositBelowFloor
             | StreamError::CliffNotReached
             | StreamError::InvalidSchedule => StreamError::ALL.contains(&e),
         }

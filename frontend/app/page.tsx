@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { isConnected, requestAccess } from "@stellar/freighter-api";
 import {
   createStream,
@@ -114,13 +115,37 @@ export default function Home() {
   if (!address) {
     return (
       <main className="wrap">
-        <div className="kicker mono">SOROBAN · STELLAR</div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div className="kicker mono">SOROBAN · STELLAR</div>
+          <Link href="/docs" style={{ color: "#38bdf8", fontSize: "0.85rem", textDecoration: "none" }}>
+            API Docs ↗
+          </Link>
+        </div>
         <h1>⚡ StreamPay</h1>
         <p className="muted">
           Continuous, per-second payment streams — payroll, vesting,
           subscriptions. Connect Freighter to begin.
         </p>
-        <button onClick={connect}>Connect Freighter</button>
+        <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
+          <button onClick={connect}>Connect Freighter</button>
+          <a
+            href="/simulator"
+            style={{
+              display: "inline-block",
+              marginTop: "14px",
+              padding: "10px 18px",
+              background: "#161f30",
+              border: "1px solid var(--line)",
+              borderRadius: "8px",
+              color: "var(--accent2)",
+              textDecoration: "none",
+              fontWeight: 600,
+              fontSize: "14px",
+            }}
+          >
+            Accrual Simulator →
+          </a>
+        </div>
       </main>
     );
   }
@@ -128,9 +153,22 @@ export default function Home() {
   return (
     <main className="wrap">
       <h1>⚡ StreamPay</h1>
-      <p className="muted">
-        Connected: <code>{address}</code>
-      </p>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+        <p className="muted">
+          Connected: <code>{address}</code>
+        </p>
+        <a
+          href="/simulator"
+          style={{
+            color: "var(--accent2)",
+            textDecoration: "none",
+            fontSize: "13px",
+            fontWeight: 600,
+          }}
+        >
+          Accrual Simulator →
+        </a>
+      </div>
 
       <StreamForm
         onCreate={async (args) => {

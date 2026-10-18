@@ -13,6 +13,46 @@ interface: they are only ever appended to, never renumbered or reused.
 - `indexer/` TypeScript service that decodes StreamPay Soroban events into a
   cursor-backed SQLite projection and exposes stream-by-id and address stream
   REST endpoints, with local setup/API documentation.
+- Scheduled stream intents: `schedule_stream` pre-authorizes one or more
+  future stream creations (one-shot or recurring "cron") and escrows
+  `(deposit + fee_budget) × occurrences` up front; `execute_scheduled`
+  permissionlessly materializes each occurrence and pays the keeper the
+  escrowed fee; `cancel_scheduled` (sender, before the window) and
+  `reclaim_expired` (anyone, after `expires_at`) refund outstanding escrow;
+  `get_intent` / `sender_intents` provide read access. Sender authorization is
+  consumed at scheduling time (native Soroban auth) and the exact parameters
+  are committed in a SHA-256 `params_hash` so execution cannot be replayed or
+  parameter-swapped.
+- New `StreamError` codes (append-only): `IntentNotFound` (18),
+  `IntentNotPending` (19), `IntentNotYetExecutable` (20), `IntentExpired` (21),
+  `IntentNotCancellable` (22), `InvalidScheduleParameters` (23),
+  `IntentParamsMismatch` (24), `IntentNotExpired` (25).
+- New events: `StreamScheduled`, `ScheduledStreamExecuted`,
+  `ScheduledIntentCancelled`, `ScheduledIntentExpired`.
+- New storage keys (append-only): `NextIntentId`, `Intent(id)`,
+  `SenderIntents(addr)`.
+- `scripts/keeper.sh` — reference keeper (explicit ids or sender discovery,
+  `--send=no` simulation before sending, `MIN_FEE` gate, optional reclaim).
+- `docs/SCHEDULED_INTENTS.md` — keeper guide plus replay / front-running /
+  under-funded-keeper griefing threat model and a testnet run log.
+- **Optional asset allowlist policy module** (`policy.rs`, issue #75): an
+  opt-in, strictly-governed policy module restricting which assets may be used
+  in new streams while guaranteeing existing streams of a removed asset remain
+  fully withdrawable and refundable (the anti-brick invariant).
+- Two-step admin handoff (`policy_propose_handoff` / `policy_accept_handoff` /
+  `policy_cancel_handoff`), requiring proposed admin authorization before
+  transferring control.
+- Timelock on policy changes: allowlist mutations are queued with a timestamp
+  (`policy_propose_asset`) and executable only after a configurable delay
+  (`policy_timelock_delay`, default 48h), with permissionless execution
+  (`policy_execute_asset`) preventing governance hostage situations.
+- Append-only policy events: `PolicyInitialized`, `PolicyAssetQueued`,
+  `PolicyAssetExecuted`, `PolicyHandoffProposed`, `PolicyHandoffAccepted`,
+  `PolicyHandoffCancelled`.
+- New `StreamError` variants (appended): `PolicyAssetNotAllowed` (31),
+  `PolicyTimelockNotElapsed` (32), `PolicyNoQueuedChange` (33),
+  `PolicyNotInitialized` (34), `PolicyNoPendingHandoff` (35).
+- Governance failure table and model documentation in `docs/POLICY_GOVERNANCE.md`.
 - **Optional protocol-fee treasury** (`treasury.rs`): a fee charged once at
   the deposit boundary of `create_stream` (`deposit × fee_bps / 10_000`,
   floored, sender pays `deposit + fee`). The stream's `deposit` and every
@@ -63,10 +103,10 @@ interface: they are only ever appended to, never renumbered or reused.
 - Generated [`docs/ERRORS.md`](./docs/ERRORS.md) (entrypoint × branch → code
   table) with a CI step that regenerates it and diffs the committed artifact.
 - Distinct `StreamError` codes for token-transfer failures, appended after
-  `InsufficientTreasuryBalance = 17`: `DepositTransferFailed` (18),
-  `TopUpTransferFailed` (19), `RecipientPayoutFailed` (20),
-  `SenderRefundFailed` (21), and — for the fee-treasury payout path added
-  above — `TreasuryPayoutFailed` (22). Every token call now runs through the
+  the scheduled-intent codes (18–25): `DepositTransferFailed` (26),
+  `TopUpTransferFailed` (27), `RecipientPayoutFailed` (28),
+  `SenderRefundFailed` (29), and — for the fee-treasury payout path added
+  above — `TreasuryPayoutFailed` (30). Every token call now runs through the
   SDK's fallible (`try_`) client and any failure — missing allowance/balance,
   an asset that refuses transfers, a non-SEP-41 callee — is re-raised as its
   own StreamPay code, because contract error numbers share the
@@ -109,6 +149,14 @@ interface: they are only ever appended to, never renumbered or reused.
 - Append-only deployment records in `deployments/` (promotion log, per-run
   records, per-environment contract-interface baselines) and the design +
   operator docs `docs/DEPLOY_PIPELINE.md` and `docs/CANARY_RUNBOOK.md`.
+- [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) §13–§14: the append-only
+  public-interface rules (storage keys, event shapes, error codes — current
+  tail 17) and the Soroban traps we've hit, each re-verified against the
+  current toolchain: `extend_ttl` panics `Error(Storage, MissingValue)` on
+  never-written keys (read paths existence-check first), `#[contractimpl]`
+  signatures are syntactic (type aliases produce undefined spec types), and
+  sdk-28 rejects plain `cargo build` for Wasm (requires `stellar contract
+  build`). Linked from the README and CONTRIBUTING.
 
 ### Changed
 - **Deployment interface:** the contract now has a constructor. Deploy with

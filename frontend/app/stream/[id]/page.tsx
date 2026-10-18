@@ -1,5 +1,4 @@
 "use client";
-
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
@@ -260,6 +259,32 @@ export default function StreamDetail() {
             <button onClick={() => void doCancel()}>Cancel stream</button>
           </section>
         )}
+
+      <section className="card">
+        <h2>Shareable Payment Link</h2>
+        <p className="muted">
+          Generate a deterministic, privacy-blinded claim URL for this stream. The recipient can claim without logging in first.
+        </p>
+        <button
+          type="button"
+          onClick={async () => {
+            try {
+              const { encodePaymentLinkRef } = await import("@/lib/payment-link");
+              const ref = await encodePaymentLinkRef({
+                streamId: stream.id,
+                recipient: stream.recipient,
+              });
+              const url = `${window.location.origin}/pay/${ref}`;
+              await navigator.clipboard.writeText(url);
+              toast.success("Payment link copied to clipboard!");
+            } catch (err: unknown) {
+              toast.error(`Failed to copy payment link: ${String(err)}`);
+            }
+          }}
+        >
+          Copy Shareable Payment Link
+        </button>
+      </section>
 
       <p>
         <Link href="/">← All streams</Link>

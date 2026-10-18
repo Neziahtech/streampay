@@ -8,7 +8,6 @@
  */
 import {
   Account,
-  Address,
   nativeToScVal,
   Networks,
   rpc,
@@ -20,6 +19,14 @@ import {
 } from "@stellar/stellar-sdk";
 import { signTransaction } from "@stellar/freighter-api";
 import type { BatchStreamEntry } from "./batch";
+import {
+  buildCreateStreamOperationForDays,
+  buildWithdrawOperation,
+  i128,
+  scAddr,
+  u32,
+  u64,
+} from "./stellar-ops.ts";
 
 const RPC_URL =
   process.env.NEXT_PUBLIC_SOROBAN_RPC_URL ||
@@ -53,24 +60,8 @@ export interface StreamArgs {
   cancelable: boolean;
 }
 
-import type { StreamView } from "./pagination";
+import type { StreamView } from "./pagination.ts";
 export type { StreamView };
-
-function scAddr(s: string) {
-  return nativeToScVal(new Address(s), { type: "address" });
-}
-
-function u64(id: string | number | bigint) {
-  return nativeToScVal(BigInt(id), { type: "u64" });
-}
-
-function i128(v: string) {
-  return nativeToScVal(BigInt(v), { type: "i128" });
-}
-
-function u32(v: number) {
-  return nativeToScVal(BigInt(v), { type: "u32" });
-}
 
 /**
  * Network label for localStorage keys — stream ids are per-network facts and
@@ -156,11 +147,19 @@ const STREAM_ERRORS: Record<number, string> = {
   15: "NotGovernor",
   16: "NoPendingGovernor",
   17: "InsufficientTreasuryBalance",
-  18: "DepositTransferFailed",
-  19: "TopUpTransferFailed",
-  20: "RecipientPayoutFailed",
-  21: "SenderRefundFailed",
-  22: "TreasuryPayoutFailed",
+  18: "IntentNotFound",
+  19: "IntentNotPending",
+  20: "IntentNotYetExecutable",
+  21: "IntentExpired",
+  22: "IntentNotCancellable",
+  23: "InvalidScheduleParameters",
+  24: "IntentParamsMismatch",
+  25: "IntentNotExpired",
+  26: "DepositTransferFailed",
+  27: "TopUpTransferFailed",
+  28: "RecipientPayoutFailed",
+  29: "SenderRefundFailed",
+  30: "TreasuryPayoutFailed",
 };
 
 /** Rewrites raw simulation/tx error text into a readable StreamError name. */
@@ -191,6 +190,15 @@ async function send<T>(
   operation: xdr.Operation,
   decode: (v: xdr.ScVal) => T
 ): Promise<T> {
+  const { result } = await sendWithTx(source, operation, decode);
+  return result;
+}
+
+async function sendWithTx<T>(
+  source: string,
+  operation: xdr.Operation,
+  decode: (v: xdr.ScVal) => T
+): Promise<{ result: T; txHash: string }> {
   const server = new rpc.Server(RPC_URL);
   const account = await server.getAccount(source);
   const tx = new TransactionBuilder(account, {
@@ -228,7 +236,7 @@ async function send<T>(
     }
     if (res.status === rpc.Api.GetTransactionStatus.SUCCESS) {
       const successful = res as { returnValue: xdr.ScVal };
-      return decode(successful.returnValue);
+      return { result: decode(successful.returnValue), txHash: sent.hash };
     }
     // PENDING / DUPLICATE / TRY_AGAIN_LATER — keep polling.
   }
@@ -294,21 +302,20 @@ export async function createStream(
   args: StreamArgs
 ): Promise<bigint> {
   const token = tokenContractId(args.token); // "native" → the network's XLM SAC
-  const start = Math.floor(Date.now() / 1000) + 1;
-  const end = start + Math.ceil(Number(args.days) * 86_400);
+  const start = BigInt(Math.floor(Date.now() / 1000) + 1);
   // The contract pulls the deposit through a token allowance — make sure it
   // is in place before simulation (one extra Freighter signature on the
   // first stream with a given asset).
   await ensureAllowance(sender, token, args.deposit);
-  const op = contract().call(
-    "create_stream",
-    scAddr(sender),
-    scAddr(args.recipient),
-    scAddr(token),
-    i128(args.deposit),
-    u64(start),
-    u64(end),
-    nativeToScVal(args.cancelable)
+  const op = buildCreateStreamOperationForDays(
+    CONTRACT_ID,
+    sender,
+    args.recipient,
+    token,
+    args.deposit,
+    start,
+    args.days,
+    args.cancelable
   );
   // create_stream returns the new stream id (u64).
   return send(sender, op, (v) => BigInt(scValToNative(v) as bigint));
@@ -372,7 +379,7 @@ export async function withdrawFromStream(
 ): Promise<void> {
   await send(
     recipient,
-    contract().call("withdraw", u64(streamId), i128(amount)),
+    buildWithdrawOperation(CONTRACT_ID, streamId, amount),
     () => undefined
   );
 }
@@ -390,6 +397,31 @@ export async function withdrawMaxFromStream(
     contract().call("withdraw_max", u64(streamId)),
     (v) => BigInt(scValToNative(v) as bigint)
   );
+}
+
+export interface ClaimReceipt {
+  txHash: string;
+  amount: bigint;
+  streamId: string;
+}
+
+/**
+ * Claims full accrued balance via `withdraw_max` and returns both transaction hash and amount paid.
+ */
+export async function claimStreamWithReceipt(
+  recipient: string,
+  streamId: string
+): Promise<ClaimReceipt> {
+  const { result, txHash } = await sendWithTx(
+    recipient,
+    contract().call("withdraw_max", u64(streamId)),
+    (v) => BigInt(scValToNative(v) as bigint)
+  );
+  return {
+    txHash,
+    amount: result,
+    streamId,
+  };
 }
 
 export async function topUpStream(
@@ -521,7 +553,7 @@ import {
   paginateStreamsByCursor,
   type CursorPaginationOptions,
   type PaginatedStreamsResponse,
-} from "./pagination";
+} from "./pagination.ts";
 
 export {
   paginateStreamsByCursor,
@@ -530,7 +562,7 @@ export {
   type PaginationDirection,
   type CursorPaginationOptions,
   type PaginatedStreamsResponse,
-} from "./pagination";
+} from "./pagination.ts";
 
 /**
  * Discovers and paginates streams for any Stellar address across incoming

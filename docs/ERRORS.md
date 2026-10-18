@@ -22,16 +22,40 @@ Every expected failure is a `StreamError` with a stable numeric code. This docum
 | 12 | `NotAuthorized` | reachable (1 branch(es)) | `cancel_stream` | the caller is neither the sender nor the recipient |
 | 13 | `NothingToWithdraw` | reachable (1 branch(es)) | `withdraw_max` | nothing has accrued yet, or everything accrued was already withdrawn |
 | 14 | `FeeRateTooHigh` | reachable (1 branch(es)) | `set_fee_bps` | new_fee_bps exceeds MAX_FEE_BPS (the protocol cap) |
-| 15 | `NotGovernor` | reachable (2 branch(es)) | `accept_governor`, `nominate_governor`, `set_fee_bps`, `withdraw_treasury` | the caller is not the treasury governor; the caller is not the nominated governor |
+| 15 | `NotGovernor` | reachable (2 branch(es)) | `accept_governor`, `cancel_upgrade`, `execute_upgrade`, `migrate_storage`, `nominate_governor`, `propose_upgrade`, `set_fee_bps`, `set_frozen`, `set_stream_policy`, `withdraw_treasury` | the caller is not the treasury governor; the caller is not the nominated governor |
 | 16 | `NoPendingGovernor` | reachable (1 branch(es)) | `accept_governor` | accept_governor with no nomination pending |
 | 17 | `InsufficientTreasuryBalance` | reachable (1 branch(es)) | `withdraw_treasury` | amount exceeds fees collected minus fees already withdrawn |
-| 18 | `DepositTransferFailed` | reachable (1 branch(es)) | `create_stream`, `create_stream_vested`, `create_streams` | the token refuses the deposit (+fee) pull (allowance, balance, or a non-compliant token) |
-| 19 | `TopUpTransferFailed` | reachable (1 branch(es)) | `top_up` | the token refuses the pull of the added funds |
-| 20 | `RecipientPayoutFailed` | reachable (1 branch(es)) | `cancel_stream`, `withdraw`, `withdraw_max` | the token refuses a payout to the recipient |
-| 21 | `SenderRefundFailed` | reachable (1 branch(es)) | `cancel_stream` | the token refuses the refund to the sender |
-| 22 | `TreasuryPayoutFailed` | reachable (1 branch(es)) | `withdraw_treasury` | the token refuses the payout of collected protocol fees |
-| 23 | `CliffNotReached` | reachable (1 branch(es)) | `available`, `withdraw`, `withdraw_max` | current time is before the stream's cliff_time; nothing is claimable yet |
-| 24 | `InvalidSchedule` | reachable (1 branch(es)) | `create_stream_vested` | schedule steps are empty, unsorted, out of bounds, or rates do not sum to 10_000 bps |
+| 18 | `IntentNotFound` | reachable (1 branch(es)) | `cancel_scheduled`, `execute_scheduled`, `get_intent`, `reclaim_expired` | no scheduled intent is stored under the id |
+| 19 | `IntentNotPending` | reachable (1 branch(es)) | `cancel_scheduled`, `execute_scheduled`, `reclaim_expired` | the intent is already executed, cancelled, or expired |
+| 20 | `IntentNotYetExecutable` | reachable (1 branch(es)) | `execute_scheduled` | the next occurrence has not reached execute_after |
+| 21 | `IntentExpired` | reachable (1 branch(es)) | `execute_scheduled` | the intent has reached expires_at |
+| 22 | `IntentNotCancellable` | reachable (1 branch(es)) | `cancel_scheduled` | the execution window opened before cancellation |
+| 23 | `InvalidScheduleParameters` | reachable (1 branch(es)) | `schedule_stream` | schedule parameters are inconsistent or out of bounds |
+| 24 | `IntentParamsMismatch` | reachable (1 branch(es)) | `execute_scheduled` | stored parameters do not match the authorization commitment |
+| 25 | `IntentNotExpired` | reachable (1 branch(es)) | `reclaim_expired` | the intent has not reached expires_at |
+| 26 | `DepositTransferFailed` | reachable (1 branch(es)) | `create_stream`, `create_stream_vested`, `create_streams` | the token refuses the deposit (+fee) pull (allowance, balance, or a non-compliant token) |
+| 27 | `TopUpTransferFailed` | reachable (1 branch(es)) | `top_up` | the token refuses the pull of the added funds |
+| 28 | `RecipientPayoutFailed` | reachable (1 branch(es)) | `cancel_stream`, `withdraw`, `withdraw_max` | the token refuses a payout to the recipient |
+| 29 | `SenderRefundFailed` | reachable (1 branch(es)) | `cancel_stream` | the token refuses the refund to the sender |
+| 30 | `TreasuryPayoutFailed` | reachable (1 branch(es)) | `withdraw_treasury` | the token refuses the payout of collected protocol fees |
+| 31 | `PolicyAssetNotAllowed` | reachable (1 branch(es)) | `create_stream`, `create_streams` | the asset is not permitted by the policy module allowlist |
+| 32 | `PolicyTimelockNotElapsed` | reachable (1 branch(es)) | `policy_execute_asset` | the timelock delay has not elapsed for this queued policy change |
+| 33 | `PolicyNoQueuedChange` | reachable (1 branch(es)) | `policy_execute_asset` | no policy change is queued for the specified asset |
+| 34 | `PolicyNotInitialized` | reachable (1 branch(es)) | `policy_accept_handoff`, `policy_cancel_handoff`, `policy_execute_asset`, `policy_propose_asset`, `policy_propose_handoff`, `policy_set_timelock_delay` | the policy module has not been initialized |
+| 35 | `PolicyNoPendingHandoff` | reachable (1 branch(es)) | `policy_accept_handoff`, `policy_cancel_handoff` | no admin handoff proposal is pending |
+| 36 | `ContractFrozen` | reachable (1 branch(es)) | `cancel_stream`, `create_stream`, `create_streams`, `top_up`, `withdraw`, `withdraw_max` | the contract is frozen for maintenance or upgrade |
+| 37 | `ContractNotFrozen` | reachable (1 branch(es)) | `migrate_storage` | storage migration requires the contract to be frozen |
+| 38 | `NoPendingUpgrade` | reachable (2 branch(es)) | `cancel_upgrade`, `execute_upgrade` | execute_upgrade called with no upgrade pending; cancel_upgrade called with no upgrade pending |
+| 39 | `TimelockNotExpired` | reachable (1 branch(es)) | `execute_upgrade` | upgrade timelock delay has not yet expired |
+| 40 | `UpgradeDelayTooShort` | reachable (1 branch(es)) | `propose_upgrade` | proposed upgrade delay is shorter than MIN_UPGRADE_DELAY_SECONDS |
+| 41 | `AlreadyMigrated` | reachable (1 branch(es)) | `migrate_storage` | storage has already been migrated to the target schema version |
+| 42 | `PolicyRateBelowFloor` | reachable (1 branch(es)) | `create_stream`, `create_streams`, `top_up` | stream rate is below the governance policy floor |
+| 43 | `PolicyRateAboveCeiling` | reachable (1 branch(es)) | `create_stream`, `create_streams`, `top_up` | stream rate exceeds the governance policy ceiling |
+| 44 | `PolicyDurationBelowFloor` | reachable (1 branch(es)) | `create_stream`, `create_streams` | stream duration is below the governance policy floor |
+| 45 | `PolicyDurationAboveCeiling` | reachable (1 branch(es)) | `create_stream`, `create_streams` | stream duration exceeds the governance policy ceiling |
+| 46 | `PolicyDepositBelowFloor` | reachable (1 branch(es)) | `create_stream`, `create_streams`, `top_up` | stream deposit is below the governance policy floor |
+| 47 | `CliffNotReached` | reachable (1 branch(es)) | `available`, `withdraw`, `withdraw_max` | current time is before the stream's cliff_time; nothing is claimable yet |
+| 48 | `InvalidSchedule` | reachable (1 branch(es)) | `create_stream_vested` | schedule steps are empty, unsorted, out of bounds, or rates do not sum to 10_000 bps |
 
 ## Branch matrix (entrypoint × condition → error)
 
@@ -56,18 +80,43 @@ Every expected failure is a `StreamError` with a stable numeric code. This docum
 | `CancelSplitOverflow` | `cancel_stream` | `MathOverflow` | 11 | the cancel pro-rata split would underflow | defensive (unreachable) |
 | `PayoutOverflow` | `withdraw`, `withdraw_max` | `MathOverflow` | 11 | withdrawn + amount would overflow i128 | defensive (unreachable) |
 | `SetFeeRateTooHigh` | `set_fee_bps` | `FeeRateTooHigh` | 14 | new_fee_bps exceeds MAX_FEE_BPS (the protocol cap) | reachable |
-| `GovernorNotAllowed` | `set_fee_bps`, `nominate_governor`, `withdraw_treasury` | `NotGovernor` | 15 | the caller is not the treasury governor | reachable |
+| `GovernorNotAllowed` | `set_fee_bps`, `nominate_governor`, `withdraw_treasury`, `set_frozen`, `propose_upgrade`, `cancel_upgrade`, `execute_upgrade`, `migrate_storage`, `set_stream_policy` | `NotGovernor` | 15 | the caller is not the treasury governor | reachable |
 | `AcceptGovernorNoPending` | `accept_governor` | `NoPendingGovernor` | 16 | accept_governor with no nomination pending | reachable |
 | `AcceptGovernorNotNominee` | `accept_governor` | `NotGovernor` | 15 | the caller is not the nominated governor | reachable |
 | `WithdrawTreasuryAmountNonPositive` | `withdraw_treasury` | `ZeroAmount` | 9 | treasury withdrawal amount is zero or negative | reachable |
 | `WithdrawTreasuryExceedsBalance` | `withdraw_treasury` | `InsufficientTreasuryBalance` | 17 | amount exceeds fees collected minus fees already withdrawn | reachable |
-| `CreateDepositTransferFailed` | `create_stream`, `create_stream_vested`, `create_streams` | `DepositTransferFailed` | 18 | the token refuses the deposit (+fee) pull (allowance, balance, or a non-compliant token) | reachable |
-| `TopUpTransferFailed` | `top_up` | `TopUpTransferFailed` | 19 | the token refuses the pull of the added funds | reachable |
-| `RecipientPayoutFailed` | `withdraw`, `withdraw_max`, `cancel_stream` | `RecipientPayoutFailed` | 20 | the token refuses a payout to the recipient | reachable |
-| `SenderRefundFailed` | `cancel_stream` | `SenderRefundFailed` | 21 | the token refuses the refund to the sender | reachable |
-| `TreasuryPayoutFailed` | `withdraw_treasury` | `TreasuryPayoutFailed` | 22 | the token refuses the payout of collected protocol fees | reachable |
-| `WithdrawBeforeCliff` | `available`, `withdraw`, `withdraw_max` | `CliffNotReached` | 23 | current time is before the stream's cliff_time; nothing is claimable yet | reachable |
-| `CreateInvalidSchedule` | `create_stream_vested` | `InvalidSchedule` | 24 | schedule steps are empty, unsorted, out of bounds, or rates do not sum to 10_000 bps | reachable |
+| `IntentNotFound` | `get_intent`, `execute_scheduled`, `cancel_scheduled`, `reclaim_expired` | `IntentNotFound` | 18 | no scheduled intent is stored under the id | reachable |
+| `IntentNotPending` | `execute_scheduled`, `cancel_scheduled`, `reclaim_expired` | `IntentNotPending` | 19 | the intent is already executed, cancelled, or expired | reachable |
+| `IntentNotYetExecutable` | `execute_scheduled` | `IntentNotYetExecutable` | 20 | the next occurrence has not reached execute_after | reachable |
+| `IntentExpired` | `execute_scheduled` | `IntentExpired` | 21 | the intent has reached expires_at | reachable |
+| `IntentNotCancellable` | `cancel_scheduled` | `IntentNotCancellable` | 22 | the execution window opened before cancellation | reachable |
+| `ScheduleInvalidParameters` | `schedule_stream` | `InvalidScheduleParameters` | 23 | schedule parameters are inconsistent or out of bounds | reachable |
+| `IntentParamsMismatch` | `execute_scheduled` | `IntentParamsMismatch` | 24 | stored parameters do not match the authorization commitment | reachable |
+| `IntentNotExpired` | `reclaim_expired` | `IntentNotExpired` | 25 | the intent has not reached expires_at | reachable |
+| `CreateDepositTransferFailed` | `create_stream`, `create_stream_vested`, `create_streams` | `DepositTransferFailed` | 26 | the token refuses the deposit (+fee) pull (allowance, balance, or a non-compliant token) | reachable |
+| `TopUpTransferFailed` | `top_up` | `TopUpTransferFailed` | 27 | the token refuses the pull of the added funds | reachable |
+| `RecipientPayoutFailed` | `withdraw`, `withdraw_max`, `cancel_stream` | `RecipientPayoutFailed` | 28 | the token refuses a payout to the recipient | reachable |
+| `SenderRefundFailed` | `cancel_stream` | `SenderRefundFailed` | 29 | the token refuses the refund to the sender | reachable |
+| `TreasuryPayoutFailed` | `withdraw_treasury` | `TreasuryPayoutFailed` | 30 | the token refuses the payout of collected protocol fees | reachable |
+| `PolicyAssetNotAllowed` | `create_stream`, `create_streams` | `PolicyAssetNotAllowed` | 31 | the asset is not permitted by the policy module allowlist | reachable |
+| `PolicyTimelockNotElapsed` | `policy_execute_asset` | `PolicyTimelockNotElapsed` | 32 | the timelock delay has not elapsed for this queued policy change | reachable |
+| `PolicyNoQueuedChange` | `policy_execute_asset` | `PolicyNoQueuedChange` | 33 | no policy change is queued for the specified asset | reachable |
+| `PolicyNotInitialized` | `policy_execute_asset`, `policy_propose_asset`, `policy_propose_handoff`, `policy_accept_handoff`, `policy_cancel_handoff`, `policy_set_timelock_delay` | `PolicyNotInitialized` | 34 | the policy module has not been initialized | reachable |
+| `PolicyNoPendingHandoff` | `policy_accept_handoff`, `policy_cancel_handoff` | `PolicyNoPendingHandoff` | 35 | no admin handoff proposal is pending | reachable |
+| `ContractFrozen` | `create_stream`, `create_streams`, `withdraw`, `withdraw_max`, `cancel_stream`, `top_up` | `ContractFrozen` | 36 | the contract is frozen for maintenance or upgrade | reachable |
+| `MigrationNotFrozen` | `migrate_storage` | `ContractNotFrozen` | 37 | storage migration requires the contract to be frozen | reachable |
+| `ExecuteUpgradeNoPending` | `execute_upgrade` | `NoPendingUpgrade` | 38 | execute_upgrade called with no upgrade pending | reachable |
+| `CancelUpgradeNoPending` | `cancel_upgrade` | `NoPendingUpgrade` | 38 | cancel_upgrade called with no upgrade pending | reachable |
+| `TimelockNotExpired` | `execute_upgrade` | `TimelockNotExpired` | 39 | upgrade timelock delay has not yet expired | reachable |
+| `UpgradeDelayTooShort` | `propose_upgrade` | `UpgradeDelayTooShort` | 40 | proposed upgrade delay is shorter than MIN_UPGRADE_DELAY_SECONDS | reachable |
+| `AlreadyMigrated` | `migrate_storage` | `AlreadyMigrated` | 41 | storage has already been migrated to the target schema version | reachable |
+| `PolicyRateBelowFloor` | `create_stream`, `create_streams`, `top_up` | `PolicyRateBelowFloor` | 42 | stream rate is below the governance policy floor | reachable |
+| `PolicyRateAboveCeiling` | `create_stream`, `create_streams`, `top_up` | `PolicyRateAboveCeiling` | 43 | stream rate exceeds the governance policy ceiling | reachable |
+| `PolicyDurationBelowFloor` | `create_stream`, `create_streams` | `PolicyDurationBelowFloor` | 44 | stream duration is below the governance policy floor | reachable |
+| `PolicyDurationAboveCeiling` | `create_stream`, `create_streams` | `PolicyDurationAboveCeiling` | 45 | stream duration exceeds the governance policy ceiling | reachable |
+| `PolicyDepositBelowFloor` | `create_stream`, `create_streams`, `top_up` | `PolicyDepositBelowFloor` | 46 | stream deposit is below the governance policy floor | reachable |
+| `WithdrawBeforeCliff` | `available`, `withdraw`, `withdraw_max` | `CliffNotReached` | 47 | current time is before the stream's cliff_time; nothing is claimable yet | reachable |
+| `CreateInvalidSchedule` | `create_stream_vested` | `InvalidSchedule` | 48 | schedule steps are empty, unsorted, out of bounds, or rates do not sum to 10_000 bps | reachable |
 
 ## Retired codes
 

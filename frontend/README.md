@@ -11,6 +11,8 @@ list survives reloads and shows streams you didn't create in this session.
 |---|---|
 | `/` | Connect, single and CSV batch creation forms (asset selector: **native XLM** or an entered token contract id), stream list with per-row actions and a **Discover on-chain** button (scans the contract's `recipient_streams` / `sender_streams` indexes for your address) |
 | `/stream/[id]` | Stream detail: progress bar, live `available` poll (15 s), withdraw form with over-withdrawal guard, **Withdraw max** (`withdraw_max`), cancel. Read-only-safe without a wallet; contract errors decode to `StreamError` names |
+| `GET /accrual/[id]` | Computed accrual curve time-series API (`?from&to&step`) with ETag/304 caching, honest staleness headers, and shared RPC rate budgets |
+| `/docs` | Public interactive API documentation page (Swagger UI) rendering OpenAPI 3.1 spec |
 
 ## Setup
 
@@ -45,10 +47,10 @@ For a one-command deployed contract + demo stream, see
   asset costs one extra signature instead of failing at simulation.
 - Read-only calls (`get_stream`, `available`, the index views, `allowance`)
   simulate against the RPC without signing.
-- Contract errors decode to `StreamError` names, including the transfer-
-  failure codes: `DepositTransferFailed` (18), `TopUpTransferFailed` (19),
-  `RecipientPayoutFailed` (20), `SenderRefundFailed` (21),
-  `TreasuryPayoutFailed` (22).
+- Contract errors decode to `StreamError` names, including the scheduled-intent
+  codes (18–25) and the transfer-failure codes: `DepositTransferFailed` (26),
+  `TopUpTransferFailed` (27), `RecipientPayoutFailed` (28),
+  `SenderRefundFailed` (29), `TreasuryPayoutFailed` (30).
 - Amounts are **smallest token units** (stroops for classic assets).
 - The batch form accepts `address,rate,duration` CSV rows. Rate is an integer
   in smallest token units per second; duration is integer seconds. Each
