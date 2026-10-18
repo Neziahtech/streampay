@@ -130,8 +130,6 @@ pub enum Branch {
     PolicyNotInitialized,
     /// `policy_accept_handoff` / `policy_cancel_handoff`: no handoff pending.
     PolicyNoPendingHandoff,
-<<<<<<< HEAD
-=======
     // ------------------------------------------------------ dust protection
     /// `create_stream` / `create_streams`: deposit amount is below `MIN_STREAM_AMOUNT`.
     StreamTooSmall,
@@ -141,7 +139,6 @@ pub enum Branch {
     StreamNotDepleted,
     /// `sweep`: stream has not reached its `end_time`.
     StreamNotExpired,
->>>>>>> 567c55d (fix(contract): resolve cargo fmt and clippy warnings)
     // ------------------------------------------------ upgrade & freeze
     /// The contract is currently frozen for maintenance or upgrade.
     ContractFrozen,
