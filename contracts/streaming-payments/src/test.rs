@@ -3974,6 +3974,147 @@ fn policy_re_allow_previously_removed_asset() {
 }
 
 // ----------------------------------------- non-native (token) assets ------
+
+/// Build a [`crate::Schedule`] with a single 100 % step starting at
+/// `start_time` and the given cliff. This is the simplest valid schedule and
+/// produces accrual identical to the plain linear stream except for the cliff
+/// gate on withdrawals.
+fn single_step(env: &Env, start: u64, end: u64, cliff: u64) -> crate::Schedule {
+    let _ = end;
+    let mut steps = soroban_sdk::Vec::new(env);
+    steps.push_back(crate::VestingStep {
+        time: start,
+        rate_bps: 10_000,
+    });
+    crate::Schedule {
+        cliff_time: cliff,
+        steps,
+    }
+}
+
+/// Build a two-step schedule: first half of the window at 40 %, second at 60 %.
+/// `mid` is the timestamp at which the second step activates.
+fn two_step(env: &Env, start: u64, mid: u64, cliff: u64) -> crate::Schedule {
+    let mut steps = soroban_sdk::Vec::new(env);
+    steps.push_back(crate::VestingStep {
+        time: start,
+        rate_bps: 4_000,
+    });
+    steps.push_back(crate::VestingStep {
+        time: mid,
+        rate_bps: 6_000,
+    });
+    crate::Schedule {
+        cliff_time: cliff,
+        steps,
+    }
+}
+
+#[test]
+fn create_stream_vested_stores_schedule_and_emits_event() {
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+    let start = now + DAY;
+    let end = now + 11 * DAY;
+    let cliff = now + 3 * DAY;
+
+    let schedule = single_step(&f.env, start, end, cliff);
+    let id = f
+        .client
+        .mock_all_auths()
+        .create_stream_vested(
+            &f.sender,
+            &f.recipient,
+            &f.token,
+            &DEPOSIT,
+            &start,
+            &end,
+            &true,
+            &schedule,
+        )
+        .unwrap();
+
+    // Stream stored identically to a plain stream.
+    let s = f.client.mock_all_auths().get_stream(&id);
+    assert_eq!(s.deposit, DEPOSIT);
+    assert_eq!(s.start_time, start);
+    assert_eq!(s.end_time, end);
+    assert!(s.cancelable);
+
+    // Schedule round-trips through storage.
+    let stored = f
+        .client
+        .mock_all_auths()
+        .get_schedule(&id)
+        .unwrap()
+        .expect("schedule absent");
+    assert_eq!(stored.cliff_time, cliff);
+    assert_eq!(stored.steps.len(), 1);
+
+    // Plain stream has no schedule.
+    let plain_id = f.create_stream(DEPOSIT / 2, DAY, 10 * DAY, false);
+    assert!(f
+        .client
+        .mock_all_auths()
+        .get_schedule(&plain_id)
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn cliff_blocks_withdrawal_before_cliff_time() {
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+    let start = now;
+    let end = now + 10 * DAY;
+    let cliff = now + 5 * DAY; // cliff halfway through
+
+    let schedule = single_step(&f.env, start, end, cliff);
+    let id = f
+        .client
+        .mock_all_auths()
+        .create_stream_vested(
+            &f.sender,
+            &f.recipient,
+            &f.token,
+            &DEPOSIT,
+            &start,
+            &end,
+            &false,
+            &schedule,
+        )
+        .unwrap();
+
+    // At 3 days (< cliff): available() returns CliffNotReached.
+    f.advance_time(3 * DAY);
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_available(&id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::CliffNotReached);
+
+    // withdraw also blocked.
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_withdraw(&id, &1)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::CliffNotReached);
+
+    // withdraw_max also blocked.
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_withdraw_max(&id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::CliffNotReached);
+}
+
+// ----------------------------------------- non-native (token) assets ------
 //
 // Tokenized assets (USDC-style) are a first-class path, not an incidental
 // one: every money movement is exercised against a *registered* Stellar Asset
@@ -4454,6 +4595,394 @@ fn withdraw_against_refusing_token_reports_recipient_payout_failed() {
     f.refuse(false, false);
     assert_eq!(f.client.mock_all_auths().withdraw_max(&id), DEPOSIT / 10);
     assert_eq!(f.client.get_stream(&id).withdrawn, DEPOSIT / 10);
+}
+
+#[test]
+fn cliff_unlocks_withdrawal_at_cliff_time() {
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+    let start = now;
+    let end = now + 10 * DAY;
+    let cliff = now + 5 * DAY;
+
+    let schedule = single_step(&f.env, start, end, cliff);
+    let id = f
+        .client
+        .mock_all_auths()
+        .create_stream_vested(
+            &f.sender,
+            &f.recipient,
+            &f.token,
+            &DEPOSIT,
+            &start,
+            &end,
+            &false,
+            &schedule,
+        )
+        .unwrap();
+
+    // Exactly at cliff: 5 of 10 days have elapsed → half deposited available.
+    f.advance_time(5 * DAY);
+    let avail = f.client.mock_all_auths().available(&id);
+    assert_eq!(avail, DEPOSIT / 2);
+
+    f.client.mock_all_auths().withdraw(&id, &avail);
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.recipient),
+        DEPOSIT / 2
+    );
+}
+
+#[test]
+fn cancel_before_cliff_splits_correctly_ignoring_cliff() {
+    // The cliff gates *withdrawals*, not the cancellation split.
+    // If cancelled before cliff_time, the vested amount at cancellation
+    // time still goes to the recipient (they just couldn't have withdrawn it
+    // themselves yet).
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+    let start = now;
+    let end = now + 10 * DAY;
+    let cliff = now + 5 * DAY;
+
+    let schedule = single_step(&f.env, start, end, cliff);
+    let id = f
+        .client
+        .mock_all_auths()
+        .create_stream_vested(
+            &f.sender,
+            &f.recipient,
+            &f.token,
+            &DEPOSIT,
+            &start,
+            &end,
+            &false,
+            &schedule,
+        )
+        .unwrap();
+
+    // Cancel after 2 days, before cliff.
+    f.advance_time(2 * DAY);
+    f.client.mock_all_auths().cancel_stream(&f.sender, &id);
+
+    // Vested = 2/10 of deposit; sender gets the other 8/10.
+    let vested = DEPOSIT * 2 / 10;
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.recipient),
+        vested
+    );
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.sender),
+        2 * DEPOSIT - vested // fixture headroom + refund
+    );
+    let s = f.client.mock_all_auths().get_stream(&id);
+    assert_eq!(s.status, crate::StreamStatus::Cancelled);
+}
+
+#[test]
+fn two_step_schedule_accrues_piecewise() {
+    // Window: 0 → 10 days. Steps: 40 % for first 5 days, 60 % for last 5.
+    // At exactly 5 days: 40 % of deposit fully accrued from step 1, 0 from step 2.
+    // At 7.5 days: 40 % + 60 % * 2.5/5 = 40 % + 30 % = 70 %.
+    // At 10 days: 100 %.
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+    let start = now;
+    let mid = now + 5 * DAY;
+    let end = now + 10 * DAY;
+    let cliff = now; // no cliff: cliff == start means immediately claimable
+
+    let schedule = two_step(&f.env, start, mid, cliff);
+    let id = f
+        .client
+        .mock_all_auths()
+        .create_stream_vested(
+            &f.sender,
+            &f.recipient,
+            &f.token,
+            &DEPOSIT,
+            &start,
+            &end,
+            &false,
+            &schedule,
+        )
+        .unwrap();
+
+    let step1_deposit = DEPOSIT * 4_000 / 10_000; // 40 % of deposit
+    let step2_deposit = DEPOSIT * 6_000 / 10_000; // 60 % of deposit
+
+    // At midpoint of step 1 (2.5 days): half of step1_deposit accrued.
+    f.env
+        .ledger()
+        .with_mut(|li| li.timestamp = start + 5 * DAY / 2);
+    let expected_25 = step1_deposit * (5 * DAY / 2) / (5 * DAY);
+    assert_eq!(f.client.mock_all_auths().available(&id), expected_25);
+
+    // At the step boundary (5 days): all of step 1 vested.
+    f.env.ledger().with_mut(|li| li.timestamp = start + 5 * DAY);
+    assert_eq!(f.client.mock_all_auths().available(&id), step1_deposit);
+
+    // At 7.5 days: step 1 fully vested + half of step 2.
+    f.env
+        .ledger()
+        .with_mut(|li| li.timestamp = start + 15 * DAY / 2);
+    let step2_half = step2_deposit * (5 * DAY / 2) / (5 * DAY);
+    assert_eq!(
+        f.client.mock_all_auths().available(&id),
+        step1_deposit + step2_half
+    );
+
+    // At end of window: full deposit available.
+    f.env.ledger().with_mut(|li| li.timestamp = end);
+    assert_eq!(f.client.mock_all_auths().available(&id), DEPOSIT);
+}
+
+#[test]
+fn scheduled_vested_at_pure_matches_contract() {
+    // Exercise the pure function directly to confirm it agrees with what the
+    // contract computes on-chain for the two-step case.
+    let start = 0u64;
+    let mid = 5 * DAY;
+    let end = 10 * DAY;
+
+    let env = Env::default();
+    let mut steps = soroban_sdk::Vec::new(&env);
+    steps.push_back(crate::VestingStep {
+        time: start,
+        rate_bps: 4_000,
+    });
+    steps.push_back(crate::VestingStep {
+        time: mid,
+        rate_bps: 6_000,
+    });
+    let schedule = crate::Schedule {
+        cliff_time: start,
+        steps,
+    };
+
+    // Zero elapsed: 0.
+    assert_eq!(
+        crate::scheduled_vested_at(DEPOSIT, start, end, &schedule, 0).unwrap(),
+        0
+    );
+    // Half of step 1 (2.5 days).
+    let elapsed_25 = 5 * DAY / 2;
+    let step1_d = DEPOSIT * 4_000 / 10_000;
+    assert_eq!(
+        crate::scheduled_vested_at(DEPOSIT, start, end, &schedule, elapsed_25).unwrap(),
+        step1_d * elapsed_25 / (5 * DAY)
+    );
+    // End of step 1.
+    assert_eq!(
+        crate::scheduled_vested_at(DEPOSIT, start, end, &schedule, 5 * DAY).unwrap(),
+        step1_d
+    );
+    // Full window.
+    assert_eq!(
+        crate::scheduled_vested_at(DEPOSIT, start, end, &schedule, 10 * DAY).unwrap(),
+        DEPOSIT
+    );
+    // Beyond end — capped at deposit.
+    assert_eq!(
+        crate::scheduled_vested_at(DEPOSIT, start, end, &schedule, 20 * DAY).unwrap(),
+        DEPOSIT
+    );
+}
+
+#[test]
+fn validate_schedule_rejects_bad_inputs() {
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+    let start = now + DAY;
+    let end = now + 10 * DAY;
+
+    // 1. empty steps
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_create_stream_vested(
+            &f.sender,
+            &f.recipient,
+            &f.token,
+            &DEPOSIT,
+            &start,
+            &end,
+            &false,
+            &crate::Schedule {
+                cliff_time: start,
+                steps: soroban_sdk::Vec::new(&f.env),
+            },
+        )
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::InvalidSchedule);
+
+    // 2. first step doesn't anchor at start_time
+    {
+        let mut steps = soroban_sdk::Vec::new(&f.env);
+        steps.push_back(crate::VestingStep {
+            time: start + 1,
+            rate_bps: 10_000,
+        });
+        let err = f
+            .client
+            .mock_all_auths()
+            .try_create_stream_vested(
+                &f.sender,
+                &f.recipient,
+                &f.token,
+                &DEPOSIT,
+                &start,
+                &end,
+                &false,
+                &crate::Schedule {
+                    cliff_time: start,
+                    steps,
+                },
+            )
+            .unwrap_err()
+            .unwrap();
+        assert_eq!(err, StreamError::InvalidSchedule);
+    }
+
+    // 3. rates don't sum to 10_000
+    {
+        let mut steps = soroban_sdk::Vec::new(&f.env);
+        steps.push_back(crate::VestingStep {
+            time: start,
+            rate_bps: 9_999,
+        });
+        let err = f
+            .client
+            .mock_all_auths()
+            .try_create_stream_vested(
+                &f.sender,
+                &f.recipient,
+                &f.token,
+                &DEPOSIT,
+                &start,
+                &end,
+                &false,
+                &crate::Schedule {
+                    cliff_time: start,
+                    steps,
+                },
+            )
+            .unwrap_err()
+            .unwrap();
+        assert_eq!(err, StreamError::InvalidSchedule);
+    }
+
+    // 4. step at or past end_time
+    {
+        let mut steps = soroban_sdk::Vec::new(&f.env);
+        steps.push_back(crate::VestingStep {
+            time: start,
+            rate_bps: 5_000,
+        });
+        steps.push_back(crate::VestingStep {
+            time: end, // == end_time, must be < end_time
+            rate_bps: 5_000,
+        });
+        let err = f
+            .client
+            .mock_all_auths()
+            .try_create_stream_vested(
+                &f.sender,
+                &f.recipient,
+                &f.token,
+                &DEPOSIT,
+                &start,
+                &end,
+                &false,
+                &crate::Schedule {
+                    cliff_time: start,
+                    steps,
+                },
+            )
+            .unwrap_err()
+            .unwrap();
+        assert_eq!(err, StreamError::InvalidSchedule);
+    }
+
+    // 5. cliff before start_time
+    {
+        let mut steps = soroban_sdk::Vec::new(&f.env);
+        steps.push_back(crate::VestingStep {
+            time: start,
+            rate_bps: 10_000,
+        });
+        let err = f
+            .client
+            .mock_all_auths()
+            .try_create_stream_vested(
+                &f.sender,
+                &f.recipient,
+                &f.token,
+                &DEPOSIT,
+                &start,
+                &end,
+                &false,
+                &crate::Schedule {
+                    cliff_time: start - 1,
+                    steps,
+                },
+            )
+            .unwrap_err()
+            .unwrap();
+        assert_eq!(err, StreamError::InvalidSchedule);
+    }
+}
+
+#[test]
+fn vested_stream_no_cliff_behaves_like_linear() {
+    // cliff_time == start_time → cliff never blocks; should be identical to
+    // a plain linear stream over the same parameters.
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+    let start = now + DAY;
+    let end = now + 11 * DAY; // 10-day window
+
+    let plain_id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let vested_id = f
+        .client
+        .mock_all_auths()
+        .create_stream_vested(
+            &f.sender,
+            &f.recipient,
+            &f.token,
+            &DEPOSIT,
+            &start,
+            &end,
+            &false,
+            &single_step(&f.env, start, end, start), // cliff == start
+        )
+        .unwrap();
+
+    // Both streams should report identical accrual at every sample point.
+    for elapsed_days in [1u64, 2, 5, 10, 15] {
+        f.env
+            .ledger()
+            .with_mut(|li| li.timestamp = now + DAY + elapsed_days * DAY);
+        let plain_avail = f.client.mock_all_auths().available(&plain_id);
+        let vested_avail = f.client.mock_all_auths().available(&vested_id);
+        assert_eq!(
+            plain_avail, vested_avail,
+            "mismatch at elapsed {elapsed_days} days"
+        );
+    }
+}
+
+#[test]
+fn get_schedule_rejects_unknown_stream() {
+    let f = Fixture::setup();
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_get_schedule(&999)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::StreamNotFound);
 }
 
 /// Cancellation reports *which* leg the asset refused — the recipient's

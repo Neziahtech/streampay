@@ -11,15 +11,15 @@
 use soroban_sdk::{contractclient, Address, BytesN, Env, Vec};
 
 use crate::{
-    FeeScan, MigrationStatus, PendingUpgrade, ScheduledIntent, Stream, StreamError, StreamInput,
-    StreamPolicy, TreasuryStatus,
+    FeeScan, MigrationStatus, PendingUpgrade, Schedule, ScheduledIntent, Stream, StreamError,
+    StreamInput, StreamPolicy, TreasuryStatus,
 };
 
 /// Interface of the StreamPay streaming-payments contract.
 #[contractclient(name = "StreamingPaymentsClient")]
-#[allow(dead_code)] // generated client methods are used selectively per test
+#[allow(dead_code)]
 pub trait StreamingPaymentsApi {
-    #[allow(clippy::too_many_arguments)] // mirrors the contract's 8-arg create_stream
+    #[allow(clippy::too_many_arguments)]
     fn create_stream(
         env: Env,
         sender: Address,
@@ -35,6 +35,19 @@ pub trait StreamingPaymentsApi {
         sender: Address,
         inputs: Vec<StreamInput>,
     ) -> Result<Vec<u64>, StreamError>;
+    #[allow(clippy::too_many_arguments)]
+    fn create_stream_vested(
+        env: Env,
+        sender: Address,
+        recipient: Address,
+        token: Address,
+        deposit_amount: i128,
+        start_time: u64,
+        end_time: u64,
+        cancelable: bool,
+        schedule: Schedule,
+    ) -> Result<u64, StreamError>;
+    fn get_schedule(env: Env, stream_id: u64) -> Result<Option<Schedule>, StreamError>;
     fn withdraw(env: Env, stream_id: u64, amount: i128) -> Result<(), StreamError>;
     fn withdraw_max(env: Env, stream_id: u64) -> Result<i128, StreamError>;
     fn cancel_stream(env: Env, caller: Address, stream_id: u64) -> Result<(), StreamError>;
@@ -45,7 +58,7 @@ pub trait StreamingPaymentsApi {
     fn sender_streams(env: Env, sender: Address, offset: u32, limit: u32) -> Vec<u64>;
 
     // --- scheduled intents ---
-    #[allow(clippy::too_many_arguments)] // mirrors the contract's scheduling surface
+    #[allow(clippy::too_many_arguments)]
     fn schedule_stream(
         env: Env,
         sender: Address,

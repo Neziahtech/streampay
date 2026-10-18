@@ -23,21 +23,10 @@ use crate::errors::StreamError;
 /// Whether a rejection branch is expected to be reachable at runtime.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Reachability {
-    /// A probe in `error_surface_test.rs` triggers this branch, and the test
-    /// asserts the exact branch (not merely *an* error) fired.
     Reachable,
-    /// A defensive guard whose precondition cannot occur for any stored stream,
-    /// because the contract's invariants rule it out. Documented, and reported
-    /// as unreachable by the coverage test rather than probed.
     Defensive,
 }
 
-/// One validation decision in the contract.
-///
-/// A branch is a single `(entrypoint, condition)` pair that maps to exactly one
-/// [`StreamError`]. Branch-level (rather than code-level) granularity is what
-/// makes the matrix meaningful: several branches may intentionally share a code
-/// (e.g. every zero-amount rejection is [`StreamError::ZeroAmount`]).
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Branch {
     // --------------------------------------------------------- create_stream
@@ -57,93 +46,48 @@ pub enum Branch {
     TopUpAmountNonPositive,
     TopUpDepositOverflow,
     // ------------------------------------------------- shared storage/math
-    /// `stream.rs::get_stream` finds no stored entry.
     StreamNotFound,
-    /// A terminal (cancelled/depleted) stream is mutated.
     StreamNotActive,
-    /// `validate_capacity`: `deposit * duration` would exceed `u128`.
     CapacityOverflow,
-    /// `streamed_at`: `deposit * elapsed` would exceed `u128`.
     RateProductOverflow,
-    /// `available_amount`: `streamed - withdrawn` would underflow.
     AvailableBalanceOverflow,
-    /// `cancel_amounts`: the pro-rata split would underflow.
     CancelSplitOverflow,
-    /// `pay_out`: `withdrawn + amount` would overflow `i128`.
     PayoutOverflow,
     // ----------------------------------------------------------- treasury
-    /// `set_fee_bps`: the requested rate exceeds `MAX_FEE_BPS`.
     SetFeeRateTooHigh,
-    /// `set_fee_bps` / `nominate_governor` / `withdraw_treasury`: the caller
-    /// is not the treasury governor.
     GovernorNotAllowed,
-    /// `accept_governor`: no nomination is pending.
     AcceptGovernorNoPending,
-    /// `accept_governor`: the caller is not the nominated address.
     AcceptGovernorNotNominee,
-    /// `withdraw_treasury`: amount is zero or negative.
     WithdrawTreasuryAmountNonPositive,
-    /// `withdraw_treasury`: amount exceeds fees collected minus fees already
-    /// withdrawn.
     WithdrawTreasuryExceedsBalance,
     // --------------------------------------------------- scheduled intents
-    /// No stored intent exists for the supplied id.
     IntentNotFound,
-    /// An operation requiring a pending intent found a terminal intent.
     IntentNotPending,
-    /// `execute_scheduled`: the next occurrence is not due yet.
     IntentNotYetExecutable,
-    /// `execute_scheduled` / `cancel_scheduled`: the intent expired.
     IntentExpired,
-    /// `cancel_scheduled`: the execution window has opened.
     IntentNotCancellable,
-    /// A schedule parameter is inconsistent or outside its supported bounds.
     ScheduleInvalidParameters,
-    /// A stored intent no longer matches its authorization commitment.
     IntentParamsMismatch,
-    /// `reclaim_expired`: the intent has not expired yet.
     IntentNotExpired,
     // --------------------------------------------------- token interactions
-    /// `create_stream`: the token refused the pull of `deposit_amount + fee`
-    /// (missing balance/allowance, a non-transferable asset, a non-SEP-41
-    /// callee). Nothing is persisted, so no stream id is consumed.
     CreateDepositTransferFailed,
-    /// `top_up`: the token refused the pull of the added funds; `deposit` is
-    /// left unchanged.
     TopUpTransferFailed,
-    /// `withdraw` / `withdraw_max` / the recipient leg of `cancel_stream`: the
-    /// token refused the payout to the stream recipient.
     RecipientPayoutFailed,
-    /// `cancel_stream`: the token refused the refund of unaccrued funds to the
-    /// sender; the whole cancellation rolls back.
     SenderRefundFailed,
-    /// `withdraw_treasury`: the token refused the payout of collected fees.
     TreasuryPayoutFailed,
     // ------------------------------------------------------------ policy
-    /// `create_stream`: asset is not on the policy allowlist.
     PolicyAssetNotAllowed,
-    /// `policy_execute_asset`: timelock delay has not elapsed.
     PolicyTimelockNotElapsed,
-    /// `policy_execute_asset`: no change queued for the asset.
     PolicyNoQueuedChange,
-    /// policy admin entrypoints called before initialization.
     PolicyNotInitialized,
-    /// `policy_accept_handoff` / `policy_cancel_handoff`: no handoff pending.
     PolicyNoPendingHandoff,
     // ------------------------------------------------ upgrade & freeze
-    /// The contract is currently frozen for maintenance or upgrade.
     ContractFrozen,
-    /// Storage migration was invoked while the contract is not frozen.
     MigrationNotFrozen,
-    /// `execute_upgrade`: no upgrade proposal is pending.
     ExecuteUpgradeNoPending,
-    /// `cancel_upgrade`: no upgrade proposal is pending.
     CancelUpgradeNoPending,
-    /// `execute_upgrade`: the timelock delay has not yet expired.
     TimelockNotExpired,
-    /// `propose_upgrade`: the proposed delay is shorter than MIN_UPGRADE_DELAY_SECONDS.
     UpgradeDelayTooShort,
-    /// `migrate_storage`: the schema has already been migrated to the target version.
     AlreadyMigrated,
     // ------------------------------------------------ stream policy floors
     PolicyRateBelowFloor,
@@ -151,13 +95,15 @@ pub enum Branch {
     PolicyDurationBelowFloor,
     PolicyDurationAboveCeiling,
     PolicyDepositBelowFloor,
+    // ----------------------------------------------------------- schedule
+    /// `withdraw` / `withdraw_max` / `available`: called before `cliff_time`.
+    WithdrawBeforeCliff,
+    /// `create_stream_vested`: the schedule is structurally invalid.
+    CreateInvalidSchedule,
 }
 
 impl Branch {
-    /// Every branch, in declaration order. The matrix test walks this list and
-    /// the coverage test requires each [`StreamError`] variant to be produced by
-    /// one of these (or retired).
-    pub const ALL: [Branch; 54] = [
+    pub const ALL: [Branch; 56] = [
         Branch::CreateDepositNonPositive,
         Branch::CreateStartTimeInPast,
         Branch::CreateInvalidTimeRange,
@@ -212,17 +158,18 @@ impl Branch {
         Branch::PolicyDurationBelowFloor,
         Branch::PolicyDurationAboveCeiling,
         Branch::PolicyDepositBelowFloor,
+        Branch::WithdrawBeforeCliff,
+        Branch::CreateInvalidSchedule,
     ];
 
-    /// The entrypoint(s) through which this branch can fire. Shared helpers
-    /// (storage lookups, accrual math) can be reached from several entrypoints;
-    /// the matrix lists them all.
     pub const fn entrypoints(self) -> &'static [&'static str] {
         match self {
             Branch::CreateDepositNonPositive
             | Branch::CreateStartTimeInPast
             | Branch::CreateInvalidTimeRange
-            | Branch::CreateDurationTooLong => &["create_stream", "create_streams"],
+            | Branch::CreateDurationTooLong => {
+                &["create_stream", "create_stream_vested", "create_streams"]
+            }
             Branch::WithdrawAmountNonPositive | Branch::WithdrawAmountExceedsAvailable => {
                 &["withdraw"]
             }
@@ -233,6 +180,7 @@ impl Branch {
             Branch::TopUpAmountNonPositive | Branch::TopUpDepositOverflow => &["top_up"],
             Branch::StreamNotFound => &[
                 "get_stream",
+                "get_schedule",
                 "available",
                 "withdraw",
                 "withdraw_max",
@@ -240,7 +188,9 @@ impl Branch {
                 "top_up",
             ],
             Branch::StreamNotActive => &["withdraw", "withdraw_max", "cancel_stream", "top_up"],
-            Branch::CapacityOverflow => &["create_stream", "create_streams", "top_up"],
+            Branch::CapacityOverflow => {
+                &["create_stream", "create_stream_vested", "create_streams", "top_up"]
+            }
             Branch::RateProductOverflow => &[
                 "streamed_at",
                 "available",
@@ -284,7 +234,9 @@ impl Branch {
             Branch::IntentNotCancellable => &["cancel_scheduled"],
             Branch::ScheduleInvalidParameters => &["schedule_stream"],
             Branch::IntentNotExpired => &["reclaim_expired"],
-            Branch::CreateDepositTransferFailed => &["create_stream", "create_streams"],
+            Branch::CreateDepositTransferFailed => {
+                &["create_stream", "create_stream_vested", "create_streams"]
+            }
             Branch::TopUpTransferFailed => &["top_up"],
             Branch::RecipientPayoutFailed => &["withdraw", "withdraw_max", "cancel_stream"],
             Branch::SenderRefundFailed => &["cancel_stream"],
@@ -320,12 +272,11 @@ impl Branch {
             Branch::PolicyDurationBelowFloor | Branch::PolicyDurationAboveCeiling => {
                 &["create_stream", "create_streams"]
             }
+            Branch::WithdrawBeforeCliff => &["available", "withdraw", "withdraw_max"],
+            Branch::CreateInvalidSchedule => &["create_stream_vested"],
         }
     }
 
-    /// The error code this branch returns. Exhaustive by construction: adding a
-    /// branch without a code is a compile error, which is what makes "no branch
-    /// without a code" a property of the type system rather than a convention.
     pub const fn error(self) -> StreamError {
         match self {
             Branch::CreateDepositNonPositive => StreamError::ZeroAmount,
@@ -384,10 +335,11 @@ impl Branch {
             Branch::PolicyDurationBelowFloor => StreamError::PolicyDurationBelowFloor,
             Branch::PolicyDurationAboveCeiling => StreamError::PolicyDurationAboveCeiling,
             Branch::PolicyDepositBelowFloor => StreamError::PolicyDepositBelowFloor,
+            Branch::WithdrawBeforeCliff => StreamError::CliffNotReached,
+            Branch::CreateInvalidSchedule => StreamError::InvalidSchedule,
         }
     }
 
-    /// Human-readable condition, used to generate `docs/ERRORS.md`.
     pub const fn condition(self) -> &'static str {
         match self {
             Branch::CreateDepositNonPositive => "deposit_amount is zero or negative",
@@ -445,12 +397,8 @@ impl Branch {
             Branch::CreateDepositTransferFailed => {
                 "the token refuses the deposit (+fee) pull (allowance, balance, or a non-compliant token)"
             }
-            Branch::TopUpTransferFailed => {
-                "the token refuses the pull of the added funds"
-            }
-            Branch::RecipientPayoutFailed => {
-                "the token refuses a payout to the recipient"
-            }
+            Branch::TopUpTransferFailed => "the token refuses the pull of the added funds",
+            Branch::RecipientPayoutFailed => "the token refuses a payout to the recipient",
             Branch::SenderRefundFailed => "the token refuses the refund to the sender",
             Branch::TreasuryPayoutFailed => {
                 "the token refuses the payout of collected protocol fees"
@@ -486,48 +434,82 @@ impl Branch {
             Branch::PolicyDepositBelowFloor => {
                 "stream deposit is below the governance policy floor"
             }
+            Branch::WithdrawBeforeCliff => {
+                "current time is before the stream's cliff_time; nothing is claimable yet"
+            }
+            Branch::CreateInvalidSchedule => {
+                "schedule steps are empty, unsorted, out of bounds, or rates do not sum to 10_000 bps"
+            }
         }
     }
 
-    /// Reachability classification; drives whether the matrix test probes it.
     pub const fn reachability(self) -> Reachability {
         match self {
-            // Invariant-protected guards. For every stored stream
-            // `0 <= withdrawn <= streamed <= deposit <= i128::MAX`, so none of
-            // these checked operations can cross an i128 boundary:
-            //   * `pay_out`: `withdrawn + amount <= streamed <= i128::MAX`.
-            //   * `available_amount`: `streamed - withdrawn` may go negative for
-            //     a corrupt entry but never below `i128::MIN` (it equals
-            //     `-withdrawn`, and `withdrawn <= i128::MAX`).
-            //   * `cancel_amounts`: same bound on both subtractions.
             Branch::PayoutOverflow
             | Branch::AvailableBalanceOverflow
             | Branch::CancelSplitOverflow => Reachability::Defensive,
-            _ => Reachability::Reachable,
+            Branch::CreateDepositNonPositive
+            | Branch::CreateStartTimeInPast
+            | Branch::CreateInvalidTimeRange
+            | Branch::CreateDurationTooLong
+            | Branch::WithdrawAmountNonPositive
+            | Branch::WithdrawAmountExceedsAvailable
+            | Branch::WithdrawMaxNothingToWithdraw
+            | Branch::CancelStreamNotCancellable
+            | Branch::CancelStreamNotAuthorized
+            | Branch::TopUpAmountNonPositive
+            | Branch::TopUpDepositOverflow
+            | Branch::StreamNotFound
+            | Branch::StreamNotActive
+            | Branch::CapacityOverflow
+            | Branch::RateProductOverflow
+            | Branch::SetFeeRateTooHigh
+            | Branch::GovernorNotAllowed
+            | Branch::AcceptGovernorNoPending
+            | Branch::AcceptGovernorNotNominee
+            | Branch::WithdrawTreasuryAmountNonPositive
+            | Branch::WithdrawTreasuryExceedsBalance
+            | Branch::IntentNotFound
+            | Branch::IntentNotPending
+            | Branch::IntentNotYetExecutable
+            | Branch::IntentExpired
+            | Branch::IntentNotCancellable
+            | Branch::ScheduleInvalidParameters
+            | Branch::IntentParamsMismatch
+            | Branch::IntentNotExpired
+            | Branch::CreateDepositTransferFailed
+            | Branch::TopUpTransferFailed
+            | Branch::RecipientPayoutFailed
+            | Branch::SenderRefundFailed
+            | Branch::TreasuryPayoutFailed
+            | Branch::PolicyAssetNotAllowed
+            | Branch::PolicyTimelockNotElapsed
+            | Branch::PolicyNoQueuedChange
+            | Branch::PolicyNotInitialized
+            | Branch::PolicyNoPendingHandoff
+            | Branch::ContractFrozen
+            | Branch::MigrationNotFrozen
+            | Branch::ExecuteUpgradeNoPending
+            | Branch::CancelUpgradeNoPending
+            | Branch::TimelockNotExpired
+            | Branch::UpgradeDelayTooShort
+            | Branch::AlreadyMigrated
+            | Branch::PolicyRateBelowFloor
+            | Branch::PolicyRateAboveCeiling
+            | Branch::PolicyDurationBelowFloor
+            | Branch::PolicyDurationAboveCeiling
+            | Branch::PolicyDepositBelowFloor
+            | Branch::WithdrawBeforeCliff
+            | Branch::CreateInvalidSchedule => Reachability::Reachable,
         }
     }
 }
 
-/// Error codes that are intentionally unreachable.
-///
-/// Retired under the append-only policy: the numeric slot is reserved forever
-/// (never reused) but no entrypoint can produce the variant. The coverage test
-/// treats exactly these as exempt; any *other* code with zero branches fails CI.
-///
-/// * `NotStreamSender` (2) / `NotStreamRecipient` (3) — reserved role checks
-///   from the original draft. The contract uses `NotAuthorized` (12) and
-///   branches on sender/recipient identity directly, so these were never wired
-///   in. Kept for wire compatibility.
 pub const RETIRED_CODES: &[StreamError] = &[
     StreamError::NotStreamSender,
     StreamError::NotStreamRecipient,
 ];
 
-/// Records a rejection branch and returns the error it maps to.
-///
-/// Used at every validation site instead of returning [`StreamError`] literals,
-/// so the branch (and therefore the documented mapping) is exercised by the
-/// code path itself.
 #[inline]
 pub fn reject(branch: Branch) -> StreamError {
     #[cfg(test)]
@@ -535,11 +517,6 @@ pub fn reject(branch: Branch) -> StreamError {
     branch.error()
 }
 
-/// Test-only branch trace.
-///
-/// The trace is thread-local: `cargo test` runs each test on its own thread and
-/// the contract executes synchronously on the caller's thread, so the matrix
-/// test observes exactly the branches it triggers — never a concurrent test's.
 #[cfg(test)]
 pub mod trace {
     use super::Branch;
@@ -551,17 +528,14 @@ pub mod trace {
         static HITS: RefCell<Vec<Branch>> = const { RefCell::new(Vec::new()) };
     }
 
-    /// Note that `branch` fired on this thread.
     pub fn record(branch: Branch) {
         HITS.with(|hits| hits.borrow_mut().push(branch));
     }
 
-    /// Take the branches recorded since the last drain, leaving the trace empty.
     pub fn drain() -> Vec<Branch> {
         HITS.with(|hits| core::mem::take(&mut *hits.borrow_mut()))
     }
 
-    /// Forget every recorded branch.
     pub fn clear() {
         HITS.with(|hits| hits.borrow_mut().clear());
     }

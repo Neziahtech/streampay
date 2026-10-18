@@ -93,11 +93,11 @@ pub enum StreamError {
     IntentParamsMismatch = 24,
     /// `reclaim_expired` was called before the intent's `expires_at`.
     IntentNotExpired = 25,
-    /// The token pull in `create_stream` failed: the sender's balance or
-    /// allowance was insufficient (the pull covers `deposit_amount + fee`),
-    /// or the asset refused the transfer (frozen/unauthorized/deauthorized
-    /// holder, or any non-compliant token). Nothing is persisted when it
-    /// fails, so no stream id is consumed.
+    /// The token pull in `create_stream` / `create_stream_vested` failed: the
+    /// sender's balance or allowance was insufficient (the pull covers
+    /// `deposit_amount + fee`), or the asset refused the transfer
+    /// (frozen/unauthorized/deauthorized holder, or any non-compliant token).
+    /// Nothing is persisted when it fails, so no stream id is consumed.
     DepositTransferFailed = 26,
     /// The token pull in `top_up` failed (see
     /// [`StreamError::DepositTransferFailed`]; the stream's deposit is left
@@ -147,6 +147,13 @@ pub enum StreamError {
     PolicyDurationAboveCeiling = 45,
     /// Stream deposit is below the governance policy floor.
     PolicyDepositBelowFloor = 46,
+    /// A withdrawal or `withdraw_max` was attempted before the stream's cliff
+    /// time has been reached; nothing is claimable yet.
+    CliffNotReached = 47,
+    /// The vesting schedule passed to `create_stream_vested` is invalid:
+    /// steps are empty, not sorted, extend past `end_time`, or their rates
+    /// do not sum to exactly `10_000` bps (100 % of the deposit).
+    InvalidSchedule = 48,
 }
 
 impl StreamError {
@@ -200,6 +207,8 @@ impl StreamError {
         StreamError::PolicyDurationBelowFloor,
         StreamError::PolicyDurationAboveCeiling,
         StreamError::PolicyDepositBelowFloor,
+        StreamError::CliffNotReached,
+        StreamError::InvalidSchedule,
     ];
 
     /// The stable numeric value carried across the contract boundary
