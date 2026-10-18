@@ -107,6 +107,20 @@ jobs:
       - name: Differential tests (against shared vector corpus)
         run: node --experimental-strip-types --test lib/oracle.test.ts
 
+      # -----------------------------------------------------------------------
+      # WCAG 2.1 AA accessibility gate (issue #98)
+      #
+      # Runs axe-core against HTML snapshots of every page and component.
+      # Any new violation fails the build. Baseline exceptions are documented
+      # with justification comments in frontend/test/a11y.test.ts.
+      #
+      # The test file uses Node's built-in test runner + jsdom so no browser
+      # is required; it runs in the same Node 22 environment as the other
+      # frontend tests and completes in < 30 s.
+      # -----------------------------------------------------------------------
+      - name: Accessibility audit (axe WCAG 2.1 AA gate)
+        run: node --experimental-strip-types --test test/a11y.test.ts
+
       - name: Build
         run: npm run build
 
