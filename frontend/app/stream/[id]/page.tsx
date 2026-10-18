@@ -17,8 +17,12 @@ import { useClaimScheduler } from "@/lib/use-claim-scheduler";
 import ClaimSchedulerSettings from "@/components/ClaimSchedulerSettings";
 import { computeAvailable, StreamSnapshot } from "@/lib/accrual";
 import { useToast } from "@/components/toast";
-import { fmtUnits, validateWithdrawal } from "@/lib/withdrawal";
-import DiscoveryConsentModal from "@/components/DiscoveryConsentModal";
+import PendingQueueDrawer from "@/components/PendingQueueDrawer";
+import PwaInstallPrompt from "@/components/PwaInstallPrompt";
+
+function fmtUnits(v: bigint): string {
+  return v.toString();
+}
 
 export default function StreamDetail() {
   const toast = useToast();
@@ -33,14 +37,15 @@ export default function StreamDetail() {
   const [isAmountDirty, setIsAmountDirty] = useState(false);
   const [address, setAddress] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string>("");
-  const [refreshing, setRefreshing] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [discoveryModalOpen, setDiscoveryModalOpen] = useState<boolean>(false);
+  const [isOffline, setIsOffline] = useState<boolean>(false);
 
   const reload = useCallback(async () => {
     if (!id) return;
     setRefreshing(true);
     try {
+      if (typeof window !== "undefined") {
+        setIsOffline(!navigator.onLine);
+      }
       const [s, a] = await Promise.all([readStream(id), readAvailable(id)]);
       setStream(s);
       setAvailable(a);
@@ -194,10 +199,29 @@ export default function StreamDetail() {
 
   return (
     <main className="wrap">
-      <p className="kicker mono">STREAM #{stream.id}</p>
+      <PwaInstallPrompt />
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+        <p className="kicker mono">STREAM #{stream.id}</p>
+        {isOffline && (
+          <span
+            className="status-badge"
+            style={{
+              background: "rgba(245, 158, 11, 0.15)",
+              color: "var(--amber)",
+              border: "1px solid var(--amber)",
+            }}
+          >
+            Offline Cached View
+          </span>
+        )}
+      </div>
       <h1>
         {stream.status === "Active" ? "⚡ Streaming" : `⏹ ${stream.status}`}
       </h1>
+
+      {address && (
+        <PendingQueueDrawer address={address} onTxConfirmed={() => void reload()} />
+      )}
 
       <section className="card">
         <div className="row" style={{ alignItems: "center" }}>

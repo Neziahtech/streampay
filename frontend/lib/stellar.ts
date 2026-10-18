@@ -19,23 +19,22 @@ import {
 } from "@stellar/stellar-sdk";
 import { signTransaction } from "@stellar/freighter-api";
 import type { BatchStreamEntry } from "./batch";
+import { enqueueTransaction, type QueuedTransaction } from "./pending-queue";
 import {
-  buildCreateStreamOperationForDays,
-  buildWithdrawOperation,
-  i128,
-  scAddr,
-  u32,
-  u64,
-} from "./stellar-ops.ts";
+  saveCachedStreamDetail,
+  loadCachedStreamDetail,
+  saveCachedStreams,
+  loadCachedStreams,
+} from "./offline-storage";
 
 export const RPC_URL =
   process.env.NEXT_PUBLIC_SOROBAN_RPC_URL ||
   "https://soroban-testnet.stellar.org";
-const NETWORK =
+export const NETWORK =
   process.env.NEXT_PUBLIC_NETWORK === "PUBLIC"
     ? Networks.PUBLIC
     : Networks.TESTNET;
-const CONTRACT_ID = process.env.NEXT_PUBLIC_STREAMING_CONTRACT_ID || "";
+export const CONTRACT_ID = process.env.NEXT_PUBLIC_STREAMING_CONTRACT_ID || "";
 
 function contract(): Contract {
   if (!CONTRACT_ID) {
@@ -184,11 +183,15 @@ const DUMMY_SOURCE = new Account(
 /**
  * Builds, simulates, Freighter-signs, sends and polls a mutating contract
  * operation. Resolves with the contract method's decoded return value.
+ * If network submission drops after signing, the signed transaction is preserved
+ * in the pending queue for deferred review and submission.
  */
 async function send<T>(
   source: string,
   operation: xdr.Operation,
-  decode: (v: xdr.ScVal) => T
+  decode: (v: xdr.ScVal) => T,
+  description?: string,
+  opType?: QueuedTransaction["operationType"]
 ): Promise<T> {
   const { result } = await sendWithTx(source, operation, decode);
   return result;
@@ -223,7 +226,32 @@ async function sendWithTx<T>(
   const signed = TransactionBuilder.fromXDR(signedTxXdr, NETWORK);
 
   // 3. Send and poll for inclusion.
-  const sent = await server.sendTransaction(signed);
+  let sent;
+  try {
+    sent = await server.sendTransaction(signed);
+  } catch (netErr) {
+    // If submission failed due to network / offline condition, preserve the signed XDR in the pending queue
+    if (
+      typeof window !== "undefined" &&
+      (!navigator.onLine ||
+        String(netErr).toLowerCase().includes("fetch") ||
+        String(netErr).toLowerCase().includes("network"))
+    ) {
+      enqueueTransaction({
+        address: source,
+        network: NETWORK,
+        contractId: CONTRACT_ID,
+        operationType: opType ?? "custom",
+        description: description ?? "Signed payment transaction",
+        signedXdr: signedTxXdr,
+      });
+      throw new Error(
+        "Network connection lost: your signed transaction was saved to the Pending Queue for submission when connectivity returns."
+      );
+    }
+    throw netErr;
+  }
+
   if (sent.status === "ERROR") {
     throw new Error(`Submit failed: ${JSON.stringify(sent.errorResult)}`);
   }
@@ -318,7 +346,13 @@ export async function createStream(
     args.cancelable
   );
   // create_stream returns the new stream id (u64).
-  return send(sender, op, (v) => BigInt(scValToNative(v) as bigint));
+  return send(
+    sender,
+    op,
+    (v) => BigInt(scValToNative(v) as bigint),
+    `Create stream for ${args.recipient.slice(0, 8)}…`,
+    "create_stream"
+  );
 }
 
 /** Creates a payroll batch with a single contract invocation. */
@@ -363,13 +397,19 @@ export async function createStreams(
     scAddr(sender),
     xdr.ScVal.scvVec(inputs)
   );
-  return send(sender, op, (v) => {
-    const decoded = scValToNative(v);
-    if (!Array.isArray(decoded)) {
-      throw new Error("Contract returned an invalid stream id list.");
-    }
-    return decoded.map((id) => BigInt(id));
-  });
+  return send(
+    sender,
+    op,
+    (v) => {
+      const decoded = scValToNative(v);
+      if (!Array.isArray(decoded)) {
+        throw new Error("Contract returned an invalid stream id list.");
+      }
+      return decoded.map((id) => BigInt(id));
+    },
+    `Create batch of ${entries.length} stream(s)`,
+    "create_stream"
+  );
 }
 
 export async function withdrawFromStream(
@@ -379,8 +419,10 @@ export async function withdrawFromStream(
 ): Promise<void> {
   await send(
     recipient,
-    buildWithdrawOperation(CONTRACT_ID, streamId, amount),
-    () => undefined
+    contract().call("withdraw", u64(streamId), i128(amount)),
+    () => undefined,
+    `Withdraw ${amount} units from stream #${streamId}`,
+    "withdraw"
   );
 }
 
@@ -395,7 +437,9 @@ export async function withdrawMaxFromStream(
   return send(
     recipient,
     contract().call("withdraw_max", u64(streamId)),
-    (v) => BigInt(scValToNative(v) as bigint)
+    (v) => BigInt(scValToNative(v) as bigint),
+    `Withdraw maximum accrued from stream #${streamId}`,
+    "withdraw_max"
   );
 }
 
@@ -517,7 +561,9 @@ export async function topUpStream(
   await send(
     sender,
     contract().call("top_up", u64(streamId), i128(amount)),
-    () => undefined
+    () => undefined,
+    `Top up stream #${streamId} by ${amount} units`,
+    "top_up"
   );
 }
 
@@ -528,7 +574,9 @@ export async function cancelStream(
   await send(
     caller,
     contract().call("cancel_stream", scAddr(caller), u64(streamId)),
-    () => undefined
+    () => undefined,
+    `Cancel stream #${streamId}`,
+    "cancel_stream"
   );
 }
 
@@ -558,34 +606,57 @@ async function simulateRead(
   }
 }
 
-/** Read-only view of one stream. */
+/** Read-only view of one stream with offline cache persistence. */
 export async function readStream(streamId: string): Promise<StreamView> {
-  const retval = await simulateRead(CONTRACT_ID, "get_stream", [u64(streamId)]);
-  if (!retval) {
-    throw new Error(`Stream #${streamId} not found or RPC unavailable`);
+  try {
+    const retval = await simulateRead(CONTRACT_ID, "get_stream", [u64(streamId)]);
+    if (!retval) {
+      throw new Error(`Stream #${streamId} not found or RPC unavailable`);
+    }
+    const raw = scValToNative(retval) as Record<string, unknown>;
+    const view: StreamView = {
+      id: String(raw.id),
+      sender: String(raw.sender),
+      recipient: String(raw.recipient),
+      token: String(raw.token),
+      deposit: String(raw.deposit),
+      withdrawn: String(raw.withdrawn),
+      startTime: Number(raw.start_time),
+      endTime: Number(raw.end_time),
+      cancelable: Boolean(raw.cancelable),
+      status: String(raw.status),
+    };
+    saveCachedStreamDetail(streamId, view, "0");
+    return view;
+  } catch (err) {
+    const cached = loadCachedStreamDetail(streamId);
+    if (cached) {
+      return cached.stream;
+    }
+    throw err;
   }
-  const raw = scValToNative(retval) as Record<string, unknown>;
-  return {
-    id: String(raw.id),
-    sender: String(raw.sender),
-    recipient: String(raw.recipient),
-    token: String(raw.token),
-    deposit: String(raw.deposit),
-    withdrawn: String(raw.withdrawn),
-    startTime: Number(raw.start_time),
-    endTime: Number(raw.end_time),
-    cancelable: Boolean(raw.cancelable),
-    status: String(raw.status),
-  };
 }
 
 /** Accrued-but-unwithdrawn balance of a stream at the current ledger time. */
 export async function readAvailable(streamId: string): Promise<bigint> {
-  const retval = await simulateRead(CONTRACT_ID, "available", [u64(streamId)]);
-  if (!retval) {
-    throw new Error(`Stream #${streamId} not found or RPC unavailable`);
+  try {
+    const retval = await simulateRead(CONTRACT_ID, "available", [u64(streamId)]);
+    if (!retval) {
+      throw new Error(`Stream #${streamId} not found or RPC unavailable`);
+    }
+    const avail = BigInt(scValToNative(retval) as bigint);
+    const cached = loadCachedStreamDetail(streamId);
+    if (cached) {
+      saveCachedStreamDetail(streamId, cached.stream, avail);
+    }
+    return avail;
+  } catch (err) {
+    const cached = loadCachedStreamDetail(streamId);
+    if (cached && cached.available !== undefined) {
+      return BigInt(cached.available);
+    }
+    throw err;
   }
-  return BigInt(scValToNative(retval) as bigint);
 }
 
 const MAX_PAGE_SIZE = 50; // mirrors the contract's MAX_PAGE_SIZE
@@ -611,22 +682,36 @@ async function readStreamIdsPage(
  * following pagination until exhausted. `role` selects the index:
  * streams where the address receives funds ("recipient") or funds them
  * ("sender"). Streams that fail to read (archived, RPC hiccups) are skipped.
+ * Automatically saves discovered streams to offline storage, and falls back
+ * to cached streams if network/RPC is unavailable.
  */
 export async function fetchStreamsFor(
   address: string,
   role: "recipient" | "sender"
 ): Promise<StreamView[]> {
-  const view = role === "recipient" ? "recipient_streams" : "sender_streams";
-  const ids: string[] = [];
-  for (let offset = 0; ; offset += MAX_PAGE_SIZE) {
-    const page = await readStreamIdsPage(view, address, offset);
-    ids.push(...page);
-    if (page.length < MAX_PAGE_SIZE) break;
+  try {
+    const view = role === "recipient" ? "recipient_streams" : "sender_streams";
+    const ids: string[] = [];
+    for (let offset = 0; ; offset += MAX_PAGE_SIZE) {
+      const page = await readStreamIdsPage(view, address, offset);
+      ids.push(...page);
+      if (page.length < MAX_PAGE_SIZE) break;
+    }
+    const streams = await Promise.all(
+      ids.map((id) => readStream(id).catch(() => null))
+    );
+    const valid = streams.filter((s): s is StreamView => s !== null);
+    if (valid.length > 0) {
+      saveCachedStreams(address, valid);
+    }
+    return valid;
+  } catch (err) {
+    const cached = loadCachedStreams(address);
+    if (cached && cached.streams.length > 0) {
+      return cached.streams;
+    }
+    throw err;
   }
-  const streams = await Promise.all(
-    ids.map((id) => readStream(id).catch(() => null))
-  );
-  return streams.filter((s): s is StreamView => s !== null);
 }
 
 import {

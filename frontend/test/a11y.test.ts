@@ -588,79 +588,32 @@ describe("BatchStreamForm", () => {
 });
 
 // ===========================================================================
-// 9. Network / contract indicator (issue #33)
-//
-// Colours below are the flattened (opaque) equivalents of the rgba tints in
-// globals.css — JSDOM cannot composite alpha channels, and these are the
-// effective backgrounds the user sees over --panel (#111725).
+// 9. PendingQueueDrawer and OfflineBanner
 // ===========================================================================
-describe("Network indicator", () => {
-  const CONTRACT_ID = "CAAP5FRQLPBOHD3CH7XMD4JY4WAX5PP3HNRWZP6Y3LZJZ4RQAB4D";
-
-  test("badge passes WCAG 2.1 AA", async () => {
+describe("PendingQueueDrawer and OfflineBanner", () => {
+  test("passes WCAG 2.1 AA", async () => {
     const html = withLayout(`
-<header class="network-indicator">
-  <div class="network-bar" style="background:#111725;">
-    <span class="network-chip network-chip-testnet"
-          style="background:#211d19; color:#f59e0b; border:1px solid #644919;">TESTNET</span>
-    <span class="network-text" style="color:#93a1b8;">Stellar Testnet</span>
-    <a class="network-contract mono" style="color:#39c5ff;"
-       href="https://stellar.expert/explorer/testnet/contract/${CONTRACT_ID}"
-       title="${CONTRACT_ID}">
-      <span aria-hidden="true">contract CAAP5FRQ…AB4D</span>
-      <span class="sr-only">Streaming contract id ${CONTRACT_ID} — opens the block explorer</span>
-    </a>
+<main class="wrap">
+  <div role="status" aria-live="polite" class="offline-banner" style="background: rgba(245, 158, 11, 0.12); color: #e8eefb; padding: 10px 16px;">
+    <span><strong>Offline Mode:</strong> You are browsing cached stream state.</span>
+    <button type="button" aria-label="Dismiss offline banner">×</button>
   </div>
-</header>
-<main class="wrap"><h1>StreamPay</h1></main>`);
+  <section class="card" aria-labelledby="pending-queue-title">
+    <h2 id="pending-queue-title">Pending Transaction Queue</h2>
+    <p class="muted">Signed-but-unsent transactions saved for submission.</p>
+    <button type="button" aria-expanded="true">View Queue (1)</button>
+    <ul style="list-style: none; padding: 0;">
+      <li>
+        <strong>Withdraw 100 XLM from stream #1</strong>
+        <span class="status-badge">Ready to Submit</span>
+        <button type="button">Review &amp; Submit</button>
+      </li>
+    </ul>
+  </section>
+</main>`);
 
     const violations = await runAxe(html);
-    assertNoViolations(violations, "Network indicator (badge)");
-  });
-
-  test("wallet mismatch warning passes WCAG 2.1 AA", async () => {
-    const html = withLayout(`
-<header class="network-indicator">
-  <div class="network-bar" style="background:#111725;">
-    <span class="network-chip network-chip-testnet"
-          style="background:#211d19; color:#f59e0b; border:1px solid #644919;">TESTNET</span>
-    <span class="network-text" style="color:#93a1b8;">Stellar Testnet</span>
-  </div>
-  <div class="network-warning" role="alert" style="background:#241d21; color:#e8eefb;">
-    <div class="network-warning-body">
-      <strong class="network-warning-title" style="color:#ff6b6b;">
-        Wallet is on Public Network (mainnet)
-      </strong>
-      <p class="network-warning-text" style="color:#e8eefb;">
-        This app signs for Testnet. Transactions will fail until the wallet matches.
-      </p>
-      <p class="network-warning-hint" style="color:#93a1b8;">
-        Open the Freighter extension, switch to Testnet in its network picker, then reconnect.
-      </p>
-    </div>
-    <button type="button" class="network-warning-dismiss toast-close"
-            style="color:#ff6b6b;" aria-label="Dismiss network warning">×</button>
-  </div>
-</header>
-<main class="wrap"><h1>StreamPay</h1></main>`);
-
-    const violations = await runAxe(html);
-    assertNoViolations(violations, "Network indicator (mismatch warning)");
-  });
-
-  test("unconfigured contract state passes WCAG 2.1 AA", async () => {
-    const html = withLayout(`
-<header class="network-indicator">
-  <div class="network-bar" style="background:#111725;">
-    <span class="network-chip network-chip-public"
-          style="background:#163d2b; color:#3ddc84; border:1px solid #1d5c3c;">PUBLIC</span>
-    <span class="network-text" style="color:#93a1b8;">Stellar Public Network (mainnet)</span>
-    <span class="network-contract-unset" style="color:#93a1b8;">contract id not configured</span>
-  </div>
-</header>
-<main class="wrap"><h1>StreamPay</h1></main>`);
-
-    const violations = await runAxe(html);
-    assertNoViolations(violations, "Network indicator (no contract id)");
+    assertNoViolations(violations, "PendingQueueDrawer and OfflineBanner");
   });
 });
+

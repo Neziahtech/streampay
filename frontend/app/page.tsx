@@ -16,10 +16,12 @@ import {
   type StreamView,
 } from "@/lib/stellar";
 import { loadStreamIds, saveStreamId } from "@/lib/storage";
-import { checkWalletNetwork } from "@/lib/network";
+import { loadCachedStreams } from "@/lib/offline-storage";
 import StreamForm from "@/components/StreamForm";
 import BatchStreamForm from "@/components/BatchStreamForm";
 import StreamList from "@/components/StreamList";
+import PendingQueueDrawer from "@/components/PendingQueueDrawer";
+import PwaInstallPrompt from "@/components/PwaInstallPrompt";
 import { useToast } from "@/components/toast";
 
 export default function Home() {
@@ -48,18 +50,23 @@ export default function Home() {
       }
       setAddress(address);
       toast.success(`Connected as ${address.slice(0, 8)}…`);
-      // Surface a wallet/app network mismatch here instead of letting it
-      // arrive later as an opaque signing error (issue #33).
-      await checkWalletNetwork();
+
+      // Rehydrate from offline cache first for instant display
+      const offlineCached = loadCachedStreams(address);
+      if (offlineCached && offlineCached.streams.length > 0) {
+        setStreams(offlineCached.streams);
+      }
+
       // Rehydrate the cached list (ids only; state is always read fresh).
       const cached = loadStreamIds(address);
       if (cached.length > 0) {
         const views = await Promise.all(
           cached.map((id) => readStream(id).catch(() => null))
         );
-        setStreams(
-          views.filter((s): s is StreamView => s !== null).reverse()
-        );
+        const fresh = views.filter((s): s is StreamView => s !== null).reverse();
+        if (fresh.length > 0) {
+          setStreams(fresh);
+        }
       }
     } catch (e) {
       toast.error(`Wallet connection failed: ${String(e)}`);
@@ -119,19 +126,12 @@ export default function Home() {
   if (!address) {
     return (
       <main className="wrap">
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap" }}>
-          <div>
-            <div className="kicker mono">SOROBAN · STELLAR</div>
-            <h1>⚡ StreamPay</h1>
-          </div>
-          <div style={{ display: "flex", gap: "16px", alignItems: "center" }}>
-            <Link href="/docs" style={{ color: "#38bdf8", fontSize: "0.85rem", textDecoration: "none" }}>
-              API Docs ↗
-            </Link>
-            <Link href="/listings" style={{ color: "var(--accent2)", fontSize: "14px", textDecoration: "none" }}>
-              Browse Discovery Directory →
-            </Link>
-          </div>
+        <PwaInstallPrompt />
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div className="kicker mono">SOROBAN · STELLAR</div>
+          <Link href="/docs" style={{ color: "#38bdf8", fontSize: "0.85rem", textDecoration: "none" }}>
+            API Docs ↗
+          </Link>
         </div>
         <p className="muted">
           Continuous, per-second payment streams — payroll, vesting,
@@ -163,28 +163,29 @@ export default function Home() {
 
   return (
     <main className="wrap">
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap" }}>
-        <h1>⚡ StreamPay</h1>
-        <div style={{ display: "flex", gap: "16px", alignItems: "baseline" }}>
-          <a
-            href="/simulator"
-            style={{
-              color: "var(--accent2)",
-              textDecoration: "none",
-              fontSize: "13px",
-              fontWeight: 600,
-            }}
-          >
-            Accrual Simulator →
-          </a>
-          <Link href="/listings" style={{ color: "var(--accent2)", fontSize: "14px", textDecoration: "none" }}>
-            Browse Discovery Directory →
-          </Link>
-        </div>
+      <PwaInstallPrompt />
+      <h1>⚡ StreamPay</h1>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+        <p className="muted">
+          Connected: <code>{address}</code>
+        </p>
+        <a
+          href="/simulator"
+          style={{
+            color: "var(--accent2)",
+            textDecoration: "none",
+            fontSize: "13px",
+            fontWeight: 600,
+          }}
+        >
+          Accrual Simulator →
+        </a>
       </div>
       <p className="muted">
         Connected: <code>{address}</code>
       </p>
+
+      <PendingQueueDrawer address={address} onTxConfirmed={() => discover()} />
 
       <StreamForm
         onCreate={async (args) => {

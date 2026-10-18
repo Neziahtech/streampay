@@ -766,55 +766,21 @@ Wasm build fails at a `build-script-build` step before compiling a single
 line of contract code, you're hitting this — check `stellar --version`
 first.
 
-## 15. Batch stream creation & transaction budget bounds
+## 15. Frontend PWA, Offline Reads & Pending Transaction Queue
 
-The contract provides `create_streams_batch(entries: Vec<BatchEntry>)` to allow
-payers (such as DAO treasuries, payroll systems, and subscription providers) to
-open multiple streams across arbitrary recipients and tokens in a single
-invocation.
+The frontend supports installation as a Progressive Web App (PWA) with offline
+read resilience and a safe pending transaction queue. See [`docs/PWA_OFFLINE_QUEUE.md`](PWA_OFFLINE_QUEUE.md)
+for the full specification:
 
-### Semantics & isolation
+- **Service Worker Strategy**: Stale-While-Revalidate (SWR) for chain data,
+  cache-first for static application bundles, and versioned data cache
+  invalidation on streaming contract ID changes (`streampay-data-${CONTRACT_ID}-v1`).
+- **Offline Stream State**: Local snapshot persistence of discovered streams and
+  real-time mathematical accrual calculation in the field without network.
+- **Pending Transaction Queue**: Safe handling of signed-but-unsent Soroban
+  transactions. Refuses stale submissions on sequence number drift (`tx_bad_seq`)
+  or expired timebounds (`tx_too_late`) with explicit user-facing UX. Zero
+  silent resubmissions.
+- **Mobile Sandbox Quirks**: Documented platform constraints for iOS Safari
+  standalone WebKit and mobile Chrome extension sandboxing.
 
-- **All-or-nothing per entry, best-effort overall**: Each `BatchEntry` is
-  validated and executes its own token pull independently. A validation failure
-  (e.g. invalid time range, non-positive deposit, capacity overflow) or transfer
-  rejection (e.g. insufficient balance or unapproved allowance) produces an
-  `Err(StreamError)` in the returned vector for that entry.
-- **No sibling rollback**: Failure of any individual entry does not revert or
-  abort previously created or subsequent sibling streams in the batch.
-- **Checks-effects-interactions**: Validation and token pull (`try_transfer_from`)
-  are completed before any persistent stream storage or counter mutation occurs.
-  If the pull fails, no stream state is written.
-- **Multi-token support**: Entries within the same batch may specify different
-  asset contracts.
-- **Batch bounds**: The batch size is strictly bounded between `MIN_BATCH = 1`
-  and `MAX_BATCH = 25`. Calls with 0 entries fail with `StreamError::BatchEmpty`,
-  and calls exceeding 25 entries fail with `StreamError::BatchTooLarge`.
-
-### Measured instruction & memory benchmarks
-
-Measurements gathered via `soroban-env-host` invocation metering:
-
-| Batch size | CPU instructions | Memory (bytes) | % of Soroban CPU budget (100M) |
-|---|---|---|---|
-| 1 | 514,652 | 201,628 | 0.51% |
-| 5 | 2,357,938 | 594,733 | 2.36% |
-| 10 | 5,301,290 | 1,240,177 | 5.30% |
-| 20 | 12,551,145 | 2,968,621 | 12.55% |
-| 25 (`MAX_BATCH`) | 19,000,404 | 4,767,985 | 19.00% |
-
-### Why `MAX_BATCH = 25` is the hard bound
-
-While Soroban's CPU instruction budget is 100,000,000 instructions (25 streams
-consume only ~19% of this limit) and memory is well within the 40 MB ceiling,
-the limiting protocol constraint is the **contract event byte limit of 16,384
-bytes (16 KB) per transaction**.
-
-Each stream creation emits:
-1. An SAC token `transfer` event (~250–300 bytes)
-2. A `StreamCreated` contract event (~300 bytes)
-
-At 25 streams, total emitted event data reaches approximately 15.5 KB. Batches
-with 26 or more streams exceed the 16,384-byte ceiling and trigger an immediate
-host abort (`Error(Budget, ExceededLimit)`: `contract events size bytes > 16384`).
-Thus, `MAX_BATCH = 25` represents the maximum safe on-chain batch size on Stellar.

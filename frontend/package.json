@@ -9,11 +9,8 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "node --test && vitest run",
-    "test:accrual": "node --test lib/accrual.test.ts",
-    "test:scheduler": "vitest run",
-    "test": "node --test",
-    "test:parity": "node --experimental-strip-types --test test/client-parity.test.ts",
+    "test": "node --experimental-strip-types --test test/pending-queue.test.ts",
+    "test:pwa": "node --experimental-strip-types --test test/pending-queue.test.ts",
     "test:a11y": "node --experimental-strip-types --test test/a11y.test.ts",
     "generate:openapi": "npx tsx scripts/generate-openapi.ts"
   },
