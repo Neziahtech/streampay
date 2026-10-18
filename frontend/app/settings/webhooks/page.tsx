@@ -91,6 +91,7 @@ export default function WebhooksSettingsPage() {
   }, [activeTab, toast]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadData();
   }, [loadData]);
 
