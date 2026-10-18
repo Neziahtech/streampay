@@ -4,21 +4,31 @@ import Link from "next/link";
 import { useState } from "react";
 import { isNativeXlm, type StreamView } from "@/lib/stellar";
 
-export default function StreamList({
-  streams,
-  onWithdraw,
-  onWithdrawMax,
-  onTopUp,
-  onCancel,
-  onRefresh,
-}: {
+export interface StreamListProps {
   streams: StreamView[];
+  selectedIds?: string[];
+  onToggleSelect?: (id: string) => void;
+  onSelectAll?: () => void;
+  onDeselectAll?: () => void;
   onWithdraw: (id: string, amount: string) => Promise<void>;
   onWithdrawMax: (id: string) => Promise<void>;
   onTopUp: (id: string, amount: string) => Promise<void>;
   onCancel: (id: string) => Promise<void>;
   onRefresh: (id: string) => void | Promise<void>;
-}) {
+}
+
+export default function StreamList({
+  streams,
+  selectedIds = [],
+  onToggleSelect,
+  onSelectAll,
+  onDeselectAll,
+  onWithdraw,
+  onWithdrawMax,
+  onTopUp,
+  onCancel,
+  onRefresh,
+}: StreamListProps) {
   const [amounts, setAmounts] = useState<Record<string, string>>({});
 
   if (streams.length === 0) {
@@ -30,12 +40,38 @@ export default function StreamList({
     );
   }
 
+  const allSelected =
+    streams.length > 0 && streams.every((s) => selectedIds.includes(s.id));
+  const someSelected =
+    streams.some((s) => selectedIds.includes(s.id)) && !allSelected;
+
+  function handleHeaderCheckboxChange() {
+    if (allSelected) {
+      onDeselectAll?.();
+    } else {
+      onSelectAll?.();
+    }
+  }
+
   return (
     <table>
       {/* Caption provides an accessible table summary (WCAG 1.3.1) */}
       <caption className="sr-only">Your payment streams</caption>
       <thead>
         <tr>
+          {onToggleSelect && (
+            <th scope="col" style={{ width: "40px", textAlign: "center" }}>
+              <input
+                type="checkbox"
+                aria-label="Select all streams"
+                checked={allSelected}
+                ref={(el) => {
+                  if (el) el.indeterminate = someSelected;
+                }}
+                onChange={handleHeaderCheckboxChange}
+              />
+            </th>
+          )}
           <th scope="col">#</th>
           <th scope="col">Token</th>
           <th scope="col">Recipient</th>
@@ -47,11 +83,22 @@ export default function StreamList({
       </thead>
       <tbody>
         {streams.map((s) => {
+          const isSelected = selectedIds.includes(s.id);
           // Stable ID for the per-row amount input so label can reference it
           const amountInputId = `stream-amount-${s.id}`;
 
           return (
-            <tr key={s.id}>
+            <tr key={s.id} className={isSelected ? "selected-row" : undefined}>
+              {onToggleSelect && (
+                <td style={{ textAlign: "center" }}>
+                  <input
+                    type="checkbox"
+                    aria-label={`Select stream #${s.id}`}
+                    checked={isSelected}
+                    onChange={() => onToggleSelect(s.id)}
+                  />
+                </td>
+              )}
               <td className="mono">
                 <Link href={`/stream/${s.id}`}>#{s.id}</Link>
               </td>
