@@ -126,17 +126,17 @@ pub enum StreamError {
     /// No admin handoff proposal is pending.
     PolicyNoPendingHandoff = 35,
     /// The contract is currently frozen for maintenance or upgrade.
-    ContractFrozen = 36,
+    ContractFrozen = 51,
     /// The operation requires the contract to be frozen.
-    ContractNotFrozen = 37,
+    ContractNotFrozen = 52,
     /// An upgrade operation was attempted but no upgrade is pending.
-    NoPendingUpgrade = 38,
+    NoPendingUpgrade = 53,
     /// The upgrade timelock delay has not yet expired.
-    TimelockNotExpired = 39,
+    TimelockNotExpired = 54,
     /// The proposed upgrade delay is shorter than the minimum timelock.
-    UpgradeDelayTooShort = 40,
+    UpgradeDelayTooShort = 55,
     /// The storage migration has already been completed.
-    AlreadyMigrated = 41,
+    AlreadyMigrated = 56,
     /// Stream rate is below the governance policy floor.
     PolicyRateBelowFloor = 42,
     /// Stream rate exceeds the governance policy ceiling.
@@ -147,14 +147,14 @@ pub enum StreamError {
     PolicyDurationAboveCeiling = 45,
     /// Stream deposit is below the governance policy floor.
     PolicyDepositBelowFloor = 46,
-    /// Stream deposit is below the economically viable threshold (`MIN_STREAM_AMOUNT`); dust streams are rejected.
-    StreamTooSmall = 47,
     /// Claim amount is below the transaction fee floor (`MIN_CLAIM_AMOUNT`); not worth claiming.
-    ClaimAmountTooSmall = 48,
+    ClaimAmountTooSmall = 36,
+    /// Stream deposit is below the economically viable threshold (`MIN_STREAM_AMOUNT`); dust streams are rejected.
+    StreamTooSmall = 37,
     /// Sweep was attempted on a stream that is not fully depleted (remaining_balance != 0).
-    StreamNotDepleted = 49,
+    StreamNotDepleted = 38,
     /// Sweep was attempted before the stream's `end_time`; the stream has not expired.
-    StreamNotExpired = 50,
+    StreamNotExpired = 39,
 }
 
 impl StreamError {
@@ -197,21 +197,21 @@ impl StreamError {
         StreamError::PolicyNoQueuedChange,
         StreamError::PolicyNotInitialized,
         StreamError::PolicyNoPendingHandoff,
-StreamError::ContractFrozen,
-        StreamError::ContractNotFrozen,
-        StreamError::NoPendingUpgrade,
-        StreamError::TimelockNotExpired,
-        StreamError::UpgradeDelayTooShort,
-        StreamError::AlreadyMigrated,
+        StreamError::ClaimAmountTooSmall,
+        StreamError::StreamTooSmall,
+        StreamError::StreamNotDepleted,
+        StreamError::StreamNotExpired,
         StreamError::PolicyRateBelowFloor,
         StreamError::PolicyRateAboveCeiling,
         StreamError::PolicyDurationBelowFloor,
         StreamError::PolicyDurationAboveCeiling,
         StreamError::PolicyDepositBelowFloor,
-        StreamError::StreamTooSmall,
-        StreamError::ClaimAmountTooSmall,
-        StreamError::StreamNotDepleted,
-        StreamError::StreamNotExpired,
+        StreamError::ContractFrozen,
+        StreamError::ContractNotFrozen,
+        StreamError::NoPendingUpgrade,
+        StreamError::TimelockNotExpired,
+        StreamError::UpgradeDelayTooShort,
+        StreamError::AlreadyMigrated,
     ];
 
     /// The stable numeric value carried across the contract boundary
