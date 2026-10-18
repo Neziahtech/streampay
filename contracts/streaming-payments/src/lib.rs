@@ -558,6 +558,7 @@ impl StreamingPayments {
         env: Env,
         entries: Vec<BatchEntry>,
     ) -> Result<Vec<Result<u64, StreamError>>, StreamError> {
+        Self::require_not_frozen(&env)?;
         let count = entries.len();
         if count < stream::MIN_BATCH {
             return Err(surface::reject(Branch::CreateBatchEmpty));
