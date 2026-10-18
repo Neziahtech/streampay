@@ -1375,3 +1375,71 @@ fn reclaim_unknown_intent_reverts() {
     let err = f.client.try_reclaim_expired(&999).unwrap_err().unwrap();
     assert_eq!(err, StreamError::IntentNotFound);
 }
+
+#[test]
+fn frozen_contract_rejects_new_schedules_without_moving_funds() {
+    let f = Fixture::setup_quiet();
+    let governor = f.client.treasury_status(&f.token).governor;
+    f.client.mock_all_auths().set_frozen(&governor, &true);
+    assert!(f.client.is_frozen());
+
+    let sender_before = f.balance(&f.sender);
+    let contract_before = f.contract_balance();
+    let now = f.now();
+
+    let result = f.client.mock_all_auths().try_schedule_stream(
+        &f.sender, &f.recipient, &f.token, &DEPOSIT,
+        &(now + DAY), &(now + 2 * DAY), &false,
+        &0, &1, &FEE, &now, &(now + 30 * DAY),
+    );
+
+    assert_eq!(result.unwrap_err().unwrap(), StreamError::ContractFrozen);
+    assert_eq!(f.balance(&f.sender), sender_before);
+    assert_eq!(f.contract_balance(), contract_before);
+    assert!(f.client.sender_intents(&f.sender, &0, &10).is_empty());
+
+    f.client.mock_all_auths().set_frozen(&governor, &false);
+    assert!(!f.client.is_frozen());
+    f.schedule_one_shot(DEPOSIT, DAY, DAY, FEE);
+}
+
+#[test]
+fn frozen_contract_rejects_scheduled_execution_without_changing_intent() {
+    let f = Fixture::setup_quiet();
+    let id = f.schedule_one_shot(DEPOSIT, DAY, DAY, FEE);
+    let governor = f.client.treasury_status(&f.token).governor;
+    let keeper_before = f.balance(&f.keeper);
+    let contract_before = f.contract_balance();
+
+    f.client.mock_all_auths().set_frozen(&governor, &true);
+
+    let result = f.client.mock_all_auths()
+        .try_execute_scheduled(&id, &f.keeper);
+
+    assert_eq!(result.unwrap_err().unwrap(), StreamError::ContractFrozen);
+    assert_eq!(f.client.get_intent(&id).status, IntentStatus::Pending);
+    assert_eq!(f.client.get_intent(&id).occurrences_remaining, 1);
+    assert!(f.client.sender_streams(&f.sender, &0, &10).is_empty());
+    assert_eq!(f.balance(&f.keeper), keeper_before);
+    assert_eq!(f.contract_balance(), contract_before);
+
+    f.client.mock_all_auths().set_frozen(&governor, &false);
+    let stream_id = f.client.mock_all_auths()
+        .execute_scheduled(&id, &f.keeper);
+    assert_eq!(f.client.get_stream(&stream_id).deposit, DEPOSIT);
+}
+
+#[test]
+fn frozen_contract_still_allows_expired_escrow_refund() {
+    let f = Fixture::setup_quiet();
+    let id = f.schedule_one_shot(DEPOSIT, DAY, DAY, FEE);
+    let governor = f.client.treasury_status(&f.token).governor;
+
+    f.client.mock_all_auths().set_frozen(&governor, &true);
+    f.advance(365 * DAY + 1);
+    f.client.reclaim_expired(&id);
+
+    assert_eq!(f.client.get_intent(&id).status, IntentStatus::Expired);
+    assert_eq!(f.contract_balance(), 0);
+}
+
