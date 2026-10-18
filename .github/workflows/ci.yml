@@ -16,6 +16,10 @@ jobs:
   contract:
     name: Contract — test / fmt / clippy / wasm
     runs-on: ubuntu-latest
+    env:
+      # Single source of truth for the Wasm size budget (KB, issue #35).
+      # Raise deliberately in a PR with justification if the contract grows.
+      WASM_SIZE_BUDGET_KB: 120
     steps:
       - uses: actions/checkout@v7
 
@@ -80,8 +84,35 @@ jobs:
         working-directory: contracts/streaming-payments
         run: stellar contract build
 
+      - name: Wasm size budget check
+        run: |
+          wasm=target/wasm32v1-none/release/streampay_contract.wasm
+          size=$(stat -c '%s' "$wasm")
+          budget=$(( WASM_SIZE_BUDGET_KB * 1024 ))
+          {
+            echo "### Contract Wasm size"
+            echo ""
+            echo "| Size | Budget | Headroom |"
+            echo "| --- | --- | --- |"
+            echo "| ${size} bytes ($(( size / 1024 )) KB) | ${WASM_SIZE_BUDGET_KB} KB (${budget} bytes) | $(( (budget - size) / 1024 )) KB |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$size" -gt "$budget" ]; then
+            echo "::error::${wasm} is ${size} bytes, over the ${WASM_SIZE_BUDGET_KB} KB budget (${budget} bytes). Check for dependency bloat or bump the budget deliberately."
+            exit 1
+          fi
+          echo "Wasm size ${size} bytes is within the ${WASM_SIZE_BUDGET_KB} KB budget."
+
+      # Published per PR so reviewers can diff builds; releases keep the
+      # SHA-256 digest flow in release.yml.
+      - name: Upload contract Wasm artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: streampay-contract-wasm-${{ github.run_id }}
+          path: target/wasm32v1-none/release/streampay_contract.wasm
+          if-no-files-found: error
+
   frontend:
-    name: Frontend — lint / typecheck / build / audit
+    name: Frontend — lint / typecheck / tests / build / audit
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -107,6 +138,11 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Unit tests
+        # Includes the sponsorship wire-parity vectors (frozen relay message
+        # XDR + digest, shared with the Rust suite) on Node's type-stripping
+        # test runner — the pattern ttl-sentinel compiles first to avoid.
+        run: npm test
       - name: Regenerate differential vectors
         run: node ../scripts/generate-vectors.mjs
 

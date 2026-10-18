@@ -6,9 +6,11 @@ import { readAvailableAction, readStreamAction } from "@/app/actions";
 import { describeError } from "@/lib/errors";
 import { computeAvailable, type StreamSnapshot } from "@/lib/accrual";
 import type { StreamView } from "@/lib/stream-types";
+import { formatAmount } from "@/lib/format";
+import type { AssetMeta } from "@/lib/stellar";
 
-function fmtUnits(value: bigint): string {
-  return value.toString();
+function fmtUnits(value: bigint, meta?: AssetMeta | null): string {
+  return meta ? `${formatAmount(value, meta.decimals)} ${meta.code}` : value.toString();
 }
 
 function snapshotFromStream(stream: StreamView): StreamSnapshot {
@@ -28,6 +30,7 @@ export default function StreamDetailClient({
 }) {
   const id = initialStream.id;
   const [stream, setStream] = useState<StreamView>(initialStream);
+  const [assetMeta, setAssetMeta] = useState<AssetMeta | null>(null);
   const [available, setAvailable] = useState<bigint | null>(null);
   const [displayAvailable, setDisplayAvailable] = useState<bigint | null>(null);
   const [snapshot, setSnapshot] = useState<StreamSnapshot>(() =>
@@ -37,6 +40,18 @@ export default function StreamDetailClient({
   const [address, setAddress] = useState<string | null>(null);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    import("@/lib/stellar").then(({ fetchAssetMeta }) => {
+      fetchAssetMeta(stream.token).then((meta) => {
+        if (active) setAssetMeta(meta);
+      });
+    });
+    return () => {
+      active = false;
+    };
+  }, [stream.token]);
 
   // -------------------------------------------------------------------------
   // Live-region throttle: announce the accrued balance to screen readers at
@@ -145,10 +160,16 @@ export default function StreamDetailClient({
     available !== null && amount !== "" && BigInt(amount || "0") > available;
 
   // Current displayed value for the live counter
-  const displayValue =
+  const displayRaw =
     snapshot?.status === "Active"
-      ? (displayAvailable ?? available)?.toString() ?? "…"
-      : available?.toString() ?? "…";
+      ? (displayAvailable ?? available)
+      : available;
+  const displayValue =
+    displayRaw === null
+      ? "…"
+      : assetMeta
+      ? `${formatAmount(displayRaw, assetMeta.decimals)} ${assetMeta.code}`
+      : displayRaw.toString();
 
   async function doWithdraw(max: boolean) {
     if (!address) return;
@@ -158,11 +179,11 @@ export default function StreamDetailClient({
       if (max) {
         const { withdrawMaxFromStream } = await import("@/lib/stellar");
         const paid = await withdrawMaxFromStream(address, stream.id);
-        setStatus(`Claimed ${fmtUnits(paid)} units.`);
+        setStatus(`Claimed ${fmtUnits(paid, assetMeta)}.`);
       } else {
         if (overWithdrawal) {
           setError(
-            `Amount exceeds the accrued balance (${available?.toString()} units). Try "Withdraw max".`
+            `Amount exceeds the accrued balance (${displayValue}). Try "Withdraw max".`
           );
           return;
         }
@@ -269,15 +290,25 @@ export default function StreamDetailClient({
             </tr>
             <tr>
               <th scope="row">Token</th>
-              <td className="mono">{stream.token}</td>
+              <td className="mono">
+                {assetMeta ? `${assetMeta.code} — ${stream.token}` : stream.token}
+              </td>
             </tr>
             <tr>
               <th scope="row">Deposit</th>
-              <td className="mono">{stream.deposit}</td>
+              <td className="mono" title={`${stream.deposit} base units`}>
+                {assetMeta
+                  ? `${formatAmount(BigInt(stream.deposit), assetMeta.decimals)} ${assetMeta.code}`
+                  : stream.deposit}
+              </td>
             </tr>
             <tr>
               <th scope="row">Withdrawn</th>
-              <td className="mono">{stream.withdrawn}</td>
+              <td className="mono" title={`${stream.withdrawn} base units`}>
+                {assetMeta
+                  ? `${formatAmount(BigInt(stream.withdrawn), assetMeta.decimals)} ${assetMeta.code}`
+                  : stream.withdrawn}
+              </td>
             </tr>
             <tr>
               <th scope="row">Available now</th>
@@ -285,7 +316,7 @@ export default function StreamDetailClient({
                 {/* Visible numeric display — updated every second by JS */}
                 <span
                   className="mono"
-                  aria-label={`Available balance: ${displayValue} units`}
+                  aria-label={`Available balance: ${displayValue}`}
                 >
                   {displayValue}
                 </span>

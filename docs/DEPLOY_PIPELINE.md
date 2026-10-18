@@ -54,6 +54,7 @@ bundle (uploaded as the `evidence-sandbox-<tag>` artifact):
 | Fuzz soak | `cargo +nightly fuzz run streamed_at` | `fuzz.log` | any crash, or the toolchain is missing (unless `ALLOW_FUZZ_SKIP=1` records the gap explicitly) |
 | Reproducible digest | `stellar contract build` + SHA-256 | `SHA256SUMS`, `digest.txt` | the build produces no Wasm |
 | Digest continuity | `verify_release_digest.sh` | `digest-continuity.txt` | the rebuilt Wasm's SHA-256 differs from the release's published digest |
+| **Signed attestation** | [`verify_wasm.sh`](../scripts/verify_wasm.sh) | [`attestations/`](../attestations/README.md) | the signature does not verify against the pinned key, or the payload describes different bytes (see [`ATTESTATION.md`](./ATTESTATION.md)) |
 | Contract interface | `contract_interface_hash.sh` | `interface.json`, `interface.sha256` | the interface cannot be extracted |
 | Schema diff | `schema_diff.sh` | `schema-diff.txt` | the interface changed and was not acknowledged |
 | Summary | — | `summary.md` | — |
@@ -84,6 +85,12 @@ SHA-256, never a local build.**
 `stellar contract build` does not embed a timestamp, so two builders should
 reproduce the same bytes; if they do not, that is a bug to fix, and this gate is
 where it surfaces.
+
+Digest continuity alone is not proof: `SHA256SUMS` is published next to the
+artifact it describes, so whoever can rewrite the release can rewrite both. The
+signed attestation in [`ATTESTATION.md`](./ATTESTATION.md) is what makes the
+digest non-forgeable, and `release.yml` now measures reproducibility by building
+the tag twice rather than assuming it.
 
 ## 4. Contract interface (schema) diff
 

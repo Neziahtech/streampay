@@ -9,6 +9,13 @@ publish = false
 [package.metadata]
 cargo-fuzz = true
 
+[lib]
+path = "src/lib.rs"
+
+[features]
+# Builds `campaign_wasm`, which embeds the release wasm named by STREAMPAY_WASM.
+wasm = []
+
 [dependencies]
 libfuzzer-sys = "0.4"
 streampay-contract = { path = "../contracts/streaming-payments", features = ["testutils"] }
@@ -37,3 +44,18 @@ test = false
 doc = false
 bench = false
 
+
+[[bin]]
+name = "campaign"
+path = "fuzz_targets/campaign.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "campaign_wasm"
+path = "fuzz_targets/campaign_wasm.rs"
+test = false
+doc = false
+bench = false
+required-features = ["wasm"]

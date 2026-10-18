@@ -1,0 +1,179 @@
+name: Attestation
+
+# Two things, on purpose kept in one workflow because they guard one chain:
+#
+#   1. tamper-audit — proves the verifier actually rejects tampering. Runs on
+#      every change to the chain, because a verifier that has never been shown a
+#      flipped byte is an untested control.
+#   2. verify-release — nightly, re-verifies the attestation on the latest
+#      published release asset, so a release that was valid when published is
+#      still provable today (and a quietly rewritten asset stops being).
+#
+# Neither job needs a Rust toolchain, Docker or stellar-cli: verification only
+# requires bash, openssl and coreutils, which is the whole point of the scheme
+# (docs/adr/0003-attestation-signing-scheme.md).
+
+on:
+  schedule:
+    - cron: "30 3 * * *" # nightly at 03:30 UTC
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to verify (default: the latest release)"
+        required: false
+        type: string
+      rebuild:
+        description: "Also re-run the reproducible double build for that tag"
+        required: false
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths:
+      - "scripts/attest.sh"
+      - "scripts/verify_wasm.sh"
+      - "scripts/attestation_lib.sh"
+      - "scripts/attestation_keygen.sh"
+      - "scripts/reproducible_build.sh"
+      - "tests/attestation_tamper_audit.sh"
+      - "attestations/**"
+      - ".github/workflows/attestation.yml"
+  pull_request:
+    paths:
+      - "scripts/attest.sh"
+      - "scripts/verify_wasm.sh"
+      - "scripts/attestation_lib.sh"
+      - "scripts/attestation_keygen.sh"
+      - "scripts/reproducible_build.sh"
+      - "tests/attestation_tamper_audit.sh"
+      - "attestations/**"
+      - ".github/workflows/attestation.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  tamper-audit:
+    name: Tamper audit — the verifier must reject a modified artifact
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Enough history to tell whether this ref changed the trust anchor.
+          fetch-depth: 2
+
+      - name: Run the tamper audit
+        run: bash tests/attestation_tamper_audit.sh
+
+      # A public key is only a trust anchor if it changed when someone said it
+      # would. Any diff here is surfaced in the run summary for review.
+      - name: Report the pinned signing key fingerprint
+        if: hashFiles('attestations/signing-key.pub') != ''
+        run: |
+          fp=$(openssl pkey -pubin -in attestations/signing-key.pub -outform DER | sha256sum | awk '{print $1}')
+          echo "pinned signing key fingerprint: sha256:$fp"
+          {
+            echo "### Attestation signing key"
+            echo ""
+            echo "Fingerprint on this ref: \`sha256:$fp\`"
+            echo ""
+            echo "Compare against the fingerprint published in the release notes."
+            echo "A change that nobody announced is a key substitution."
+          } >> "$GITHUB_STEP_SUMMARY"
+          if ! git rev-parse --verify -q HEAD~1 >/dev/null; then
+            echo "no parent commit available — cannot compare the key against history"
+          elif git diff --quiet HEAD~1 -- attestations/signing-key.pub; then
+            echo "signing key unchanged from the parent commit"
+          else
+            echo "::warning::attestations/signing-key.pub differs from the parent commit — confirm this rotation was announced"
+          fi
+
+  verify-release:
+    name: Nightly — verify the latest published release attestation
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Resolve the release to verify
+        id: rel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ inputs.tag }}"
+          if [ -z "$tag" ]; then
+            tag="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName 2>/dev/null || true)"
+          fi
+          if [ -z "$tag" ]; then
+            echo "::warning::no published release to verify yet"
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "verifying release $tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Download the published Wasm and attestation
+        if: steps.rel.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p /tmp/rel
+          gh release download "${{ steps.rel.outputs.tag }}" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'streampay_contract.wasm' \
+            --pattern 'attestation.json' \
+            --pattern 'attestation.json.sig' \
+            --pattern 'SHA256SUMS' \
+            --dir /tmp/rel \
+            || { echo "::error::release ${{ steps.rel.outputs.tag }} carries no attestation asset"; exit 1; }
+          ls -l /tmp/rel
+
+      # The release asset and the in-repo mirror are the same signed bytes. If
+      # they ever diverge, one of the two channels has been rewritten.
+      - name: Cross-check the release asset against the in-repo mirror
+        if: steps.rel.outputs.tag != ''
+        run: |
+          tag="${{ steps.rel.outputs.tag }}"
+          mirror="attestations/$tag/attestation.json"
+          if [ ! -f "$mirror" ]; then
+            echo "::warning::no in-repo mirror at $mirror — skipping the cross-check"
+            exit 0
+          fi
+          if cmp -s "$mirror" "/tmp/rel/attestation.json"; then
+            echo "release asset and in-repo mirror are byte-identical"
+          else
+            echo "::error::the release attestation differs from the committed mirror at $mirror"
+            cmp "$mirror" /tmp/rel/attestation.json || true
+            exit 1
+          fi
+
+      - name: Verify the signature and the digest
+        if: steps.rel.outputs.tag != ''
+        run: |
+          scripts/verify_wasm.sh /tmp/rel/streampay_contract.wasm \
+            --tag "${{ steps.rel.outputs.tag }}" \
+            --attestation /tmp/rel/attestation.json \
+            --require-repro
+
+      # Also confirm the SHA256SUMS asset still describes the published Wasm, so
+      # the pre-attestation digest channel and the attestation cannot drift apart.
+      - name: Verify the published SHA256SUMS
+        if: steps.rel.outputs.tag != ''
+        run: |
+          # SHA256SUMS records the build-tree path, not the flat asset name, so
+          # compare digests through the existing gate rather than `sha256sum -c`.
+          scripts/verify_release_digest.sh --expected-file /tmp/rel/SHA256SUMS \
+            /tmp/rel/streampay_contract.wasm
+
+      - name: Re-run the reproducible double build
+        if: steps.rel.outputs.tag != '' && inputs.rebuild
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends jq
+          scripts/reproducible_build.sh --ref "${{ steps.rel.outputs.tag }}" --out evidence/repro
+
+      - name: Upload the reproducibility evidence
+        if: steps.rel.outputs.tag != '' && inputs.rebuild
+        uses: actions/upload-artifact@v7
+        with:
+          name: repro-${{ steps.rel.outputs.tag }}
+          path: evidence/repro/
+          if-no-files-found: error

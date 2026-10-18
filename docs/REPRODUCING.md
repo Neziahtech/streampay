@@ -99,6 +99,40 @@ cd streampay
 
 ---
 
+### Option C: Verify a Signed Attestation (no digest to carry around)
+
+Options A and B require you to already possess a trusted digest, which is the
+weak point: `SHA256SUMS` is published next to the artifact it describes, so
+anyone who can rewrite the release can rewrite the sums too. The attestation
+chain replaces "a number you brought with you" with a signature you check
+against a key pinned in your own checkout.
+
+```bash
+# Requires only bash + openssl: no stellar-cli, no Docker, no Rust toolchain
+./scripts/verify_wasm.sh /path/to/streampay_contract.wasm --tag v0.5.0 --require-repro
+```
+
+This recomputes the digest, fetches `attestation.json` and its detached Ed25519
+signature, verifies the signature, and asserts the signed payload names the
+bytes you hold. See [`ATTESTATION.md`](./ATTESTATION.md) for the payload format
+and the component-by-component threat model, and
+[`adr/0003`](adr/0003-attestation-signing-scheme.md) for why a repository key
+rather than cosign keyless.
+
+To prove reproducibility directly rather than trusting the attestation's claim:
+
+```bash
+# Two independent hermetic builds of the same commit, wasm AND spec JSON byte-diffed
+./scripts/reproducible_build.sh --ref v0.5.0
+```
+
+If the builds drift, the report names the component that is non-deterministic,
+gives both digests and the first differing byte offset, and distinguishes a
+length change (embedded path or timestamp) from an equal-length change (codegen
+or link ordering).
+
+---
+
 ## 4. Two Build Paths
 
 ### 1. Hermetic (Docker) Path (Default & Recommended)
