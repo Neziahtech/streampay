@@ -22,8 +22,13 @@ frontend/.env.local
 .idea/
 .vscode/
 *.log
-# ...except the append-only promotion log, which is a tracked record.
+# ...except the append-only promotion log and runbook testnet logs, which are tracked records.
 !deployments/promotions.log
+!docs/runbook/*.log
+
+# Perf trend build artifact
+/perf/trend.json
+
 
 # Local tooling leftovers
 .freebuff/
@@ -37,6 +42,10 @@ infra/ttl-sentinel/.ttl-sentinel.state.json.*.json
 # Release-pipeline evidence bundles (produced by scripts/release_gates.sh and
 # the dress rehearsal; uploaded as CI artifacts, never committed)
 /evidence/
+
+# Drill outputs (scripts/*.sh and key_rotation_drill.ts write logs/; uploaded
+# as CI artifacts, never committed)
+/logs/
 
 # Fuzzing (own workspace; corpus/artifacts stay local)
 fuzz/target/

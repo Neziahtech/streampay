@@ -10,7 +10,8 @@ reentrancy, TTL strategy, and the design decisions behind the v1 API. Read the
 ┌────────────────────────────────────────────────────────────────────┐
 │                        StreamingPayments                           │
 │                                                                    │
-│  lib.rs      entrypoints: create_stream(s) / withdraw / withdraw_max /│
+│  lib.rs      entrypoints: create_stream / create_streams /          │
+│              create_streams_batch / withdraw / withdraw_max /       │
 │              cancel_stream / top_up / get_stream / available /      │
 │              recipient_streams / sender_streams / schedule_stream / │
 │              execute_scheduled / cancel_scheduled / reclaim_expired │

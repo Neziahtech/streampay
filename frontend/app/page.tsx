@@ -133,7 +133,6 @@ export default function Home() {
             API Docs ↗
           </Link>
         </div>
-        <h1>⚡ StreamPay</h1>
         <p className="muted">
           Continuous, per-second payment streams — payroll, vesting,
           subscriptions. Connect Freighter to begin.
@@ -182,6 +181,9 @@ export default function Home() {
           Accrual Simulator →
         </a>
       </div>
+      <p className="muted">
+        Connected: <code>{address}</code>
+      </p>
 
       <PendingQueueDrawer address={address} onTxConfirmed={() => discover()} />
 

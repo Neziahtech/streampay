@@ -33,6 +33,17 @@ pub const MAX_DURATION_SECONDS: u64 = 3_155_760_000;
 /// of the address-index views.
 pub const MAX_PAGE_SIZE: u32 = 50;
 
+/// Minimum number of stream entries permitted in a batch.
+pub const MIN_BATCH: u32 = 1;
+
+/// Maximum number of stream entries permitted in a batch.
+///
+/// Bounded to 25 because each stream creation emits a `StreamCreated` event
+/// and a token `transfer` event (~600 bytes combined). At 25 streams, event
+/// size is ~15.5 KB, safely within Soroban's network limit of 16,384 bytes (16 KB),
+/// and consumes ~16.2M CPU instructions (~16% of the 100M transaction budget).
+pub const MAX_BATCH: u32 = 25;
+
 /// TTL maintenance, in ledgers (~5 seconds per ledger on Stellar mainnet).
 ///
 /// Streams live in persistent storage: entries that go untouched are
@@ -79,6 +90,19 @@ impl Stream {
     pub fn duration(&self) -> u64 {
         self.end_time - self.start_time
     }
+}
+
+/// Parameters for creating a single stream within a batch creation call.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchEntry {
+    pub sender: Address,
+    pub recipient: Address,
+    pub token: Address,
+    pub deposit: i128,
+    pub start_time: u64,
+    pub end_time: u64,
+    pub cancelable: bool,
 }
 
 /// Proposed contract upgrade pending timelock expiration.
@@ -263,6 +287,8 @@ pub fn reserve_stream_ids(env: &Env, count: u32) -> Result<u64, StreamError> {
 
 /// Loads a stream, or returns [`StreamError::StreamNotFound`].
 pub fn get_stream(env: &Env, id: u64) -> Result<Stream, StreamError> {
+    #[cfg(test)]
+    crate::cei_trace::record(&std::format!("read persistent Stream({id})"));
     env.storage()
         .persistent()
         .get(&DataKey::Stream(id))
@@ -271,6 +297,8 @@ pub fn get_stream(env: &Env, id: u64) -> Result<Stream, StreamError> {
 
 /// Persists a stream and extends its storage TTL.
 pub fn put_stream(env: &Env, stream: &Stream) {
+    #[cfg(test)]
+    crate::cei_trace::record(&std::format!("write persistent Stream({})", stream.id));
     let key = DataKey::Stream(stream.id);
     env.storage().persistent().set(&key, stream);
     env.storage()
@@ -359,6 +387,8 @@ pub fn set_schema_version(env: &Env, version: u32) {
 
 /// Checks whether the contract is currently frozen.
 pub fn is_frozen(env: &Env) -> bool {
+    #[cfg(test)]
+    crate::cei_trace::record("read instance ContractFrozen");
     env.storage()
         .instance()
         .get(&DataKey::ContractFrozen)
@@ -367,6 +397,8 @@ pub fn is_frozen(env: &Env) -> bool {
 
 /// Updates the contract freeze state and extends instance storage TTL.
 pub fn set_frozen(env: &Env, frozen: bool) {
+    #[cfg(test)]
+    crate::cei_trace::record("write instance ContractFrozen");
     env.storage()
         .instance()
         .set(&DataKey::ContractFrozen, &frozen);

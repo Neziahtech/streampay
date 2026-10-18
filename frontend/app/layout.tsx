@@ -33,6 +33,7 @@ export default function RootLayout({
         <RegisterServiceWorker />
         <OfflineBanner />
         <ToastProvider>
+          <NetworkBadge />
           <div id="main-content">{children}</div>
         </ToastProvider>
       </body>

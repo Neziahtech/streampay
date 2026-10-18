@@ -277,6 +277,8 @@ pub fn next_intent_id(env: &Env) -> u64 {
 
 /// Loads an intent, or returns [`StreamError::IntentNotFound`].
 pub fn get_intent(env: &Env, id: u64) -> Result<ScheduledIntent, StreamError> {
+    #[cfg(test)]
+    crate::cei_trace::record(&std::format!("read persistent Intent({id})"));
     env.storage()
         .persistent()
         .get(&DataKey::Intent(id))
@@ -285,6 +287,8 @@ pub fn get_intent(env: &Env, id: u64) -> Result<ScheduledIntent, StreamError> {
 
 /// Persists an intent and extends its storage TTL.
 pub fn put_intent(env: &Env, intent: &ScheduledIntent) {
+    #[cfg(test)]
+    crate::cei_trace::record(&std::format!("write persistent Intent({})", intent.id));
     let key = DataKey::Intent(intent.id);
     env.storage().persistent().set(&key, intent);
     env.storage()

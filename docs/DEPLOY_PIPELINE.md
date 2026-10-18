@@ -95,7 +95,7 @@ it from the Wasm with `stellar contract info interface --output json`,
 canonicalizes it, and hashes it.
 
 The baseline for each environment lives in
-[`deployments/interface/<env>.sha256`](../deployments/interface) (with the full
+[`deployments/interface/<env>.sha256`](../deployments) (with the full
 JSON alongside it for a readable diff). `schema_diff.sh`:
 
 - no baseline yet → "first promotion", pass;

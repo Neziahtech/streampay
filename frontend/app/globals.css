@@ -534,6 +534,60 @@ code,
   border-color: var(--accent2);
 }
 
+.status-pending {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.status-submitted {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.status-failed,
+.status-expired {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+/* Claim scheduler settings panel */
+.sched-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px 16px;
+  margin-top: 8px;
+}
+
+.sched-grid .muted {
+  margin: 4px 0 0;
+}
+
+.sched-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 0 0;
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: 14px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.sched-check input {
+  width: auto;
+  accent-color: var(--accent);
+}
+
+.sched-status {
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #0d1320;
+  font-size: 13px;
+}
+
 .copy-btn:focus-visible {
   outline: none;
   box-shadow: var(--focus-ring);
@@ -679,6 +733,125 @@ code,
     left: 16px;
     width: auto;
     max-width: none;
+  }
+}
+
+/* --------------------------------------------------------------------------
+ * Network / contract indicator (issue #33)
+ *
+ * Compact bar above the page content: which Stellar network and streaming
+ * contract transactions are built for, plus a dismissible banner when the
+ * connected wallet is on a different one.
+ *
+ * Contrast (WCAG 1.4.3): amber (#f59e0b), green (#3ddc84), cyan (#39c5ff),
+ * red (#ff6b6b) and muted (#93a1b8) all sit on --panel (#111725) or a ≤15%
+ * tint of themselves blended over it — every pairing lands ≥ 4.8:1.
+ * Colour never carries meaning alone: the chip text, the "Stellar Testnet"
+ * label and the warning copy all spell the network out.
+ * -------------------------------------------------------------------------- */
+.network-indicator {
+  font-size: 12px;
+}
+
+.network-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 7px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+
+.network-chip {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.network-chip-testnet {
+  /* amber on blended bg ≈ #1f1c1a → ~7.3:1 ✓ */
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--amber);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+}
+
+.network-chip-public {
+  /* green on blended bg ≈ #163d2b → ~5.2:1 ✓ */
+  background: rgba(61, 220, 132, 0.15);
+  color: var(--green);
+  border: 1px solid rgba(61, 220, 132, 0.4);
+}
+
+.network-text {
+  color: var(--muted);
+}
+
+.network-contract {
+  color: var(--accent2);
+  text-decoration: none;
+  word-break: break-all;
+}
+
+.network-contract:hover {
+  text-decoration: underline;
+}
+
+.network-contract-unset {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.network-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 16px;
+  background: rgba(255, 107, 107, 0.12);
+  border-bottom: 1px solid rgba(255, 107, 107, 0.35);
+}
+
+.network-warning-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.network-warning-title {
+  display: block;
+  font-size: 13px;
+  color: var(--red);
+}
+
+.network-warning-text,
+.network-warning-hint {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.network-warning-hint {
+  color: var(--muted);
+}
+
+.network-warning-dismiss {
+  margin: 0;
+  color: var(--red);
+}
+
+@media (max-width: 600px) {
+  .network-bar,
+  .network-warning {
+    padding: 6px 12px;
+  }
+}
+
+@media (forced-colors: active) {
+  .network-chip,
+  .network-warning {
+    forced-color-adjust: auto;
+    border: 1px solid ButtonText;
   }
 }
 

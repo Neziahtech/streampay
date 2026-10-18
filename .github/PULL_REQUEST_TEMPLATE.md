@@ -6,6 +6,7 @@
 
 - [ ] No public API change (signatures / error codes / events)
 - [ ] Error codes appended (not renumbered)
+- [ ] Error catalog entries reviewed (remediations and client mapping verified)
 - [ ] New behavior covered by tests
 - [ ] `docs/ARCHITECTURE.md` updated if a design decision changed
 

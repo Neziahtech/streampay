@@ -1,11 +1,13 @@
 "use client";
 
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import {
   NATIVE_XLM,
   tokenContractId,
   type StreamArgs,
 } from "@/lib/stellar";
+import { readStreamPolicyAction } from "@/app/actions";
+import type { StreamPolicyView } from "@/lib/stream-types";
 
 /** Asset choices on the create form: native XLM, or a token contract id. */
 type AssetChoice = "native" | "contract";
@@ -24,6 +26,26 @@ export default function StreamForm({
     cancelable: true,
   });
   const [busy, setBusy] = useState(false);
+  const [policy, setPolicy] = useState<StreamPolicyView | null>(null);
+  const [policyError, setPolicyError] = useState<string | null>(null);
+
+  // Load policy for selected asset
+  useEffect(() => {
+    let active = true;
+    const token = asset === "native" ? tokenContractId(NATIVE_XLM) : args.token.trim();
+    if (token) {
+      readStreamPolicyAction(token).then((p) => {
+        if (active) setPolicy(p);
+      });
+    } else {
+      readStreamPolicyAction().then((p) => {
+        if (active) setPolicy(p);
+      });
+    }
+    return () => {
+      active = false;
+    };
+  }, [asset, args.token]);
 
   // Stable IDs for ARIA associations (WCAG 1.3.1 / 4.1.2)
   const formId = useId();
@@ -40,7 +62,8 @@ export default function StreamForm({
 
   const set =
     (k: keyof StreamArgs) =>
-    (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
+    (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+      setPolicyError(null);
       setArgs((prev) => ({
         ...prev,
         [k]:
@@ -48,9 +71,41 @@ export default function StreamForm({
             ? (e.target as HTMLSelectElement).value === "yes"
             : e.target.value,
       }));
+    };
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    setPolicyError(null);
+
+    // Client-side pre-validation against governance policy floors
+    if (policy) {
+      const depositVal = BigInt(args.deposit || "0");
+      const durationSeconds = Math.floor(Number(args.days || "0") * 86400);
+
+      if (BigInt(policy.minDeposit) > 0n && depositVal < BigInt(policy.minDeposit)) {
+        setPolicyError(`Deposit is below the governance policy floor of ${policy.minDeposit} units.`);
+        return;
+      }
+      if (policy.minDuration > 0 && durationSeconds < policy.minDuration) {
+        setPolicyError(`Duration (${durationSeconds}s) is below the governance floor of ${policy.minDuration}s.`);
+        return;
+      }
+      if (policy.maxDuration > 0 && durationSeconds > policy.maxDuration) {
+        setPolicyError(`Duration (${durationSeconds}s) exceeds the governance ceiling of ${policy.maxDuration}s.`);
+        return;
+      }
+
+      const rate = depositVal / BigInt(Math.max(1, durationSeconds));
+      if (BigInt(policy.minRate) > 0n && rate < BigInt(policy.minRate)) {
+        setPolicyError(`Accrual rate (${rate}/s) is below the governance policy floor of ${policy.minRate}/s.`);
+        return;
+      }
+      if (BigInt(policy.maxRate) > 0n && rate > BigInt(policy.maxRate)) {
+        setPolicyError(`Accrual rate (${rate}/s) exceeds the governance policy ceiling of ${policy.maxRate}/s.`);
+        return;
+      }
+    }
+
     setBusy(true);
     try {
       // Native XLM streams through its Stellar Asset Contract; the contract
@@ -203,6 +258,23 @@ export default function StreamForm({
         The UI checks the token allowance first and asks Freighter to approve
         the deposit only when it is short — expect one or two signatures.
       </p>
+
+      {policy && (
+        <p className="muted" style={{ fontSize: "0.85rem" }}>
+          Active Policy Floors:
+          {BigInt(policy.minDeposit) > 0n && ` Min Deposit: ${policy.minDeposit}`}
+          {policy.minDuration > 0 && ` | Min Duration: ${policy.minDuration}s`}
+          {policy.maxDuration > 0 && ` | Max Duration: ${policy.maxDuration}s`}
+          {BigInt(policy.minRate) > 0n && ` | Min Rate: ${policy.minRate}/s`}
+          {BigInt(policy.maxRate) > 0n && ` | Max Rate: ${policy.maxRate}/s`}
+        </p>
+      )}
+
+      {policyError && (
+        <div role="alert" style={{ color: "#ef4444", marginBottom: "1rem", fontSize: "0.9rem" }}>
+          {policyError}
+        </div>
+      )}
 
       <button type="submit" disabled={busy}>
         {busy ? "Streaming…" : "Create stream"}

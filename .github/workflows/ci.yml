@@ -42,7 +42,10 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Unit + property tests
-        run: cargo test -p streampay-contract --locked
+        run: cargo test --workspace --locked
+
+      - name: CEI operation-order goldens
+        run: cargo test -p streampay-contract --lib operation_order_matches_golden --locked
 
       - name: Reference model + differential tests
         run: cargo test -p streampay-model --locked
@@ -62,7 +65,7 @@ jobs:
           tool: cargo-llvm-cov
 
       - name: llvm-cov (summary)
-        run: cargo llvm-cov -p streampay-contract --summary-only
+        run: cargo llvm-cov --workspace --summary-only
 
       # soroban-sdk 28 rejects a plain `cargo build --target wasm32v1-none`
       # (its build script requires the stellar-cli >= 25.2 spec-shaking v2
@@ -95,6 +98,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install CLI dependencies for cross-client parity
+        run: npm install --prefix ../tools/streampay-cli --no-package-lock --ignore-scripts --no-audit --no-fund
+
       - name: Lint
         run: npm run lint
 
@@ -106,6 +112,15 @@ jobs:
 
       - name: Differential tests (against shared vector corpus)
         run: node --experimental-strip-types --test lib/oracle.test.ts
+
+      # Network/contract indicator logic (issue #33): the wallet-vs-app network
+      # comparison is exercised with a stubbed Freighter, so both wrong-network
+      # directions (mainnet wallet on a testnet dapp and vice versa) are
+      # covered without a browser extension.
+      - name: Network indicator tests
+        run: node --experimental-strip-types --test lib/network.test.ts
+      - name: Client parity smoke tests
+        run: npm run test:parity
 
       # -----------------------------------------------------------------------
       # WCAG 2.1 AA accessibility gate (issue #98)
@@ -191,6 +206,30 @@ jobs:
       - name: Dependency audit
         run: npm audit --omit=dev --audit-level=high
 
+  cli-parity:
+    name: CLI — client parity smoke
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools/streampay-cli
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Install CLI dependencies
+        run: npm install --no-package-lock --ignore-scripts --no-audit --no-fund
+
+      - name: CLI tests including parity fixtures
+        run: npm test
+
+      # `npm run typecheck` is intentionally not gated here yet: it surfaces
+      # pre-existing cli.ts debt (diagnostic-event/footprint decoding against
+      # the SDK 17 xdr renames, noUncheckedIndexedAccess in the arg parser)
+      # that needs an RPC-backed follow-up before it can be fixed safely.
+
   supply-chain:
     name: Security — advisories / licenses
     runs-on: ubuntu-latest
@@ -201,6 +240,22 @@ jobs:
       # cargo-audit, so one gate owns the ignore policy (see deny.toml).
       - name: cargo-deny (advisories, licenses, bans, sources)
         uses: EmbarkStudios/cargo-deny-action@v2
+
+  docs:
+    name: Docs — internal link lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      # Fails on any relative Markdown link or GitHub heading anchor that does
+      # not resolve (scripts/check_docs_links.mjs). Keeps the doc web that
+      # SECURITY.md, the runbooks, and the audit docs form intact.
+      - name: Check internal markdown links
+        run: node scripts/check_docs_links.mjs
 
   devcontainer-verify:
     name: Devcontainer — wasm build smoke test
@@ -244,3 +299,36 @@ jobs:
           wasm=target/wasm32v1-none/release/streampay_contract.wasm
           [ -s "$wasm" ] || { echo "wasm missing or empty"; exit 1; }
           echo "OK: $(ls -sh "$wasm")"
+
+  perf-budgets:
+    name: Perf budgets — bounds on indexer, RPC reads & frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Install indexer dependencies
+        working-directory: indexer
+        run: npm ci
+
+      - name: Build indexer
+        working-directory: indexer
+        run: npm run build
+
+      - name: Check performance budgets (3-run median & bounds)
+        run: node perf/harness/check_budgets.mjs
+
+      - name: Seeded regression defense test
+        run: node --test perf/test/seeded_regression.test.mjs
+
+      - name: Lint runbook command freshness
+        run: ./scripts/lint_runbook_commands.sh
+
+      - name: Error catalog regeneration diff check
+        run: |
+          node tooling/generate-error-catalog.mjs
+          git diff --exit-code docs/errors.md docs/errors/ frontend/lib/errors.ts
+
