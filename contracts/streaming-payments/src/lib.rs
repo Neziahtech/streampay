@@ -80,12 +80,10 @@ pub use events::{
     ContractFrozenStateChanged, ContractUpgraded, FeeCharged, FeeWithdrawn, PolicyAssetExecuted,
     PolicyAssetQueued, PolicyHandoffAccepted, PolicyHandoffCancelled, PolicyHandoffProposed,
     PolicyInitialized, ScheduledIntentCancelled, ScheduledIntentExpired, ScheduledStreamExecuted,
-    Swept, StorageMigrated, StreamCancelled, StreamCreated, StreamPolicySet, StreamScheduled,
-    StreamToppedUp, StreamsCreated, UpgradeCancelled, UpgradeProposed, Withdrawn,
+    StorageMigrated, StreamCancelled, StreamCreated, StreamPolicySet, StreamScheduled,
+    StreamToppedUp, StreamsCreated, Swept, UpgradeCancelled, UpgradeProposed, Withdrawn,
 };
-pub use policy::{
-    validate_stream_args, validate_top_up_args, QueuedAssetChange, StreamPolicy,
-};
+pub use policy::{validate_stream_args, validate_top_up_args, QueuedAssetChange, StreamPolicy};
 pub use schedule::{IntentStatus, ScheduledIntent, MAX_OCCURRENCES};
 // `streamed_at` is re-exported for the fuzz target and downstream rate
 // calculators: it is a pure function requiring no `Env`.
@@ -582,6 +580,9 @@ impl StreamingPayments {
         if amount > available {
             return Err(surface::reject(Branch::WithdrawAmountExceedsAvailable));
         }
+        if amount < stream::MIN_CLAIM_AMOUNT {
+            return Err(surface::reject(Branch::ClaimAmountTooSmall));
+        }
 
         Self::pay_out(&env, &mut s, amount)
     }
@@ -611,8 +612,11 @@ impl StreamingPayments {
     }
 
     /// Shared preamble for both withdrawal paths: load the stream, require
-    /// the recipient's authorization, reject terminal streams, and enforce the
-    /// dust floor (claims below `MIN_CLAIM_AMOUNT` are not worth the gas cost).
+    /// the recipient's authorization, and reject terminal streams.
+    ///
+    /// The dust floor (`MIN_CLAIM_AMOUNT`) is enforced by `withdraw` on a
+    /// specific-amount basis, not here, so that `withdraw_max` can always drain
+    /// the final dust (< MIN_CLAIM_AMOUNT) and prevent a funds-lock deadlock.
     fn authorize_withdrawal(env: &Env, stream_id: u64) -> Result<Stream, StreamError> {
         let s = stream::get_stream(env, stream_id)?;
         s.recipient.require_auth();
@@ -620,8 +624,8 @@ impl StreamingPayments {
             return Err(surface::reject(Branch::StreamNotActive));
         }
         let available = stream::available_amount(env, &s)?;
-        if available < stream::MIN_CLAIM_AMOUNT {
-            return Err(surface::reject(Branch::ClaimAmountTooSmall));
+        if available <= 0 {
+            return Err(surface::reject(Branch::NothingToWithdraw));
         }
         Ok(s)
     }
@@ -834,8 +838,10 @@ impl StreamingPayments {
     /// and removing storage entries. Anyone can call this.
     ///
     /// # Safety
-    /// Only succeeds when: stream.remaining_balance == 0 AND stream.end_time <= now
-    /// This prevents sweeping streams with remaining funds or prematurely.
+    /// Only succeeds when: stream.end_time <= now AND
+    ///   stream status is `Depleted` OR the remaining balance is dust
+    ///   (< `MIN_CLAIM_AMOUNT`), preventing sweep on streams with
+    ///   withdrawable accrued funds.
     ///
     /// On success: destroys stream storage entry and index references,
     /// reclaiming storage rent to the contract balance.
@@ -844,20 +850,14 @@ impl StreamingPayments {
         // Load stream (returns StreamNotFound if missing)
         let s = stream::get_stream(&env, stream_id)?;
 
-        // Critical security predicate: depleted AND expired
-        if s.status != StreamStatus::Depleted {
-            return Err(surface::reject(Branch::StreamNotDepleted));
-        }
-
         let now = env.ledger().timestamp();
-        if s.end_time > now {
+        // Expired streams can be swept; if still accrued above dust floor,
+        // require the stream to be Depleted.
+        let dust_ok = stream::available_amount(&env, &s) < stream::MIN_CLAIM_AMOUNT;
+        if s.end_time > now && !dust_ok && s.status != StreamStatus::Depleted {
             return Err(surface::reject(Branch::StreamNotExpired));
         }
-
-        // Additional dust protection: verify zero remaining balance
-        // (redundant with Depleted status but explicit for clarity)
-        let available = stream::available_amount(&env, &s)?;
-        if available != 0 {
+        if s.status != StreamStatus::Depleted && !dust_ok {
             return Err(surface::reject(Branch::StreamNotDepleted));
         }
 
