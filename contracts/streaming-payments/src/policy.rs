@@ -387,11 +387,13 @@ pub fn validate_stream_args(
         if p.max_duration > 0 && duration > p.max_duration {
             return Err(surface::reject(Branch::PolicyDurationAboveCeiling));
         }
-        let rate = deposit / (duration.max(1) as i128);
-        if p.min_rate > 0 && rate < p.min_rate {
+        let dur = duration.max(1) as i128;
+        let rate_floor = deposit / dur;
+        let rem = deposit % dur;
+        if p.min_rate > 0 && rate_floor < p.min_rate {
             return Err(surface::reject(Branch::PolicyRateBelowFloor));
         }
-        if p.max_rate > 0 && rate > p.max_rate {
+        if p.max_rate > 0 && (rate_floor > p.max_rate || (rate_floor == p.max_rate && rem > 0)) {
             return Err(surface::reject(Branch::PolicyRateAboveCeiling));
         }
     }
@@ -413,13 +415,46 @@ pub fn validate_top_up_args(
         if p.min_deposit > 0 && new_deposit < p.min_deposit {
             return Err(surface::reject(Branch::PolicyDepositBelowFloor));
         }
-        let rate = new_deposit / (duration.max(1) as i128);
-        if p.min_rate > 0 && rate < p.min_rate {
+        let dur = duration.max(1) as i128;
+        let rate_floor = new_deposit / dur;
+        let rem = new_deposit % dur;
+        if p.min_rate > 0 && rate_floor < p.min_rate {
             return Err(surface::reject(Branch::PolicyRateBelowFloor));
         }
-        if p.max_rate > 0 && rate > p.max_rate {
+        if p.max_rate > 0 && (rate_floor > p.max_rate || (rate_floor == p.max_rate && rem > 0)) {
             return Err(surface::reject(Branch::PolicyRateAboveCeiling));
         }
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod rate_ceiling_tests {
+    use super::*;
+
+    #[test]
+    fn fractional_rate_exceeding_max_rate_ceiling_is_rejected() {
+        let policy = StreamPolicy {
+            min_deposit: 0,
+            min_duration: 0,
+            max_duration: 0,
+            min_rate: 0,
+            max_rate: 10,
+            policy_version: 1,
+        };
+        // Exact ceiling (1000 / 100 == 10.0) succeeds:
+        assert_eq!(validate_stream_args(Some(&policy), 1000, 100), Ok(()));
+        assert_eq!(validate_top_up_args(Some(&policy), 1000, 100), Ok(()));
+
+        // Fractional excess (1099 / 100 == 10.99 > 10) must be rejected:
+        assert_eq!(
+            validate_stream_args(Some(&policy), 1099, 100),
+            Err(StreamError::PolicyRateAboveCeiling)
+        );
+        assert_eq!(
+            validate_top_up_args(Some(&policy), 1099, 100),
+            Err(StreamError::PolicyRateAboveCeiling)
+        );
+    }
+}
+
