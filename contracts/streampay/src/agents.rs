@@ -6,8 +6,14 @@ const MAX_AGENTS: u32 = 10;
 pub fn add_agent(env: Env, recipient: Address, stream_id: u64, agent: Address) -> Result<(), StreamPayError> {
     recipient.require_auth();
 
-    // Verify recipient owns/is recipient of the stream (pseudo-code check for stream ownership)
-    // ...
+    let stored_recipient: Address = env
+        .storage()
+        .persistent()
+        .get(&DataKey::StreamRecipient(stream_id))
+        .ok_or(StreamPayError::Unauthorized)?;
+    if stored_recipient != recipient {
+        return Err(StreamPayError::Unauthorized);
+    }
 
     let mut agents: Vec<Address> = env.storage().persistent()
         .get(&DataKey::Agents(stream_id))
@@ -30,6 +36,15 @@ pub fn add_agent(env: Env, recipient: Address, stream_id: u64, agent: Address) -
 
 pub fn remove_agent(env: Env, recipient: Address, stream_id: u64, agent: Address) -> Result<(), StreamPayError> {
     recipient.require_auth();
+
+    let stored_recipient: Address = env
+        .storage()
+        .persistent()
+        .get(&DataKey::StreamRecipient(stream_id))
+        .ok_or(StreamPayError::Unauthorized)?;
+    if stored_recipient != recipient {
+        return Err(StreamPayError::Unauthorized);
+    }
 
     let agents: Vec<Address> = env.storage().persistent()
         .get(&DataKey::Agents(stream_id))
@@ -63,6 +78,10 @@ pub fn withdraw_on_behalf_of(
 ) -> Result<(), StreamPayError> {
     agent.require_auth();
 
+    if amount <= 0 {
+        return Err(StreamPayError::InvalidRule);
+    }
+
     let agents: Vec<Address> = env.storage().persistent()
         .get(&DataKey::Agents(stream_id))
         .ok_or(StreamPayError::AgentNotFound)?;
@@ -77,3 +96,4 @@ pub fn withdraw_on_behalf_of(
 
     Ok(())
 }
+

@@ -12,6 +12,20 @@ pub fn set_refill_rule(
 ) -> Result<(), StreamPayError> {
     registrant.require_auth();
 
+    if amount <= 0 || cadence_seconds == 0 || max_topups == 0 || total_budget < amount {
+        return Err(StreamPayError::InvalidRule);
+    }
+
+    if let Some(existing) = env
+        .storage()
+        .persistent()
+        .get::<_, RefillRule>(&DataKey::RefillRule(stream_id))
+    {
+        if existing.registrant != registrant {
+            return Err(StreamPayError::Unauthorized);
+        }
+    }
+
     // Enforce governance budget caps
     let caps: GovernanceCaps = env.storage().instance()
         .get(&DataKey::GovernanceCaps)
