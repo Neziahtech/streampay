@@ -601,6 +601,7 @@ impl StreamingPayments {
         env: Env,
         entries: Vec<BatchEntry>,
     ) -> Result<Vec<Result<u64, StreamError>>, StreamError> {
+        Self::require_not_frozen(&env)?;
         let count = entries.len();
         if count < stream::MIN_BATCH {
             return Err(surface::reject(Branch::CreateBatchEmpty));
@@ -630,6 +631,10 @@ impl StreamingPayments {
             entry.start_time,
             entry.end_time,
         )?;
+        policy::check_asset_allowed(env, &entry.token)?;
+        let stream_policy = policy::get_stream_policy(env, Some(entry.token.clone()));
+        let duration = entry.end_time - entry.start_time;
+        policy::validate_stream_args(stream_policy.as_ref(), entry.deposit, duration)?;
 
         let fee_bps = treasury::current_fee_bps(env);
         let fee = treasury::fee_amount(entry.deposit, fee_bps)?;
@@ -1057,6 +1062,7 @@ impl StreamingPayments {
         expires_at: u64,
     ) -> Result<u64, StreamError> {
         sender.require_auth();
+        Self::require_not_frozen(&env)?;
 
         let total_escrow = schedule::validate_schedule(
             &env,
@@ -1069,6 +1075,10 @@ impl StreamingPayments {
             execute_after,
             expires_at,
         )?;
+        policy::check_asset_allowed(&env, &token)?;
+        let stream_policy = policy::get_stream_policy(&env, Some(token.clone()));
+        let duration = end_time - start_time;
+        policy::validate_stream_args(stream_policy.as_ref(), deposit_amount, duration)?;
 
         // Effects first (CEI): persist the exact authorized intent before the
         // token call. If the transfer fails, Soroban rolls the whole invocation
@@ -1159,6 +1169,7 @@ impl StreamingPayments {
         keeper: Address,
     ) -> Result<u64, StreamError> {
         keeper.require_auth();
+        Self::require_not_frozen(&env)?;
 
         let mut intent = schedule::get_intent(&env, intent_id)?;
         if intent.status != IntentStatus::Pending {
@@ -1181,6 +1192,10 @@ impl StreamingPayments {
         }
 
         let (start_time, end_time) = intent.occurrence_window(index);
+        policy::check_asset_allowed(&env, &intent.token)?;
+        let stream_policy = policy::get_stream_policy(&env, Some(intent.token.clone()));
+        let duration = end_time - start_time;
+        policy::validate_stream_args(stream_policy.as_ref(), intent.deposit, duration)?;
 
         // Effects first (CEI): advance the intent before moving any tokens.
         intent.occurrences_remaining = intent
