@@ -362,7 +362,10 @@ fn wrong_type_in_client_data_json_rejected() {
         &to_bytes32(&env, &[0u8; 32]),
         &to_bytes32(&env, &[0u8; 32]),
     );
-    assert_eq!(spoofed_result, Err(Ok(PasskeyError::ClientDataTypeMismatch)));
+    assert_eq!(
+        spoofed_result,
+        Err(Ok(PasskeyError::ClientDataTypeMismatch))
+    );
 }
 
 #[test]
