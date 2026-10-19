@@ -17,19 +17,35 @@ pub fn set_refill_rule(
         .get(&DataKey::GovernanceCaps)
         .unwrap_or(GovernanceCaps { max_per_stream_cap: i128::MAX, max_global_account_cap: i128::MAX });
 
-    if amount > caps.max_per_stream_cap || total_budget > caps.max_global_account_cap {
+    if amount <= 0 || total_budget < amount || amount > caps.max_per_stream_cap || total_budget > caps.max_global_account_cap {
         return Err(StreamPayError::GovernanceCapExceeded);
     }
+
+    let (topups_executed, total_refilled, last_refill_timestamp) =
+        if let Some(existing) = env.storage().persistent().get::<DataKey, RefillRule>(&DataKey::RefillRule(stream_id)) {
+            if existing.registrant != registrant {
+                return Err(StreamPayError::Unauthorized);
+            }
+            if total_budget < existing.total_refilled {
+                return Err(StreamPayError::BudgetExceeded);
+            }
+            if max_topups > 0 && max_topups < existing.topups_executed {
+                return Err(StreamPayError::MaxTopupsExceeded);
+            }
+            (existing.topups_executed, existing.total_refilled, existing.last_refill_timestamp)
+        } else {
+            (0, 0, env.ledger().timestamp())
+        };
 
     let rule = RefillRule {
         registrant,
         amount,
         cadence_seconds,
         max_topups,
-        topups_executed: 0,
+        topups_executed,
         total_budget,
-        total_refilled: 0,
-        last_refill_timestamp: env.ledger().timestamp(),
+        total_refilled,
+        last_refill_timestamp,
     };
 
     env.storage().persistent().set(&DataKey::RefillRule(stream_id), &rule);
