@@ -74,12 +74,14 @@ pub enum NftDataKey {
     Admin,
     /// Current owner/holder of the stream NFT token (persistent).
     Owner,
+    /// Monotonic ownership transfer epoch used to invalidate prior approvals (persistent).
+    TransferEpoch,
     /// Stream ID represented by this companion NFT (instance).
     StreamId,
     /// Flag indicating whether the token has been burned (instance).
     Burned,
-    /// Spender allowance record: `(spender) -> Allowance` (persistent).
-    Allowance(Address),
+    /// Spender allowance record: `(owner, spender) -> Allowance` (persistent).
+    Allowance(Address, Address),
 }
 
 /// Allowance record for an authorized operator.
@@ -88,6 +90,7 @@ pub enum NftDataKey {
 pub struct Allowance {
     pub amount: i128,
     pub live_until_ledger: u32,
+    pub epoch: u64,
 }
 
 /// Emitted when a new stream NFT is minted.
@@ -254,12 +257,15 @@ impl StreamNft {
             if owner != from {
                 return 0;
             }
+            let current_epoch = Self::get_transfer_epoch(&env);
             if let Some(allowance) = env
                 .storage()
                 .persistent()
-                .get::<_, Allowance>(&NftDataKey::Allowance(spender))
+                .get::<_, Allowance>(&NftDataKey::Allowance(from, spender))
             {
-                if allowance.live_until_ledger >= env.ledger().sequence() {
+                if allowance.epoch == current_epoch
+                    && allowance.live_until_ledger >= env.ledger().sequence()
+                {
                     return allowance.amount;
                 }
             }
@@ -286,13 +292,14 @@ impl StreamNft {
             return Err(NftError::InvalidAmount);
         }
 
-        let key = NftDataKey::Allowance(spender);
+        let key = NftDataKey::Allowance(from, spender);
         if amount == 0 {
             env.storage().persistent().remove(&key);
         } else {
             let record = Allowance {
                 amount: 1,
                 live_until_ledger,
+                epoch: Self::get_transfer_epoch(&env),
             };
             env.storage().persistent().set(&key, &record);
             env.storage()
@@ -345,7 +352,7 @@ impl StreamNft {
         // Consume allowance (single use for 1-unit token)
         env.storage()
             .persistent()
-            .remove(&NftDataKey::Allowance(spender));
+            .remove(&NftDataKey::Allowance(from.clone(), spender));
 
         Self::transfer_internal(&env, from, to, amount)
     }
@@ -391,7 +398,7 @@ impl StreamNft {
 
         env.storage()
             .persistent()
-            .remove(&NftDataKey::Allowance(spender));
+            .remove(&NftDataKey::Allowance(from, spender));
 
         Self::burn_internal(&env, owner)
     }
@@ -540,7 +547,8 @@ impl StreamNft {
 
         let stream_id = Self::get_stream_id(env)?;
 
-        // Update owner
+        // Update owner and bump transfer epoch to invalidate prior operator approvals
+        Self::bump_transfer_epoch(env);
         env.storage().persistent().set(&NftDataKey::Owner, &to);
         env.storage()
             .persistent()
@@ -559,11 +567,31 @@ impl StreamNft {
     fn burn_internal(env: &Env, owner: Address) -> Result<(), NftError> {
         let stream_id = Self::get_stream_id(env)?;
 
+        Self::bump_transfer_epoch(env);
         env.storage().persistent().remove(&NftDataKey::Owner);
         env.storage().instance().set(&NftDataKey::Burned, &true);
 
         NftBurned { stream_id, owner }.publish(env);
         Ok(())
+    }
+
+    fn get_transfer_epoch(env: &Env) -> u64 {
+        env.storage()
+            .persistent()
+            .get(&NftDataKey::TransferEpoch)
+            .unwrap_or(0)
+    }
+
+    fn bump_transfer_epoch(env: &Env) {
+        let next = Self::get_transfer_epoch(env).saturating_add(1);
+        env.storage()
+            .persistent()
+            .set(&NftDataKey::TransferEpoch, &next);
+        env.storage().persistent().extend_ttl(
+            &NftDataKey::TransferEpoch,
+            TTL_THRESHOLD_LEDGERS,
+            TTL_EXTEND_LEDGERS,
+        );
     }
 
     fn require_initialized(env: &Env) -> Result<(), NftError> {

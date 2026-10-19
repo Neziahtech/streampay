@@ -486,3 +486,51 @@ fn test_burn_from_with_operator_allowance() {
     nft.burn_from(&operator, &f.recipient, &1);
     assert_eq!(nft.try_owner().unwrap_err().unwrap(), NftError::TokenBurned);
 }
+
+#[test]
+fn test_previous_owner_approval_invalidated_on_transfer_and_roundtrip() {
+    let f = TestFixture::setup();
+    let stream_id = f.create_stream(10 * DAY, false);
+    let (_nft_addr, nft) = f.deploy_nft(stream_id);
+    nft.mint(&f.recipient);
+
+    let alice_operator = Address::generate(&f.env);
+    let bob = Address::generate(&f.env);
+    let thief = Address::generate(&f.env);
+
+    // 1. Initial holder (Alice / f.recipient) approves alice_operator
+    let live_until = f.env.ledger().sequence() + 100;
+    nft.approve(&f.recipient, &alice_operator, &1, &live_until);
+    assert_eq!(nft.allowance(&f.recipient, &alice_operator), 1);
+
+    // 2. Alice transfers the NFT directly to Bob
+    nft.transfer(&f.recipient, &bob, &1);
+    assert_eq!(nft.owner(), bob);
+
+    // 3. Prior operator has zero allowance on Bob and cannot transfer or burn Bob's NFT
+    assert_eq!(nft.allowance(&bob, &alice_operator), 0);
+    assert_eq!(
+        nft.try_transfer_from(&alice_operator, &bob, &thief, &1)
+            .unwrap_err()
+            .unwrap(),
+        NftError::InsufficientAllowance
+    );
+    assert_eq!(
+        nft.try_burn_from(&alice_operator, &bob, &1)
+            .unwrap_err()
+            .unwrap(),
+        NftError::InsufficientAllowance
+    );
+
+    // 4. Even if Bob transfers the NFT back to Alice, Alice's pre-transfer approval remains invalidated
+    nft.transfer(&bob, &f.recipient, &1);
+    assert_eq!(nft.owner(), f.recipient);
+    assert_eq!(nft.allowance(&f.recipient, &alice_operator), 0);
+    assert_eq!(
+        nft.try_transfer_from(&alice_operator, &f.recipient, &thief, &1)
+            .unwrap_err()
+            .unwrap(),
+        NftError::InsufficientAllowance
+    );
+}
+
