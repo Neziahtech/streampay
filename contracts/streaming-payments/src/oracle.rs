@@ -161,9 +161,14 @@ pub fn submit_oracle_time(
 
 /// Reads the latest report from a publisher, if any.
 pub fn get_oracle_report(env: &Env, publisher: Address) -> Option<OracleReport> {
-    env.storage()
-        .persistent()
-        .get(&DataKey::OracleReport(publisher))
+    let key = DataKey::OracleReport(publisher);
+    let report = env.storage().persistent().get::<_, OracleReport>(&key);
+    if report.is_some() {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+    }
+    report
 }
 
 /// Resolves the reference timestamp for a stream.
@@ -197,8 +202,11 @@ pub fn resolve_stream_time(env: &Env, stream_id: u64, use_oracle: bool) -> Resol
     let mut valid_times = Vec::new(env);
     for publisher in config.publishers.iter() {
         if let Some(report) = get_oracle_report(env, publisher) {
-            // Freshness check: current ledger time must not exceed report.ledger_time + max_stale_seconds
-            if ledger_time <= report.ledger_time.saturating_add(config.max_stale_seconds) {
+            // Freshness and drift check: report must be recent and reported_time within max_stale_seconds of ledger_time
+            if ledger_time <= report.ledger_time.saturating_add(config.max_stale_seconds)
+                && report.reported_time <= ledger_time.saturating_add(config.max_stale_seconds)
+                && ledger_time <= report.reported_time.saturating_add(config.max_stale_seconds)
+            {
                 valid_times.push_back(report.reported_time);
             }
         }

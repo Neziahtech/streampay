@@ -341,21 +341,43 @@ pub fn set_stream_policy(
     token: Option<Address>,
     new_policy: StreamPolicy,
 ) -> Result<(), StreamError> {
-    let old_policy = get_stream_policy(env, token.clone());
-    if let Some(ref token_addr) = token {
+    let is_empty = new_policy.min_deposit == 0
+        && new_policy.min_duration == 0
+        && new_policy.max_duration == 0
+        && new_policy.min_rate == 0
+        && new_policy.max_rate == 0;
+
+    let old_policy = if let Some(ref token_addr) = token {
         let key = PolicyDataKey::StreamPolicy(token_addr.clone());
-        env.storage().persistent().set(&key, &new_policy);
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+        let prev = env.storage().persistent().get::<_, StreamPolicy>(&key);
+        if is_empty {
+            env.storage().persistent().remove(&key);
+        } else {
+            env.storage().persistent().set(&key, &new_policy);
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+        }
+        prev
     } else {
-        env.storage()
+        let prev = env
+            .storage()
             .instance()
-            .set(&PolicyDataKey::GlobalStreamPolicy, &new_policy);
+            .get::<_, StreamPolicy>(&PolicyDataKey::GlobalStreamPolicy);
+        if is_empty {
+            env.storage()
+                .instance()
+                .remove(&PolicyDataKey::GlobalStreamPolicy);
+        } else {
+            env.storage()
+                .instance()
+                .set(&PolicyDataKey::GlobalStreamPolicy, &new_policy);
+        }
         env.storage()
             .instance()
             .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
-    }
+        prev
+    };
 
     crate::events::StreamPolicySet {
         token,

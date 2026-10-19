@@ -113,16 +113,23 @@ pub mod spec {
             duration: u64,
             unrelated_funds: i128,
         ) -> Result<Self, StreamError> {
-            if deposit <= 0 || duration == 0 || duration > MAX_DURATION_SECONDS {
+            if deposit <= 0
+                || duration == 0
+                || duration > MAX_DURATION_SECONDS
+                || unrelated_funds < 0
+            {
                 return Err(StreamError::MathOverflow);
             }
             stream::validate_capacity(deposit, duration)?;
+            let end_time = start_time
+                .checked_add(duration)
+                .ok_or(StreamError::MathOverflow)?;
 
             let stream = AbstractStream {
                 deposit,
                 withdrawn: 0,
                 start_time,
-                end_time: start_time.saturating_add(duration),
+                end_time,
                 status: StreamStatus::Active,
             };
 
@@ -158,6 +165,9 @@ pub mod spec {
     /// $$\Delta B_{\text{contract}} + \Delta B_{\text{recipient}} = 0$$
     #[inline]
     pub fn invariant_balance_conservation(s: &SystemState) -> bool {
+        if s.ledger.unrelated_funds < 0 || s.ledger.sender_balance < 0 {
+            return false;
+        }
         let outstanding = match s.stream.deposit.checked_sub(s.stream.withdrawn) {
             Some(v) => v,
             None => return false,
@@ -174,6 +184,7 @@ pub mod spec {
             .ledger
             .contract_balance
             .checked_add(s.ledger.recipient_balance)
+            .and_then(|v| v.checked_add(s.ledger.sender_balance))
         {
             Some(v) => v,
             None => return false,
@@ -596,6 +607,13 @@ pub mod proofs {
             return;
         }
 
+        let Some(contract_balance) = (deposit - withdrawn).checked_add(unrelated) else {
+            return;
+        };
+        let Some(expected_total) = deposit.checked_add(unrelated) else {
+            return;
+        };
+
         let pre = SystemState {
             stream: AbstractStream {
                 deposit,
@@ -606,7 +624,7 @@ pub mod proofs {
             },
             ledger: AbstractLedger {
                 timestamp: 1_000 + elapsed.min(duration),
-                contract_balance: (deposit - withdrawn) + unrelated,
+                contract_balance,
                 recipient_balance: withdrawn,
                 sender_balance: 0,
                 unrelated_funds: unrelated,
@@ -620,8 +638,10 @@ pub mod proofs {
         let post = apply_withdraw(&pre, amount).expect("valid transition must succeed");
         assert!(invariant_payout_inductive_conjunction(&post));
         assert_eq!(
-            post.ledger.contract_balance + post.ledger.recipient_balance,
-            deposit + unrelated
+            post.ledger
+                .contract_balance
+                .checked_add(post.ledger.recipient_balance),
+            Some(expected_total)
         );
     }
 
