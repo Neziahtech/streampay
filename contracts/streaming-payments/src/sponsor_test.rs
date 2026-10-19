@@ -260,6 +260,27 @@ fn beneficiary_cap_rejects_within_the_sponsor_window() {
     let res = relay_claim(&f, &sponsor_addr, &op, &ben, id, 1, 2, deadline);
     assert_eq!(relay_rejection(res), StreamError::BeneficiaryBudgetExceeded);
     assert_eq!(f.client.get_stream(&id).withdrawn, day / 2);
+
+    // BeneficiarySpend.period_start is anchored to SponsorPeriod.period_start,
+    // and re-registering the sponsor resets the beneficiary's window epoch cleanly.
+    assert_eq!(
+        f.client
+            .beneficiary_spend(&sponsor_addr, &f.recipient)
+            .period_start,
+        f.client.sponsor_period_spend(&sponsor_addr).period_start
+    );
+    f.advance_time(10);
+    register_op(&f, &sponsor_addr, &op, day * 10, day / 2, DAY);
+    assert_eq!(
+        f.client
+            .beneficiary_spend(&sponsor_addr, &f.recipient)
+            .spend,
+        0
+    );
+    assert!(matches!(
+        relay_claim(&f, &sponsor_addr, &op, &ben, id, day / 2, 3, deadline),
+        Ok(Ok(()))
+    ));
 }
 
 #[test]
@@ -383,6 +404,20 @@ fn paused_sponsor_blocks_relay_until_resumed() {
         relay_claim(&f, &sponsor_addr, &op, &ben, id, amount, 2, deadline),
         Ok(Ok(()))
     ));
+
+    // Emergency freeze blocks sponsored_withdraw and sponsor state mutations
+    f.client.mock_all_auths().set_frozen(&f.governor, &true);
+    let frozen_relay = relay_claim(&f, &sponsor_addr, &op, &ben, id, amount, 3, deadline);
+    assert_eq!(relay_rejection(frozen_relay), StreamError::ContractFrozen);
+    assert_eq!(
+        f.client
+            .mock_all_auths()
+            .try_set_sponsor_active(&sponsor_addr, &false)
+            .unwrap_err()
+            .unwrap(),
+        StreamError::ContractFrozen
+    );
+    f.client.mock_all_auths().set_frozen(&f.governor, &false);
 }
 
 #[test]

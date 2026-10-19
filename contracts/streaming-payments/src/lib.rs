@@ -1541,6 +1541,7 @@ impl StreamingPayments {
         window_seconds: u64,
         operator_key: soroban_sdk::BytesN<32>,
     ) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
         sponsor::register_sponsor(
             env,
             sponsor,
@@ -1554,6 +1555,7 @@ impl StreamingPayments {
 
     /// Pauses or resumes a sponsor's budget.
     pub fn set_sponsor_active(env: Env, sponsor: Address, active: bool) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
         sponsor::set_sponsor_active(env, sponsor, active)
     }
 
@@ -1563,6 +1565,7 @@ impl StreamingPayments {
         sponsor: Address,
         new_operator_key: soroban_sdk::BytesN<32>,
     ) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
         sponsor::rotate_operator_key(env, sponsor, new_operator_key)
     }
 
@@ -1572,6 +1575,7 @@ impl StreamingPayments {
         beneficiary: Address,
         public_key: soroban_sdk::BytesN<32>,
     ) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
         sponsor::enroll_beneficiary(env, beneficiary, public_key)
     }
 
@@ -1589,6 +1593,7 @@ impl StreamingPayments {
         operator_sig: soroban_sdk::BytesN<64>,
         beneficiary_sig: soroban_sdk::BytesN<64>,
     ) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
         sponsor::sponsored_withdraw(
             env,
             sponsor,
@@ -1626,10 +1631,16 @@ impl StreamingPayments {
         sponsor: Address,
         beneficiary: Address,
     ) -> sponsor::PeriodSpend {
-        sponsor::get_period(
+        let sper = sponsor::get_period(&env, &sponsor::SponsorKey::SponsorPeriod(sponsor.clone()));
+        let mut bper = sponsor::get_period(
             &env,
             &sponsor::SponsorKey::BeneficiarySpend(sponsor, beneficiary),
-        )
+        );
+        if bper.period_start != sper.period_start {
+            bper.period_start = sper.period_start;
+            bper.spend = 0;
+        }
+        bper
     }
     // ------------------------------------------------------------- policy --
     //

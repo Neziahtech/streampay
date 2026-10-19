@@ -454,11 +454,20 @@ pub fn sponsored_withdraw(
     // --- budget caps (period, then beneficiary) --------------------------
     let now = env.ledger().timestamp();
     let mut sper = get_period(&env, &SponsorKey::SponsorPeriod(sponsor.clone()));
+    let effective_period_start = if now.saturating_sub(sper.period_start) >= cfg.window_seconds {
+        now
+    } else {
+        sper.period_start
+    };
     if sper.effective(cfg.window_seconds, now) + amount > cfg.per_period_limit {
         return Err(surface::reject(Branch::SponsorBudgetPeriodExceeded));
     }
     let bkey = SponsorKey::BeneficiarySpend(sponsor.clone(), beneficiary.clone());
     let mut bper = get_period(&env, &bkey);
+    if bper.period_start != effective_period_start {
+        bper.period_start = effective_period_start;
+        bper.spend = 0;
+    }
     if bper.effective(cfg.window_seconds, now) + amount > cfg.per_beneficiary_limit {
         return Err(surface::reject(Branch::SponsorBudgetBeneficiaryExceeded));
     }
@@ -484,7 +493,11 @@ pub fn sponsored_withdraw(
     mark_nonce(&env, &sponsor, &beneficiary, nonce);
     sper.spend_more(amount, now, cfg.window_seconds)?;
     put_period(&env, &SponsorKey::SponsorPeriod(sponsor.clone()), &sper);
-    bper.spend_more(amount, now, cfg.window_seconds)?;
+    bper.period_start = sper.period_start;
+    bper.spend = bper
+        .spend
+        .checked_add(amount)
+        .ok_or_else(|| surface::reject(Branch::PayoutOverflow))?;
     put_period(&env, &bkey, &bper);
 
     s.withdrawn = s
@@ -507,11 +520,15 @@ pub fn sponsored_withdraw(
     .publish(&env);
 
     // --- interaction last: pay the beneficiary from the stream -----------
-    TokenClient::new(&env, &cfg.token).transfer(
+    #[cfg(test)]
+    crate::cei_trace::record("transfer recipient payout");
+    let res = TokenClient::new(&env, &cfg.token).try_transfer(
         &env.current_contract_address(),
-        stream::muxed(&s.recipient),
+        &stream::muxed(&s.recipient),
         &amount,
     );
-
-    Ok(())
+    match res {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) | Err(_) => Err(surface::reject(Branch::RecipientPayoutFailed)),
+    }
 }
