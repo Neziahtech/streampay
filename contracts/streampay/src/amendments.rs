@@ -15,7 +15,26 @@ pub fn apply_amendment(
     sender.require_auth();
     recipient.require_auth();
 
-    if new_rate <= 0 || new_end_time <= env.ledger().timestamp() {
+    let stored_sender: Address = env
+        .storage()
+        .persistent()
+        .get(&DataKey::StreamSender(stream_id))
+        .ok_or(StreamPayError::Unauthorized)?;
+    if stored_sender != sender {
+        return Err(StreamPayError::Unauthorized);
+    }
+
+    let stored_recipient: Address = env
+        .storage()
+        .persistent()
+        .get(&DataKey::StreamRecipient(stream_id))
+        .ok_or(StreamPayError::Unauthorized)?;
+    if stored_recipient != recipient {
+        return Err(StreamPayError::Unauthorized);
+    }
+
+    let current_time = env.ledger().timestamp();
+    if new_rate <= 0 || new_end_time <= current_time {
         return Err(StreamPayError::InvalidAmendmentTerms);
     }
 
@@ -27,16 +46,43 @@ pub fn apply_amendment(
         return Err(StreamPayError::TooManyAmendments);
     }
 
-    let record = AmendmentRecord {
-        old_rate: 100, // placeholder resolved from active stream state
-        new_rate,
-        old_end_time: 100000, // placeholder resolved from active stream state
-        new_end_time,
-        effective_timestamp: env.ledger().timestamp(),
+    let (old_rate, old_end_time) = if let Some(last) = log.last() {
+        let active_end = env
+            .storage()
+            .persistent()
+            .get(&DataKey::StreamEndTime(stream_id))
+            .unwrap_or(last.new_end_time);
+        (last.new_rate, active_end)
+    } else {
+        let rate = env
+            .storage()
+            .persistent()
+            .get(&DataKey::StreamRate(stream_id))
+            .unwrap_or(100);
+        let end_time = env
+            .storage()
+            .persistent()
+            .get(&DataKey::StreamEndTime(stream_id))
+            .unwrap_or(100000);
+        (rate, end_time)
     };
 
-    log.push_back(record.clone());
+    if old_end_time <= current_time {
+        return Err(StreamPayError::InvalidAmendmentTerms);
+    }
+
+    let record = AmendmentRecord {
+        old_rate,
+        new_rate,
+        old_end_time,
+        new_end_time,
+        effective_timestamp: current_time,
+    };
+
+    log.push_back(record);
     env.storage().persistent().set(&DataKey::AmendmentLog(stream_id), &log);
+    env.storage().persistent().set(&DataKey::StreamRate(stream_id), &new_rate);
+    env.storage().persistent().set(&DataKey::StreamEndTime(stream_id), &new_end_time);
 
     env.events().publish(("streampay", "stream_amended"), (stream_id, new_rate, new_end_time));
     Ok(())
@@ -50,12 +96,32 @@ pub fn partial_cancel(
 ) -> Result<(), StreamPayError> {
     sender.require_auth();
 
-    // End stream at a future point and calculate pro-rata surplus refund to sender
+    let stored_sender: Address = env
+        .storage()
+        .persistent()
+        .get(&DataKey::StreamSender(stream_id))
+        .ok_or(StreamPayError::Unauthorized)?;
+    if stored_sender != sender {
+        return Err(StreamPayError::Unauthorized);
+    }
+
+    // End stream at a future point prior to the active end_time and calculate pro-rata surplus refund to sender
     let current_time = env.ledger().timestamp();
     if new_end_time <= current_time {
         return Err(StreamPayError::InvalidAmendmentTerms);
     }
 
+    if let Some(active_end_time) = env
+        .storage()
+        .persistent()
+        .get::<_, u64>(&DataKey::StreamEndTime(stream_id))
+    {
+        if active_end_time <= current_time || new_end_time >= active_end_time {
+            return Err(StreamPayError::InvalidAmendmentTerms);
+        }
+    }
+
+    env.storage().persistent().set(&DataKey::StreamEndTime(stream_id), &new_end_time);
     env.events().publish(("streampay", "partial_cancelled"), (stream_id, new_end_time));
     Ok(())
 }
