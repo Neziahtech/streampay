@@ -76,6 +76,8 @@ pub enum NftDataKey {
     Owner,
     /// Stream ID represented by this companion NFT (instance).
     StreamId,
+    /// Flag indicating whether the token has been minted (instance).
+    Minted,
     /// Flag indicating whether the token has been burned (instance).
     Burned,
     /// Spender allowance record: `(spender) -> Allowance` (persistent).
@@ -154,6 +156,7 @@ impl StreamNft {
         env.storage()
             .instance()
             .set(&NftDataKey::StreamId, &stream_id);
+        env.storage().instance().set(&NftDataKey::Minted, &false);
         env.storage().instance().set(&NftDataKey::Burned, &false);
 
         env.storage()
@@ -170,7 +173,7 @@ impl StreamNft {
         if Self::is_burned(&env) {
             return Err(NftError::TokenBurned);
         }
-        if env.storage().persistent().has(&NftDataKey::Owner) {
+        if Self::is_minted(&env) || env.storage().persistent().has(&NftDataKey::Owner) {
             return Err(NftError::AlreadyMinted);
         }
 
@@ -201,7 +204,11 @@ impl StreamNft {
             return Err(NftError::NotAuthorized);
         }
 
-        // Store owner
+        // Store owner and permanent Minted flag
+        env.storage().instance().set(&NftDataKey::Minted, &true);
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
         env.storage()
             .persistent()
             .set(&NftDataKey::Owner, &recipient);
@@ -238,10 +245,7 @@ impl StreamNft {
         if Self::is_burned(&env) {
             return Err(NftError::TokenBurned);
         }
-        env.storage()
-            .persistent()
-            .get(&NftDataKey::Owner)
-            .ok_or(NftError::NotMinted)
+        Self::require_owner(&env)
     }
 
     // -------------------------------------------------------------------------
@@ -250,6 +254,9 @@ impl StreamNft {
 
     /// Allowance query for an authorized operator.
     pub fn allowance(env: Env, from: Address, spender: Address) -> i128 {
+        if Self::is_burned(&env) {
+            return 0;
+        }
         if let Some(owner) = Self::get_owner_opt(&env) {
             if owner != from {
                 return 0;
@@ -545,6 +552,9 @@ impl StreamNft {
         env.storage()
             .persistent()
             .extend_ttl(&NftDataKey::Owner, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
 
         NftTransferred {
             stream_id,
@@ -561,6 +571,9 @@ impl StreamNft {
 
         env.storage().persistent().remove(&NftDataKey::Owner);
         env.storage().instance().set(&NftDataKey::Burned, &true);
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
 
         NftBurned { stream_id, owner }.publish(env);
         Ok(())
@@ -571,6 +584,13 @@ impl StreamNft {
             return Err(NftError::NotInitialized);
         }
         Ok(())
+    }
+
+    fn is_minted(env: &Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&NftDataKey::Minted)
+            .unwrap_or(false)
     }
 
     fn is_burned(env: &Env) -> bool {
@@ -585,18 +605,34 @@ impl StreamNft {
         if Self::is_burned(env) {
             return Err(NftError::TokenBurned);
         }
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
         Ok(())
     }
 
     fn require_owner(env: &Env) -> Result<Address, NftError> {
-        env.storage()
+        let owner: Address = env
+            .storage()
             .persistent()
             .get(&NftDataKey::Owner)
-            .ok_or(NftError::NotMinted)
+            .ok_or(NftError::NotMinted)?;
+        env.storage()
+            .persistent()
+            .extend_ttl(&NftDataKey::Owner, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+        Ok(owner)
     }
 
     fn get_owner_opt(env: &Env) -> Option<Address> {
-        env.storage().persistent().get(&NftDataKey::Owner)
+        let owner: Option<Address> = env.storage().persistent().get(&NftDataKey::Owner);
+        if owner.is_some() {
+            env.storage().persistent().extend_ttl(
+                &NftDataKey::Owner,
+                TTL_THRESHOLD_LEDGERS,
+                TTL_EXTEND_LEDGERS,
+            );
+        }
+        owner
     }
 
     fn get_stream_id(env: &Env) -> Result<u64, NftError> {
