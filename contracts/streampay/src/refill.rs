@@ -17,12 +17,30 @@ pub fn set_refill_rule(
         .get(&DataKey::GovernanceCaps)
         .unwrap_or(GovernanceCaps { max_per_stream_cap: i128::MAX, max_global_account_cap: i128::MAX });
 
-    if amount > caps.max_per_stream_cap || total_budget > caps.max_global_account_cap {
+    let existing_rule: Option<RefillRule> = env.storage().persistent().get(&DataKey::RefillRule(stream_id));
+    if let Some(prev) = &existing_rule {
+        if prev.registrant != registrant {
+            return Err(StreamPayError::Unauthorized);
+        }
+    }
+
+    let current_account_budget: i128 = env.storage().persistent()
+        .get(&DataKey::AccountBudget(registrant.clone()))
+        .unwrap_or(0);
+    let base_account_budget = match &existing_rule {
+        Some(prev) => current_account_budget.saturating_sub(prev.total_budget),
+        None => current_account_budget,
+    };
+    let next_account_budget = base_account_budget
+        .checked_add(total_budget)
+        .ok_or(StreamPayError::GovernanceCapExceeded)?;
+
+    if amount > caps.max_per_stream_cap || next_account_budget > caps.max_global_account_cap {
         return Err(StreamPayError::GovernanceCapExceeded);
     }
 
     let rule = RefillRule {
-        registrant,
+        registrant: registrant.clone(),
         amount,
         cadence_seconds,
         max_topups,
@@ -33,6 +51,7 @@ pub fn set_refill_rule(
     };
 
     env.storage().persistent().set(&DataKey::RefillRule(stream_id), &rule);
+    env.storage().persistent().set(&DataKey::AccountBudget(registrant), &next_account_budget);
 
     // Emit event with rule hash for client verification
     let rule_hash = env.crypto().keccak256(&env.to_xdr(&rule));
@@ -52,8 +71,15 @@ pub fn cancel_refill_rule(env: Env, registrant: Address, stream_id: u64) -> Resu
         return Err(StreamPayError::Unauthorized);
     }
 
+    let current_account_budget: i128 = env.storage().persistent()
+        .get(&DataKey::AccountBudget(registrant.clone()))
+        .unwrap_or(0);
+    let updated_budget = current_account_budget.saturating_sub(rule.total_budget);
+    env.storage().persistent().set(&DataKey::AccountBudget(registrant), &updated_budget);
+
     env.storage().persistent().remove(&DataKey::RefillRule(stream_id));
     env.events().publish(("streampay", "refill_rule_cancelled"), stream_id);
 
     Ok(())
 }
+

@@ -17,6 +17,7 @@ pub enum DataKey {
     GovernanceCaps,
     Agents(u64),
     AmendmentLog(u64), // stream_id -> Vec<AmendmentRecord>
+    AccountBudget(Address),
 }
 
 #[contracttype]
