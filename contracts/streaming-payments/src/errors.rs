@@ -176,6 +176,16 @@ pub enum StreamError {
     OracleReportTooOld = 58,
     /// The caller is not an authorized oracle publisher.
     NotOraclePublisher = 59,
+    /// No two-step ownership proposal exists for this stream.
+    NoPendingOwnership = 60,
+    /// The pending ownership proposal's acceptance window has elapsed; the
+    /// target must be proposed again by the current role holder.
+    OwnershipProposalExpired = 61,
+    /// The proposed new owner is already the current holder of that role.
+    InvalidTransferTarget = 62,
+    /// An unexpired ownership proposal already exists for this stream; cancel
+    /// or accept it before proposing another.
+    OwnershipProposalPending = 63,
 }
 
 impl StreamError {
@@ -242,6 +252,10 @@ impl StreamError {
         StreamError::OraclePublishersNotConfigured,
         StreamError::OracleReportTooOld,
         StreamError::NotOraclePublisher,
+        StreamError::NoPendingOwnership,
+        StreamError::OwnershipProposalExpired,
+        StreamError::InvalidTransferTarget,
+        StreamError::OwnershipProposalPending,
     ];
 
     /// The stable numeric value carried across the contract boundary

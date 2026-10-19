@@ -35,8 +35,9 @@ use soroban_sdk::{
 use crate::stream::streamed_at;
 use crate::test_client::StreamingPaymentsClient as Client;
 use crate::{
-    StreamError, StreamInput, StreamStatus, StreamingPayments, INITIAL_SCHEMA_VERSION,
-    MAX_DURATION_SECONDS, MIN_UPGRADE_DELAY_SECONDS, TARGET_SCHEMA_VERSION,
+    OwnershipRole, StreamError, StreamInput, StreamStatus, StreamingPayments,
+    INITIAL_SCHEMA_VERSION, MAX_DURATION_SECONDS, MIN_UPGRADE_DELAY_SECONDS,
+    OWNERSHIP_PROPOSAL_TTL_SECONDS, TARGET_SCHEMA_VERSION,
 };
 
 // ---------------------------------------------------------------- fixtures --
@@ -139,6 +140,15 @@ impl Fixture {
 
     pub(crate) fn advance_time(&self, seconds: u64) {
         self.env.ledger().with_mut(|li| li.timestamp += seconds);
+    }
+
+    /// Creates an address funded with `DEPOSIT` and pre-approved as a payer.
+    pub(crate) fn fund_payer(&self) -> Address {
+        let payer = Address::generate(&self.env);
+        let sac = StellarAssetClient::new(&self.env, &self.token);
+        sac.mint(&payer, &DEPOSIT);
+        sac.approve(&payer, &self.client.address, &(10 * DEPOSIT), &1_000_000u32);
+        payer
     }
 }
 
@@ -6035,4 +6045,477 @@ fn oracle_mode_accrual_property_bounded_by_staleness() {
             "oracle accrual diff {diff} exceeded maximum staleness bound {max_accrual_diff}"
         );
     }
+}
+
+// ------------------------------------------------- ownership transfer -----
+
+#[test]
+fn recipient_transfer_mid_accrual_redirects_claims_and_keeps_indexes_consistent() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, true);
+    f.advance_time(3 * DAY); // 2 of 10 days elapsed
+    let available = DEPOSIT / 5;
+
+    let new_recipient = Address::generate(&f.env);
+    let now = f.env.ledger().timestamp();
+    f.client
+        .mock_all_auths()
+        .propose_ownership_transfer(&f.recipient, &id, &new_recipient);
+
+    let pending = f.client.pending_ownership_transfer(&id).unwrap();
+    assert_eq!(pending.stream_id, id);
+    assert_eq!(pending.proposed_by, f.recipient);
+    assert_eq!(pending.new_owner, new_recipient);
+    assert_eq!(pending.role, OwnershipRole::Recipient);
+    assert_eq!(pending.expires_at, now + OWNERSHIP_PROPOSAL_TTL_SECONDS);
+
+    // A proposal alone changes nothing: the old recipient still owns claims
+    // and the stream's accounting is untouched.
+    let before = f.client.get_stream(&id);
+    assert_eq!(before.recipient, f.recipient);
+    assert_eq!(f.client.available(&id), available);
+
+    f.client
+        .mock_all_auths()
+        .accept_ownership_transfer(&new_recipient, &id);
+    let after = f.client.get_stream(&id);
+    assert_eq!(after.recipient, new_recipient);
+    assert_eq!(after.sender, f.sender);
+    assert_eq!(after.deposit, before.deposit);
+    assert_eq!(after.withdrawn, before.withdrawn);
+    assert_eq!(after.start_time, before.start_time);
+    assert_eq!(after.end_time, before.end_time);
+    assert_eq!(after.use_oracle, before.use_oracle);
+    assert_eq!(f.client.available(&id), available);
+    assert!(f.client.pending_ownership_transfer(&id).is_none());
+
+    // The old recipient's signature no longer satisfies the contract's
+    // required auth; the new recipient can claim the full accrued balance.
+    f.env.mock_auths(&[MockAuth {
+        address: &f.recipient,
+        invoke: &MockAuthInvoke {
+            contract: &f.client.address,
+            fn_name: "withdraw",
+            args: (id, available).into_val(&f.env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(f.client.try_withdraw(&id, &available).is_err());
+    f.env.mock_all_auths();
+
+    f.client.mock_all_auths().withdraw(&id, &available);
+    assert_eq!(TokenClient::new(&f.env, &f.token).balance(&f.recipient), 0);
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&new_recipient),
+        available
+    );
+
+    // Append-only indexes: the old recipient keeps its historical id and the
+    // new recipient is appended on acceptance. Readers must consult
+    // `get_stream` to learn the current role holder.
+    assert_eq!(
+        f.client.recipient_streams(&f.recipient, &0, &10),
+        soroban_sdk::Vec::from_slice(&f.env, &[id]),
+    );
+    assert_eq!(
+        f.client.recipient_streams(&new_recipient, &0, &10),
+        soroban_sdk::Vec::from_slice(&f.env, &[id]),
+    );
+    assert_eq!(
+        f.client.sender_streams(&f.sender, &0, &10),
+        soroban_sdk::Vec::from_slice(&f.env, &[id]),
+    );
+}
+
+#[test]
+fn sender_transfer_mid_stream_moves_payer_rights_without_touching_accounting() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    f.advance_time(3 * DAY); // 2 of 10 days elapsed
+    let new_payer = f.fund_payer();
+
+    f.client
+        .mock_all_auths()
+        .propose_ownership_transfer(&f.sender, &id, &new_payer);
+    f.client
+        .mock_all_auths()
+        .accept_ownership_transfer(&new_payer, &id);
+
+    let s = f.client.get_stream(&id);
+    assert_eq!(s.sender, new_payer);
+    assert_eq!(s.recipient, f.recipient);
+    assert_eq!(s.deposit, DEPOSIT);
+    assert_eq!(s.withdrawn, 0);
+    assert_eq!(f.client.available(&id), DEPOSIT / 5);
+
+    // The new payer can top up, and the deposit grows pro-rata as usual.
+    let top_up = DEPOSIT / 2;
+    f.client.mock_all_auths().top_up(&id, &top_up);
+    let new_deposit = DEPOSIT + top_up;
+    assert_eq!(f.client.get_stream(&id).deposit, new_deposit);
+    assert_eq!(f.client.available(&id), new_deposit * 2 / 10);
+
+    // The old payer is no longer an authorized canceller.
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_cancel_stream(&f.sender, &id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::NotAuthorized);
+
+    // The new payer cancels: accrued goes to the recipient, the unaccrued
+    // remainder is refunded to the new payer, and the contract drains exactly.
+    let streamed = new_deposit * 2 / 10;
+    f.client.mock_all_auths().cancel_stream(&new_payer, &id);
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.recipient),
+        streamed
+    );
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&new_payer),
+        DEPOSIT - top_up + (new_deposit - streamed)
+    );
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.client.address),
+        0
+    );
+    // The previous payer's funds are untouched by the handoff.
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.sender),
+        DEPOSIT
+    );
+
+    // Both payers' append-only indexes contain the stream id.
+    assert_eq!(
+        f.client.sender_streams(&f.sender, &0, &10),
+        soroban_sdk::Vec::from_slice(&f.env, &[id]),
+    );
+    assert_eq!(
+        f.client.sender_streams(&new_payer, &0, &10),
+        soroban_sdk::Vec::from_slice(&f.env, &[id]),
+    );
+}
+
+#[test]
+fn propose_then_cancel_clears_pending_proposal_and_allows_reproposal() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let first = Address::generate(&f.env);
+    let second = Address::generate(&f.env);
+
+    f.client
+        .mock_all_auths()
+        .propose_ownership_transfer(&f.sender, &id, &first);
+    assert!(f.client.pending_ownership_transfer(&id).is_some());
+
+    f.client
+        .mock_all_auths()
+        .cancel_ownership_transfer(&f.sender, &id);
+    assert!(f.client.pending_ownership_transfer(&id).is_none());
+
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_accept_ownership_transfer(&first, &id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::NoPendingOwnership);
+    assert_eq!(f.client.get_stream(&id).sender, f.sender);
+
+    // A cancelled proposal does not poison the stream: a fresh target works.
+    f.client
+        .mock_all_auths()
+        .propose_ownership_transfer(&f.sender, &id, &second);
+    f.client
+        .mock_all_auths()
+        .accept_ownership_transfer(&second, &id);
+    assert_eq!(f.client.get_stream(&id).sender, second);
+}
+
+#[test]
+fn expired_proposal_cannot_be_accepted() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let target = Address::generate(&f.env);
+
+    f.client
+        .mock_all_auths()
+        .propose_ownership_transfer(&f.sender, &id, &target);
+    // The acceptance window is half-open: at exactly `expires_at` it is stale.
+    f.advance_time(OWNERSHIP_PROPOSAL_TTL_SECONDS);
+
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_accept_ownership_transfer(&target, &id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::OwnershipProposalExpired);
+    // A failed call rolls back its writes, so the stale proposal remains
+    // stored (and harmless) until propose replaces it or cancel removes it.
+    assert!(f.client.pending_ownership_transfer(&id).is_some());
+    assert_eq!(f.client.get_stream(&id).sender, f.sender);
+}
+
+#[test]
+fn expired_proposal_may_be_replaced_or_cancelled() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let stale = Address::generate(&f.env);
+    let fresh = Address::generate(&f.env);
+
+    f.client
+        .mock_all_auths()
+        .propose_ownership_transfer(&f.sender, &id, &stale);
+    f.advance_time(OWNERSHIP_PROPOSAL_TTL_SECONDS + 1);
+
+    // Stale proposals are cleared lazily by propose: no "pending" error.
+    f.client
+        .mock_all_auths()
+        .propose_ownership_transfer(&f.sender, &id, &fresh);
+    assert_eq!(
+        f.client.pending_ownership_transfer(&id).unwrap().new_owner,
+        fresh
+    );
+
+    // An expired proposal can also still be cancelled explicitly.
+    f.client
+        .mock_all_auths()
+        .cancel_ownership_transfer(&f.sender, &id);
+    assert!(f.client.pending_ownership_transfer(&id).is_none());
+}
+
+#[test]
+fn second_proposal_while_one_is_pending_reverts() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let first = Address::generate(&f.env);
+    let second = Address::generate(&f.env);
+
+    f.client
+        .mock_all_auths()
+        .propose_ownership_transfer(&f.sender, &id, &first);
+
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_propose_ownership_transfer(&f.sender, &id, &second)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::OwnershipProposalPending);
+
+    // The single proposal slot is per stream, not per role: the recipient
+    // cannot overwrite the sender's pending proposal either.
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_propose_ownership_transfer(&f.recipient, &id, &second)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::OwnershipProposalPending);
+
+    assert_eq!(
+        f.client.pending_ownership_transfer(&id).unwrap().new_owner,
+        first
+    );
+}
+
+#[test]
+fn only_current_role_holders_can_propose() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_propose_ownership_transfer(&Address::generate(&f.env), &id, &Address::generate(&f.env))
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::NotAuthorized);
+    assert!(f.client.pending_ownership_transfer(&id).is_none());
+}
+
+#[test]
+fn only_named_target_can_accept() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let target = Address::generate(&f.env);
+
+    f.client
+        .mock_all_auths()
+        .propose_ownership_transfer(&f.sender, &id, &target);
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_accept_ownership_transfer(&Address::generate(&f.env), &id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::NotAuthorized);
+    // A failed acceptance leaves the proposal intact.
+    assert!(f.client.pending_ownership_transfer(&id).is_some());
+
+    f.client
+        .mock_all_auths()
+        .accept_ownership_transfer(&target, &id);
+    assert_eq!(f.client.get_stream(&id).sender, target);
+}
+
+#[test]
+fn only_proposer_can_cancel_proposal() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, true);
+    let target = Address::generate(&f.env);
+
+    f.client
+        .mock_all_auths()
+        .propose_ownership_transfer(&f.sender, &id, &target);
+
+    // Neither the counterparty nor the named target may cancel.
+    for caller in [&f.recipient, &target] {
+        let err = f
+            .client
+            .mock_all_auths()
+            .try_cancel_ownership_transfer(caller, &id)
+            .unwrap_err()
+            .unwrap();
+        assert_eq!(err, StreamError::NotAuthorized);
+    }
+    assert!(f.client.pending_ownership_transfer(&id).is_some());
+
+    f.client
+        .mock_all_auths()
+        .cancel_ownership_transfer(&f.sender, &id);
+    assert!(f.client.pending_ownership_transfer(&id).is_none());
+}
+
+#[test]
+fn cannot_propose_transfer_to_current_holder() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_propose_ownership_transfer(&f.sender, &id, &f.sender)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::InvalidTransferTarget);
+
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_propose_ownership_transfer(&f.recipient, &id, &f.recipient)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::InvalidTransferTarget);
+    assert!(f.client.pending_ownership_transfer(&id).is_none());
+}
+
+#[test]
+fn ownership_cannot_be_proposed_on_terminal_streams() {
+    let f = Fixture::setup();
+    let target = Address::generate(&f.env);
+
+    let cancelled = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    f.client
+        .mock_all_auths()
+        .cancel_stream(&f.sender, &cancelled);
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_propose_ownership_transfer(&f.sender, &cancelled, &target)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::StreamNotActive);
+
+    let depleted = f.create_stream(DEPOSIT, 0, 2 * DAY, false);
+    f.advance_time(3 * DAY);
+    f.client.mock_all_auths().withdraw(&depleted, &DEPOSIT);
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_propose_ownership_transfer(&f.recipient, &depleted, &target)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::StreamNotActive);
+}
+
+#[test]
+fn accepting_after_stream_terminates_reverts_and_clears_proposal() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, true);
+    let target = Address::generate(&f.env);
+
+    f.client
+        .mock_all_auths()
+        .propose_ownership_transfer(&f.recipient, &id, &target);
+    f.client.mock_all_auths().cancel_stream(&f.sender, &id);
+
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_accept_ownership_transfer(&target, &id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::StreamNotActive);
+    // Reverting rolls back the lazy cleanup: the proposal stays stored, but
+    // it can never move a terminal stream's role.
+    assert!(f.client.pending_ownership_transfer(&id).is_some());
+    assert_eq!(f.client.get_stream(&id).recipient, f.recipient);
+}
+
+#[test]
+fn pending_view_on_unknown_stream_is_none_and_never_touches_ttl() {
+    // `extend_ttl` fails on a key that was never written, so the read path must
+    // check existence first. An unknown id must simply return `None`.
+    let f = Fixture::setup();
+    assert!(f.client.pending_ownership_transfer(&999).is_none());
+
+    let target = Address::generate(&f.env);
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_accept_ownership_transfer(&target, &999)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::NoPendingOwnership);
+}
+
+#[test]
+fn ownership_events_are_emitted_with_expected_payloads() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let now = f.env.ledger().timestamp();
+    // Drain StreamCreated so each assertion covers one transfer event.
+    let _ = f.env.events().all();
+
+    let target = Address::generate(&f.env);
+    f.client
+        .mock_all_auths()
+        .propose_ownership_transfer(&f.sender, &id, &target);
+    let proposed = crate::OwnershipProposed {
+        stream_id: id,
+        current_owner: f.sender.clone(),
+        new_owner: target.clone(),
+        role: OwnershipRole::Sender,
+        expires_at: now + OWNERSHIP_PROPOSAL_TTL_SECONDS,
+    };
+    assert_eq!(
+        f.env.events().all().filter_by_contract(&f.client.address),
+        [proposed.to_xdr(&f.env, &f.client.address)],
+    );
+
+    f.client
+        .mock_all_auths()
+        .accept_ownership_transfer(&target, &id);
+    let accepted = crate::OwnershipAccepted {
+        stream_id: id,
+        previous_owner: f.sender.clone(),
+        new_owner: target.clone(),
+        role: OwnershipRole::Sender,
+    };
+    assert_eq!(
+        f.env.events().all().filter_by_contract(&f.client.address),
+        [accepted.to_xdr(&f.env, &f.client.address)],
+    );
 }
