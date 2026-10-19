@@ -17,7 +17,18 @@ pub enum DataKey {
     GovernanceCaps,
     Agents(u64),
     AmendmentLog(u64), // stream_id -> Vec<AmendmentRecord>
+    StreamPaused(u64),
+    StreamBalance(u64),
+    StreamWithdrawn(u64),
+    StreamToken(u64),
+    StreamRecipient(u64),
+    StreamSender(u64),
+    StreamRate(u64),
+    StreamEndTime(u64),
 }
+
+pub const TTL_THRESHOLD_LEDGERS: u32 = 100_000;
+pub const TTL_EXTEND_LEDGERS: u32 = 500_000;
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
