@@ -23,6 +23,19 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Fast, dependency-free guard that runs before the toolchain is even
+      # installed: StreamError codes are the on-chain wire contract, and the
+      # collision CI hits most often is two contributor PRs that each appended
+      # "the next free code" against the same main. On a PR event this job checks
+      # out the merge ref, so both sides of that collision are already in the
+      # same file — reported here as file/line within seconds, instead of as an
+      # `E0081: discriminant value assigned to multiple variants` minutes later in
+      # two jobs at once. The same script also verifies the `surface.rs` registry
+      # (every code mapped by a declared Branch or retired), which is the shape of
+      # most "the contract does not compile" reds in the devcontainer job.
+      - name: Error codes and registry wiring are consistent
+        run: bash scripts/check_error_codes.sh
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -40,15 +53,32 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Format check
+        id: fmt
         # rustfmt emits LF: a file committed with CRLF fails here as a diff of
         # every line, which reads like a formatting complaint about the whole
         # file when the real problem is carriage returns in the commit. Point at
         # the one-command fix instead of leaving contributors to guess.
+        #
+        # This is the single most common failure on the repo, and many
+        # contributors have no local Rust toolchain, so the run also produces the
+        # patch rustfmt would have applied and uploads it: `git apply` on the
+        # checked-out branch is a complete fix, no toolchain required.
         run: |
           if ! cargo fmt --all -- --check; then
-            echo "::error::Unformatted Rust. Fix locally with 'npm run lint:fix' (cargo fmt --all) and commit. If the diff is every line of a file, that file was committed with CRLF: run 'bash scripts/check_line_endings.sh' (one command, exact fix)."
+            echo "::error::Unformatted Rust. Fix locally with 'npm run lint:fix' (cargo fmt --all) and commit. If the diff is every line of a file, that file was committed with CRLF: run 'bash scripts/check_line_endings.sh' (one command, exact fix). No local toolchain? Download the 'fmt-fix-*' artifact from this run and 'git apply fmt-fix.patch'."
+            cargo fmt --all
+            git --no-pager diff > fmt-fix.patch
+            echo "Wrote fmt-fix.patch ($(wc -l < fmt-fix.patch) lines) for the artifact step below."
             exit 1
           fi
+
+      - name: Upload formatting patch
+        if: failure() && steps.fmt.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: fmt-fix-${{ github.event.pull_request.number || github.run_id }}
+          path: fmt-fix.patch
+          if-no-files-found: ignore
 
       - name: Clippy (deny warnings)
         run: cargo clippy --all-targets -- -D warnings
@@ -195,10 +225,21 @@ jobs:
         run: npm run build
 
       - name: Dependency audit
+        id: audit
         # Production deps only: dev-tooling advisories (e.g. braces in the
         # eslint chain) never ship to users and currently have no fix.
         # High-severity prod advisories fail the build.
         run: npm audit --omit=dev --audit-level=high
+
+      - name: Explain a dependency-audit failure
+        if: failure() && steps.audit.outcome == 'failure'
+        # npm audit failures are frequently *not* the contributor's fault: a
+        # fresh advisory in a transitive production dependency turns every open
+        # PR red at once (this repo paid for that in d282de1). Say how to tell
+        # the two cases apart so nobody "fixes" it by force-downgrading a
+        # package they did not come to change.
+        run: |
+          echo "::error::npm audit rejected a production dependency. Check whether the flagged package came from YOUR diff (git diff main -- frontend/package.json frontend/package-lock.json). If it did, upgrade it. If it did not, main already carries the advisory: merge main, run 'npm audit fix' (never '--force'), and if the advisory has no upstream fix say so in the PR body and ask a maintainer to add an overrides pin or an audit allow-list entry in a separate PR."
 
   ttl-sentinel:
     name: TTL sentinel — typecheck / tests
@@ -291,7 +332,15 @@ jobs:
       # cargo-deny's advisories check covers the same RustSec database as
       # cargo-audit, so one gate owns the ignore policy (see deny.toml).
       - name: cargo-deny (advisories, licenses, bans, sources)
+        id: deny
         uses: EmbarkStudios/cargo-deny-action@v2
+
+      # Scoped to this step's own outcome: failure() is true for any later step
+      # in a job that already failed, which would print the wrong diagnosis.
+      - name: Explain a cargo-deny failure
+        if: failure() && steps.deny.outcome == 'failure'
+        run: |
+          echo "::error::cargo-deny rejected the dependency graph — it prints the exact rule above (advisory / license / ban / source). If a crate you added pulls in an advisory, bump it. If the advisory is transitive and has no upstream fix, it belongs in deny.toml's ignore list with a comment naming the RUSTSEC id and why (see RUSTSEC-2024-0436 there) — and that is a change a maintainer reviews on its own, not something to bury in a feature PR. Reproduce locally: cargo install cargo-deny && cargo deny check."
 
   docs:
     name: Docs — internal link lint
@@ -354,7 +403,16 @@ jobs:
 
       - name: Wasm build (devcontainer path)
         working-directory: contracts/streaming-payments
-        run: stellar contract build
+        # Deliberately *not* chained on the contract job: this one skips fmt,
+        # clippy and tests, so it is the check that says "the contract does not
+        # even compile" when the contract job stopped earlier at a formatting
+        # complaint. Explain that distinction, because the two reds otherwise
+        # look like one unexplained failure and a second unrelated one.
+        run: |
+          if ! stellar contract build; then
+            echo "::error::The contract does not compile. This job runs no fmt/clippy/test steps, so unlike the Contract job it isolates a genuine build error — usually a duplicate StreamError discriminant (E0081), a surface.rs Branch arm that was not extended, or an entrypoint signature change. Reproduce with 'cargo check -p streampay-contract --all-targets' and 'bash scripts/check_error_codes.sh'."
+            exit 1
+          fi
 
       - name: Assert wasm artifact is present and non-empty
         run: |

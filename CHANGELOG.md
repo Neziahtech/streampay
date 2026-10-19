@@ -223,8 +223,45 @@ interface: they are only ever appended to, never renumbered or reused.
   checkout (CRLF in committed blobs has already broken the catalog's content
   hash once — `a3af379`), and `scripts/check_line_endings.sh` + a CI step fail
   on any blob committed with CRLF, naming the files and the fix.
+- **Failure actionability.** The gates that fail most often now say what to do
+  instead of just exiting 1:
+  - `scripts/check_error_codes.sh` (Contract job, *first* step, no toolchain
+    needed) reads the `StreamError` enum and reports duplicated codes, duplicate
+    variant names, and gaps as `file`/`line` annotations, printing the highest
+    code in use and the next free one. The collision two contributor PRs hit when
+    both append "the next free code" is `E0081` four minutes into a build; here it
+    is a one-line message in seconds — and on a PR event the merge ref already
+    contains both sides. It then checks the `surface.rs` registry the same way the
+    contract's matrix test does: a code no `Branch` maps to (and that is not in
+    `RETIRED_CODES`) and a `Branch::…` name used without being declared — the two
+    shapes of the otherwise-unexplained red `Devcontainer — wasm build` check.
+  - `scripts/check_docs_links.mjs` emits each broken link/anchor as a workflow
+    annotation that names the closest existing paths (`did you mean
+    ./ERROR_SURFACE.md?`) and flags case-only matches, which resolve on
+    macOS/Windows checkouts and fail on Linux CI.
+  - The Contract job's Format check regenerates the formatting and uploads it as
+    the `fmt-fix-*` artifact, so a contributor without a local Rust toolchain can
+    `git apply fmt-fix.patch` instead of guessing at rustfmt's diff.
+  - The devcontainer Wasm step explains that it runs no fmt, clippy or test steps, so
+    its failure is the *compile* signal even when the Contract job stopped at a
+    formatting complaint.
+  - `cargo-deny` and the frontend `npm audit` steps each gained a follow-up step
+    that fires only on their own outcome (`steps.<id>.outcome`) and says how to
+    tell "a dependency you added" from "an advisory main already carries" —
+    the second case has turned every open PR red before (`d282de1`) and invites a
+    force-downgrade of a package the contributor never came to change.
+- `npm run codes:check` and `npm run links:check` were added and are chained into
+  `npm run matrix`, so the CI gate list and the local pre-flight are the same
+  commands (CONTRIBUTING and the PR template name them).
 
 ### Fixed
+- Error-catalog pages linked their "Regression / Coverage Probe" to test function
+  names that do not exist (`error_surface_test.rs::stream_not_found` and ~50
+  others), so auditors followed dead links and the docs lint warned on every CI
+  run. Probes are now *derived* from `surface.rs::Branch::error()` — the registry
+  the coverage test itself walks — with the reachability proof linked separately,
+  and generation fails if any emitted symbol does not resolve, so a catalog
+  cannot ship a dead link again.
 - Create-form failures decode to `StreamError` names like every other path
   (they were surfaced as raw error strings).
 

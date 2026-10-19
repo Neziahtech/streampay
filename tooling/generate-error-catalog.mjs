@@ -47,307 +47,330 @@ while ((match = variantRegex.exec(errorsContent)) !== null) {
   });
 }
 
+// Verification probes are *derived*, never curated.
+//
+// Each error page links to the code that proves the failure is reachable. Those
+// links used to be hand-written per code, and most of them named test functions
+// that do not exist — a reader (or an auditor) clicking one landed on a dead
+// symbol, and `scripts/check_docs_links.mjs` reported ~50 warnings on every CI
+// run. Deriving them from the branch registry makes the catalog structurally
+// honest: `surface.rs::Branch::error()` is the same file the contract's coverage
+// test walks, so a code that has a branch has a real probe, and one that does
+// not is retired.
+//
+// Everything emitted here is re-checked against the source before writing, so a
+// future refactor that renames a branch or a test fails generation instead of
+// silently shipping a dead link.
+const fileCache = new Map();
+const sourceOf = (relPath) => {
+  if (!fileCache.has(relPath)) {
+    try {
+      fileCache.set(relPath, readFileSync(resolve(ROOT, relPath), 'utf8'));
+    } catch {
+      fileCache.set(relPath, null);
+    }
+  }
+  return fileCache.get(relPath);
+};
+
+const refExists = (ref) => {
+  const sep = ref.indexOf('::');
+  const path = sep === -1 ? ref : ref.slice(0, sep);
+  const symbol = sep === -1 ? null : ref.slice(sep + 2);
+  const content = sourceOf(path);
+  if (content === null) return false;
+  return symbol === null || content.includes(symbol);
+};
+
+// `Branch::A | Branch::B => StreamError::C` — alternations are wrapped across
+// lines in the registry, so rejoin them before scanning.
+const branchesByError = new Map();
+const registrySource = surfaceContent.replace(/\r?\n\s*\|\s*/g, ' ');
+for (const m of registrySource.matchAll(/Branch::([A-Za-z0-9_]+)((?:\s*\|\s*Branch::[A-Za-z0-9_]+)*)\s*=>\s*StreamError::([A-Za-z0-9_]+)/g)) {
+  const group = [`Branch::${m[1]}`, m[2] || ''];
+  const names = [...group.join(' ').matchAll(/Branch::([A-Za-z0-9_]+)/g)].map((x) => x[1]);
+  const target = m[3];
+  if (!branchesByError.has(target)) branchesByError.set(target, []);
+  for (const name of names) {
+    if (!branchesByError.get(target).includes(name)) branchesByError.get(target).push(name);
+  }
+}
+
+const REGISTRY = 'contracts/streaming-payments/src/surface.rs';
+const MATRIX_TEST =
+  'contracts/streaming-payments/src/error_surface_test.rs::error_surface_matrix_proves_every_branch_is_reachable';
+
+function probeFor(variantName) {
+  const branches = branchesByError.get(variantName) || [];
+  // Retired variants keep their wire code but have no instrumented branch, so
+  // the registry's retirement list is the honest pointer.
+  const ref = branches.length ? `${REGISTRY}::${branches[0]}` : `${REGISTRY}::RETIRED_CODES`;
+  if (!refExists(ref)) {
+    throw new Error(
+      `generated probe '${ref}' for ${variantName} does not resolve in the source — ` +
+        'the branch registry changed shape; fix this generator rather than emitting a dead link'
+    );
+  }
+  return { ref, branches };
+}
+
+for (const ref of [MATRIX_TEST, REGISTRY, 'contracts/streaming-payments/src/errors.rs']) {
+  if (!refExists(ref)) {
+    throw new Error(`catalog cross-link '${ref}' does not resolve in the source`);
+  }
+}
+
 // Curated authoritative remediations, client mappings and tests for StreamPay errors
 const ERROR_METADATA = {
   1: {
     remediation: 'Verify the stream ID from your transaction history or recipient dashboard before retrying.',
     toastClass: 'error',
     retryable: false,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::stream_not_found',
   },
   2: {
     remediation: 'This role check is retired on-chain. Ensure caller owns or is authorized on the stream.',
     toastClass: 'warning',
     retryable: false,
-    testRef: 'contracts/streaming-payments/src/surface.rs::RETIRED_CODES',
   },
   3: {
     remediation: 'This role check is retired on-chain. Ensure caller is the registered stream recipient.',
     toastClass: 'warning',
     retryable: false,
-    testRef: 'contracts/streaming-payments/src/surface.rs::RETIRED_CODES',
   },
   4: {
     remediation: 'This stream was created without cancelable permissions; funds stream until duration ends.',
     toastClass: 'error',
     retryable: false,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::cancel_stream_not_cancellable',
   },
   5: {
     remediation: 'The stream has already completed or been cancelled. No further mutations can be performed.',
     toastClass: 'error',
     retryable: false,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::stream_not_active',
   },
   6: {
     remediation: 'Choose a start timestamp at or after the current ledger close time.',
     toastClass: 'error',
     retryable: true,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::create_start_time_in_past',
   },
   7: {
     remediation: 'Ensure end time is strictly greater than start time by at least 1 second.',
     toastClass: 'error',
     retryable: true,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::create_invalid_time_range',
   },
   8: {
     remediation: 'Stream duration exceeds protocol maximum (10 years). Decrease stream duration.',
     toastClass: 'error',
     retryable: true,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::create_duration_too_long',
   },
   9: {
     remediation: 'Amount must be greater than zero. Enter a positive token amount.',
     toastClass: 'error',
     retryable: true,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::create_deposit_non_positive',
   },
   10: {
     remediation: 'Requested withdrawal exceeds available accrued balance. Check accrued amount or use withdraw max.',
     toastClass: 'warning',
     retryable: true,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::withdraw_amount_exceeds_available',
   },
   11: {
     remediation: 'Calculation overflowed arithmetic bounds. Reduce deposit amount or duration scale.',
     toastClass: 'error',
     retryable: false,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::capacity_overflow',
   },
   12: {
     remediation: 'Sign transaction with the sender, recipient, or designated governor account required for this call.',
     toastClass: 'error',
     retryable: false,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::cancel_stream_not_authorized',
   },
   13: {
     remediation: 'Zero unwithdrawn accrued funds available at current ledger timestamp. Wait for more funds to accrue.',
     toastClass: 'info',
     retryable: true,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::withdraw_max_nothing_to_withdraw',
   },
   14: {
     remediation: 'Protocol fee rate exceeds MAX_FEE_BPS (1,000 bps = 10%). Provide rate at or below cap.',
     toastClass: 'error',
     retryable: true,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::set_fee_rate_too_high',
   },
   15: {
     remediation: 'Caller is not the active treasury governor. Switch to authorized governor wallet.',
     toastClass: 'error',
     retryable: false,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::governor_not_allowed',
   },
   16: {
     remediation: 'No governor nomination is pending. Request current governor to nominate address first.',
     toastClass: 'warning',
     retryable: false,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::accept_governor_no_pending',
   },
   17: {
     remediation: 'Treasury withdrawal amount exceeds collected protocol fees for this asset token.',
     toastClass: 'error',
     retryable: false,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::withdraw_treasury_exceeds_balance',
   },
   18: {
     remediation: 'Intent ID not found. Verify scheduled intent reference before retrying.',
     toastClass: 'error',
     retryable: false,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::intent_not_found',
   },
   19: {
     remediation: 'Scheduled intent is already executed, cancelled, or expired.',
     toastClass: 'error',
     retryable: false,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::intent_not_pending',
   },
   20: {
     remediation: 'Current ledger timestamp has not reached execute_after time. Wait for scheduled window.',
     toastClass: 'info',
     retryable: true,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::intent_not_yet_executable',
   },
   21: {
     remediation: 'Intent has passed expires_at deadline. Reclaim deposited funds via reclaim_expired.',
     toastClass: 'warning',
     retryable: false,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::intent_expired',
   },
   22: {
     remediation: 'Execution window has already opened; scheduled intent can no longer be cancelled.',
     toastClass: 'error',
     retryable: false,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::intent_not_cancellable',
   },
   23: {
     remediation: 'Check occurrence count, interval spacing, and expiration ordering in schedule parameters.',
     toastClass: 'error',
     retryable: true,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::invalid_schedule_parameters',
   },
   24: {
     remediation: 'Stored intent parameters do not match initial hash commitment. Contact security oncall.',
     toastClass: 'error',
     retryable: false,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::intent_params_mismatch',
   },
   25: {
     remediation: 'Cannot reclaim intent funds before expires_at timestamp has passed.',
     toastClass: 'warning',
     retryable: true,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::intent_not_expired',
   },
   26: {
     remediation: 'Token pull failed on stream creation. Check account balance and token allowance for deposit + fee.',
     toastClass: 'error',
     retryable: true,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::deposit_transfer_failed',
   },
   27: {
     remediation: 'Token pull failed during top-up. Ensure sufficient token balance and trustline authorization.',
     toastClass: 'error',
     retryable: true,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::top_up_transfer_failed',
   },
   28: {
     remediation: 'Recipient token payout failed. Verify recipient address has a valid trustline and is authorized.',
     toastClass: 'error',
     retryable: true,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::recipient_payout_failed',
   },
   29: {
     remediation: 'Sender refund payout failed during cancellation. Check sender token account status.',
     toastClass: 'error',
     retryable: true,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::sender_refund_failed',
   },
   30: {
     remediation: 'Treasury payout transfer failed. Ensure destination treasury account accepts this token.',
     toastClass: 'error',
     retryable: true,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::treasury_payout_failed',
   },
   31: {
     remediation: 'Token asset is not on the governance policy allowlist. Propose asset addition via governor.',
     toastClass: 'error',
     retryable: false,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::policy_asset_not_allowed',
   },
   32: {
     remediation: 'Policy change timelock has not elapsed. Wait until queued timelock expiry before applying.',
     toastClass: 'info',
     retryable: true,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::policy_timelock_not_elapsed',
   },
   33: {
     remediation: 'No queued policy change found for this asset. Queue change proposal first.',
     toastClass: 'warning',
     retryable: false,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::policy_no_queued_change',
   },
   34: {
     remediation: 'Policy module is uninitialized. Call initialize_policy with initial governor and parameters.',
     toastClass: 'error',
     retryable: false,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::policy_not_initialized',
   },
   35: {
     remediation: 'No admin handoff proposal is pending. Request current admin to nominate successor.',
     toastClass: 'warning',
     retryable: false,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::policy_no_pending_handoff',
   },
   36: {
     remediation: 'Contract is currently frozen for maintenance. Operations resume once unfrozen.',
     toastClass: 'warning',
     retryable: true,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::contract_frozen',
   },
   37: {
     remediation: 'This operation requires the contract to be frozen first.',
     toastClass: 'error',
     retryable: false,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::contract_not_frozen',
   },
   38: {
     remediation: 'No upgrade proposal is currently pending.',
     toastClass: 'warning',
     retryable: false,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::no_pending_upgrade',
   },
   39: {
     remediation: 'Upgrade timelock delay has not expired. Wait for delay to complete.',
     toastClass: 'info',
     retryable: true,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::timelock_not_expired',
   },
   40: {
     remediation: 'Proposed upgrade delay is shorter than minimum timelock. Increase proposed delay.',
     toastClass: 'error',
     retryable: true,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::upgrade_delay_too_short',
   },
   41: {
     remediation: 'Storage migration has already been executed on this contract instance.',
     toastClass: 'info',
     retryable: false,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::already_migrated',
   },
   42: {
     remediation: 'Stream payment rate is below governance policy floor. Increase flow rate.',
     toastClass: 'error',
     retryable: true,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::policy_rate_below_floor',
   },
   43: {
     remediation: 'Stream payment rate exceeds governance policy ceiling. Decrease flow rate.',
     toastClass: 'error',
     retryable: true,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::policy_rate_above_ceiling',
   },
   44: {
     remediation: 'Stream duration is shorter than minimum policy floor. Increase stream duration.',
     toastClass: 'error',
     retryable: true,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::policy_duration_below_floor',
   },
   45: {
     remediation: 'Stream duration exceeds maximum policy ceiling. Decrease stream duration.',
     toastClass: 'error',
     retryable: true,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::policy_duration_above_ceiling',
   },
   46: {
     remediation: 'Stream deposit is below governance policy floor. Increase initial deposit amount.',
     toastClass: 'error',
     retryable: true,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::policy_deposit_below_floor',
   },
   56: {
     remediation: 'Oracle threshold is invalid. Threshold must be between 1 and the publisher count.',
     toastClass: 'error',
     retryable: true,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::invalid_oracle_threshold',
   },
   57: {
     remediation: 'Oracle publishers are not configured. Governor must set oracle config first.',
     toastClass: 'error',
     retryable: false,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::oracle_publishers_not_configured',
   },
   58: {
     remediation: 'Oracle report timestamp is too far in the past or future. Submit a fresh report.',
     toastClass: 'error',
     retryable: true,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::oracle_report_too_old',
   },
   59: {
     remediation: 'Caller is not an authorized oracle publisher.',
     toastClass: 'error',
     retryable: false,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs::not_oracle_publisher',
   },
 };
 
@@ -360,11 +383,18 @@ for (const item of variants) {
     remediation: 'Contact protocol support if this error persists.',
     toastClass: 'error',
     retryable: false,
-    testRef: 'contracts/streaming-payments/src/error_surface_test.rs',
   };
 
   const isRetired = item.code === 2 || item.code === 3;
   const status = isRetired ? 'Retired (Unreachable)' : 'Active (Enforced)';
+  const probe = probeFor(item.name);
+  const siblingsNote =
+    probe.branches.length > 1
+      ? ` — ${probe.branches.length} registry branches map to this code (${probe.branches
+          .slice(1)
+          .map((b) => `\`${b}\``)
+          .join(', ')} share the probe)`
+      : '';
 
   const pageContent = `# Error #${item.code}: ${item.name}
 
@@ -406,7 +436,8 @@ ${isRetired ? '- *Note*: This code is reserved/retired on-chain to guarantee app
 ---
 
 ## Automated Verification & Cross-Links
-- **Regression / Coverage Probe**: [\`${meta.testRef}\`](../../${meta.testRef})
+- **Instrumented branch**: [\`${probe.ref}\`](../../${probe.ref})${siblingsNote}
+- **Reachability proof**: [\`${MATRIX_TEST}\`](../../${MATRIX_TEST}) — walks every registry branch and asserts each code is produced or retired.
 - **Error Surface Registry**: [\`contracts/streaming-payments/src/surface.rs\`](../../contracts/streaming-payments/src/surface.rs)
 - **Error Enum Definition**: [\`contracts/streaming-payments/src/errors.rs\`](../../contracts/streaming-payments/src/errors.rs)
 `;

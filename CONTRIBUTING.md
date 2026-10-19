@@ -170,16 +170,45 @@ Three things to know:
 failures, so the full pre-flight is:
 
 ```bash
+npm run codes:check       # StreamError codes + registry wiring: E0081 and unwired codes
 npm run lint:fix          # cargo fmt --all, then commit what it changed
 npm run eol:check         # committed CRLF: the usual cause of a whole-file fmt diff
 cargo clippy --all-targets -- -D warnings
 npm run generated:check
+npm run links:check       # every internal link and #anchor in the docs resolves
 cd frontend && npm run lint && npx tsc --noEmit && npm test && npm run build
 ```
 
 `npm run matrix` chains most of this from the repo root. If every command above
 passes on your branch after merging `main`, CI passes too: the gates are the
 same commands, not CI-only logic.
+
+**Error codes and the registry.** `StreamError` is a wire contract: a code is never
+renumbered, reused, or deleted, and an unreachable variant is *retired* in place
+rather than removed. The two mistakes this causes are appending a code another
+merged PR already took (`E0081: discriminant value assigned to multiple variants`)
+and deleting a variant, which silently invalidates existing clients.
+`npm run codes:check` reads the enum and prints the highest code in use plus the
+next free one, so you never have to guess; CI runs it as the *first* step of the
+Contract job, before the toolchain even installs, so a collision is a
+file/line annotation within seconds instead of a compile error four minutes
+later in two jobs at once.
+
+The same script then checks the registry in `contracts/streaming-payments/src/surface.rs`,
+which maps every rejection branch to the code it returns: a code no branch
+produces (and that is not in `RETIRED_CODES`) and a `Branch::…` name the mapping
+uses without declaring it are the two ways a merge leaves the contract not
+compiling — the red `Devcontainer — wasm build` check that says nothing about
+what to add. Both are reported here with the file, the line and the exact fix
+(`pub enum Branch` variant + an arm in `Branch::error()`). This mirrors the
+contract's own matrix test (`every_error_code_is_produced_or_retired`), which
+asserts the same property after a full build.
+
+**Docs links.** `npm run links:check` fails on a relative link or `#heading`
+anchor that does not resolve, and every failure is emitted as a CI annotation
+with the file, the line, and the closest existing paths — because the usual
+cause is a document that was renamed on `main`. (If your branch predates the
+rename, `docs/ERRORS.md` is now `docs/ERROR_SURFACE.md`.)
 
 If `cargo fmt --all -- --check` fails with a diff covering **every line** of a
 file, that file was committed with CRLF (Windows editors and `core.autocrlf=true`
@@ -190,6 +219,10 @@ normalizes the whole tree without losing your work:
 git add --renormalize .
 git commit -m "chore: normalize line endings to LF"
 ```
+
+If you have no local Rust toolchain at all, the Contract job's Format check
+still does: a failing run regenerates the formatting, uploads it as the
+`fmt-fix-*` artifact, and the annotation says to `git apply fmt-fix.patch`.
 
 ## Branch & PR process
 
