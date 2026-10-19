@@ -4754,6 +4754,45 @@ fn create_streams_batch_empty_and_too_large_revert() {
         .unwrap_err()
         .unwrap();
     assert_eq!(err, StreamError::BatchTooLarge);
+
+    // Policy asset allowlist and stream policy bounds are enforced per entry
+    let admin = Address::generate(&f.env);
+    f.client.mock_all_auths().policy_init(&admin);
+    f.client
+        .mock_all_auths()
+        .policy_propose_asset(&f.token, &false);
+    let delay = f.client.policy_timelock_delay();
+    f.env.ledger().with_mut(|li| li.timestamp += delay + 1);
+    f.client.mock_all_auths().policy_execute_asset(&f.token);
+    let now2 = f.env.ledger().timestamp();
+    let mut policy_entries = soroban_sdk::Vec::new(&f.env);
+    policy_entries.push_back(crate::stream::BatchEntry {
+        sender: f.sender.clone(),
+        recipient: f.recipient.clone(),
+        token: f.token.clone(),
+        deposit: 1_000_000,
+        start_time: now2 + DAY,
+        end_time: now2 + 10 * DAY,
+        cancelable: true,
+    });
+    let policy_res = f
+        .client
+        .mock_all_auths()
+        .create_streams_batch(&policy_entries);
+    assert_eq!(
+        policy_res.get(0).unwrap().unwrap_err(),
+        StreamError::PolicyAssetNotAllowed
+    );
+
+    // Frozen contract rejects batch creation
+    f.client.mock_all_auths().set_frozen(&f.governor, &true);
+    let frozen_err = f
+        .client
+        .mock_all_auths()
+        .try_create_streams_batch(&policy_entries)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(frozen_err, StreamError::ContractFrozen);
 }
 
 #[test]
@@ -4800,7 +4839,7 @@ fn create_streams_batch_transfer_failure_isolation() {
     assert!(results.get(0).unwrap().is_ok());
     assert_eq!(
         results.get(1).unwrap().unwrap_err(),
-        StreamError::AmountExceedsAvailable
+        StreamError::DepositTransferFailed
     );
     assert!(results.get(2).unwrap().is_ok());
 

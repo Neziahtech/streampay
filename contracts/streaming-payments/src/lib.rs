@@ -601,6 +601,7 @@ impl StreamingPayments {
         env: Env,
         entries: Vec<BatchEntry>,
     ) -> Result<Vec<Result<u64, StreamError>>, StreamError> {
+        Self::require_not_frozen(&env)?;
         let count = entries.len();
         if count < stream::MIN_BATCH {
             return Err(surface::reject(Branch::CreateBatchEmpty));
@@ -630,6 +631,11 @@ impl StreamingPayments {
             entry.start_time,
             entry.end_time,
         )?;
+        policy::check_asset_allowed(env, &entry.token)?;
+
+        let stream_policy = policy::get_stream_policy(env, Some(entry.token.clone()));
+        let duration = entry.end_time - entry.start_time;
+        policy::validate_stream_args(stream_policy.as_ref(), entry.deposit, duration)?;
 
         let fee_bps = treasury::current_fee_bps(env);
         let fee = treasury::fee_amount(entry.deposit, fee_bps)?;
@@ -638,16 +644,13 @@ impl StreamingPayments {
             .checked_add(fee)
             .ok_or(StreamError::MathOverflow)?;
 
-        let pull_res = TokenClient::new(env, &entry.token).try_transfer_from(
-            &env.current_contract_address(),
+        pull(
+            env,
+            &entry.token,
             &entry.sender,
-            &env.current_contract_address(),
-            &pull_amount,
-        );
-        match pull_res {
-            Ok(Ok(())) => {}
-            _ => return Err(StreamError::AmountExceedsAvailable),
-        }
+            pull_amount,
+            Branch::CreateDepositTransferFailed,
+        )?;
 
         let id = stream::next_stream_id(env);
         let s = Stream {
