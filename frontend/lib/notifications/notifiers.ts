@@ -53,7 +53,9 @@ export class WebhookNotifier implements Notifier {
       "User-Agent": "StreamPay-Notifier/1.0",
       "Idempotency-Key": notification.idempotencyKey,
       "X-StreamPay-Timestamp": String(timestamp),
-      ...(signature ? { "X-StreamPay-Signature": `t=${timestamp},v1=${signature}` } : {}),
+      ...(signature
+        ? { "X-StreamPay-Signature": `t=${timestamp},v1=${signature}` }
+        : {}),
       ...(config.customHeaders ?? {}),
     };
 
@@ -76,7 +78,8 @@ export class WebhookNotifier implements Notifier {
       }
 
       // 4xx client errors (except 429) mean the endpoint rejected the payload format or auth: fatal, do not retry
-      const isClientError = res.status >= 400 && res.status < 500 && res.status !== 429;
+      const isClientError =
+        res.status >= 400 && res.status < 500 && res.status !== 429;
       return {
         success: false,
         deliveredAt: now,
@@ -97,7 +100,16 @@ export class WebhookNotifier implements Notifier {
 }
 
 export interface EmailProvider {
-  send(to: string, subject: string, text: string): Promise<{ ok: boolean; status?: number; error?: string; isBounce?: boolean }>;
+  send(
+    to: string,
+    subject: string,
+    text: string,
+  ): Promise<{
+    ok: boolean;
+    status?: number;
+    error?: string;
+    isBounce?: boolean;
+  }>;
 }
 
 /**
@@ -156,7 +168,10 @@ export class EmailNotifier implements Notifier {
     };
   }
 
-  private formatContent(notification: OutgoingNotification): { subject: string; body: string } {
+  private formatContent(notification: OutgoingNotification): {
+    subject: string;
+    body: string;
+  } {
     const event = notification.event;
     const typeLabel = event.type.toUpperCase();
     const streamId = event.payload.streamId;
@@ -171,13 +186,23 @@ export class EmailNotifier implements Notifier {
         event.payload.reason ? `Reason: ${event.payload.reason}` : "",
         `Time: ${new Date(event.timestamp * 1000).toUTCString()}`,
         `Idempotency Key: ${notification.idempotencyKey}`,
-      ].filter(Boolean).join("\n"),
+      ]
+        .filter(Boolean)
+        .join("\n"),
     };
   }
 }
 
 export interface TelegramClient {
-  sendMessage(chatId: string, text: string): Promise<{ ok: boolean; statusCode?: number; retryAfter?: number; error?: string }>;
+  sendMessage(
+    chatId: string,
+    text: string,
+  ): Promise<{
+    ok: boolean;
+    statusCode?: number;
+    retryAfter?: number;
+    error?: string;
+  }>;
 }
 
 /**
@@ -246,7 +271,9 @@ export class TelegramNotifier implements Notifier {
       event.payload.amount ? `*Amount:* \`${event.payload.amount}\`` : "",
       event.payload.reason ? `*Details:* ${event.payload.reason}` : "",
       `*Time:* ${new Date(event.timestamp * 1000).toISOString()}`,
-    ].filter(Boolean).join("\n");
+    ]
+      .filter(Boolean)
+      .join("\n");
   }
 }
 

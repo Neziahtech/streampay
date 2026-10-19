@@ -184,10 +184,7 @@
     "schemas": {
       "CurvePoint": {
         "type": "object",
-        "required": [
-          "timestamp",
-          "accrued"
-        ],
+        "required": ["timestamp", "accrued"],
         "properties": {
           "timestamp": {
             "type": "integer",
@@ -262,10 +259,7 @@
       },
       "ErrorResponse": {
         "type": "object",
-        "required": [
-          "error",
-          "message"
-        ],
+        "required": ["error", "message"],
         "properties": {
           "error": {
             "type": "string",
@@ -279,11 +273,7 @@
       },
       "RateLimitErrorResponse": {
         "type": "object",
-        "required": [
-          "error",
-          "message",
-          "retryAfter"
-        ],
+        "required": ["error", "message", "retryAfter"],
         "properties": {
           "error": {
             "type": "string",

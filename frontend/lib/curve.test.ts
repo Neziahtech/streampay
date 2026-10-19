@@ -8,6 +8,7 @@ import {
   computeCurve,
   type StreamData,
   ValidationError,
+  MAX_POINTS_LIMIT,
 } from "./curve.ts";
 import { computeAccruedAt } from "./accrual.ts";
 
@@ -37,7 +38,7 @@ describe("Curve Computation & Mathematical Correctness", () => {
         mockStream.deposit,
         mockStream.startTime,
         mockStream.endTime,
-        BigInt(point.timestamp)
+        BigInt(point.timestamp),
       );
       assert.strictEqual(point.accrued, expected.toString());
     }
@@ -112,10 +113,16 @@ describe("State Hash & ETag Generation", () => {
     const changedDeposit = computeStateHash({ ...mockStream, deposit: 999n });
     assert.notStrictEqual(originalHash, changedDeposit);
 
-    const changedLedger = computeStateHash({ ...mockStream, asOfLedger: 500001 });
+    const changedLedger = computeStateHash({
+      ...mockStream,
+      asOfLedger: 500001,
+    });
     assert.notStrictEqual(originalHash, changedLedger);
 
-    const changedStatus = computeStateHash({ ...mockStream, status: "Cancelled" });
+    const changedStatus = computeStateHash({
+      ...mockStream,
+      status: "Cancelled",
+    });
     assert.notStrictEqual(originalHash, changedStatus);
   });
 
@@ -154,7 +161,7 @@ describe("State Hash & ETag Generation", () => {
     // In comma-separated list
     assert.strictEqual(
       matchesIfNoneMatch('"xyz999", W/"abcd1234ef5678", "foo"', etag),
-      true
+      true,
     );
     // Wildcard
     assert.strictEqual(matchesIfNoneMatch("*", etag), true);
@@ -185,61 +192,67 @@ describe("Input Validation", () => {
   it("rejects missing or malformed stream id", () => {
     assert.throws(
       () => validateQueryParams({ id: "", from: "0", to: "10", step: "1" }),
-      (err: ValidationError) => err.code === "INVALID_STREAM_ID"
+      (err: ValidationError) => err.code === "INVALID_STREAM_ID",
     );
     assert.throws(
       () => validateQueryParams({ id: "-5", from: "0", to: "10", step: "1" }),
-      (err: ValidationError) => err.code === "INVALID_STREAM_ID"
+      (err: ValidationError) => err.code === "INVALID_STREAM_ID",
     );
     assert.throws(
       () => validateQueryParams({ id: "abc", from: "0", to: "10", step: "1" }),
-      (err: ValidationError) => err.code === "INVALID_STREAM_ID"
+      (err: ValidationError) => err.code === "INVALID_STREAM_ID",
     );
   });
 
   it("rejects from > to", () => {
     assert.throws(
-      () => validateQueryParams({ id: "1", from: "2000", to: "1000", step: "10" }),
-      (err: ValidationError) => err.code === "FROM_GREATER_THAN_TO"
+      () =>
+        validateQueryParams({ id: "1", from: "2000", to: "1000", step: "10" }),
+      (err: ValidationError) => err.code === "FROM_GREATER_THAN_TO",
     );
   });
 
   it("rejects step <= 0", () => {
     assert.throws(
       () => validateQueryParams({ id: "1", from: "100", to: "200", step: "0" }),
-      (err: ValidationError) => err.code === "INVALID_STEP_POSITIVE"
+      (err: ValidationError) => err.code === "INVALID_STEP_POSITIVE",
     );
     assert.throws(
-      () => validateQueryParams({ id: "1", from: "100", to: "200", step: "-5" }),
-      (err: ValidationError) => err.code === "INVALID_STEP_POSITIVE"
+      () =>
+        validateQueryParams({ id: "1", from: "100", to: "200", step: "-5" }),
+      (err: ValidationError) => err.code === "INVALID_STEP_POSITIVE",
     );
   });
 
   it("rejects negative from/to timestamps", () => {
     assert.throws(
       () => validateQueryParams({ id: "1", from: "-10", to: "200", step: "1" }),
-      (err: ValidationError) => err.code === "NEGATIVE_FROM"
+      (err: ValidationError) => err.code === "NEGATIVE_FROM",
     );
     assert.throws(
       () => validateQueryParams({ id: "1", from: "10", to: "-200", step: "1" }),
-      (err: ValidationError) => err.code === "NEGATIVE_TO"
+      (err: ValidationError) => err.code === "NEGATIVE_TO",
     );
   });
 
   it("enforces hard point limit to prevent unbounded computations", () => {
     // 0 to 1000 with step 1 = 1001 points > 1000
     assert.throws(
-      () => validateQueryParams({ id: "1", from: "0", to: "1000", step: "1" }, 1000),
+      () =>
+        validateQueryParams(
+          { id: "1", from: "0", to: "1000", step: "1" },
+          1000,
+        ),
       (err: ValidationError) =>
         err.code === "POINT_LIMIT_EXCEEDED" &&
         err.message.includes("1001 points") &&
-        err.message.includes("1000")
+        err.message.includes("1000"),
     );
 
     // Exactly 1000 points (0 to 999 by 1) succeeds
     const ok = validateQueryParams(
       { id: "1", from: "0", to: "999", step: "1" },
-      1000
+      1000,
     );
     assert.strictEqual(ok.from, 0);
     assert.strictEqual(ok.to, 999);

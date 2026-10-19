@@ -73,6 +73,14 @@ pub enum ModelError {
     SenderRefundFailed = 29,
     /// Payout of collected fees in withdraw_treasury failed.
     TreasuryPayoutFailed = 30,
+    /// Claim amount is below the transaction fee floor (`MIN_CLAIM_AMOUNT`); not worth claiming.
+    ClaimAmountTooSmall = 31,
+    /// Stream deposit is below the economically viable threshold (`MIN_STREAM_AMOUNT`); dust streams are rejected.
+    StreamTooSmall = 32,
+    /// Sweep was attempted on a stream that is not fully depleted (remaining_balance != 0).
+    StreamNotDepleted = 33,
+    /// Sweep was attempted before the stream's `end_time`; the stream has not expired.
+    StreamNotExpired = 34,
 }
 
 impl ModelError {

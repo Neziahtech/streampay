@@ -2,12 +2,29 @@
 
 import Link from "next/link";
 import Script from "next/script";
-import { useCallback, useState } from "react";
+import { useEffect, useState } from "react";
 
 export default function DocsPage() {
   const [swaggerReady, setSwaggerReady] = useState(false);
 
-  const initSwagger = useCallback(() => {
+    useEffect(() => {
+      // If SwaggerUI is already on window
+      const win = window as unknown as {
+        SwaggerUIBundle?: (config: Record<string, unknown>) => void;
+      };
+      if (win.SwaggerUIBundle) {
+        win.SwaggerUIBundle({
+          url: "/openapi.json",
+          dom_id: "#swagger-ui",
+          deepLinking: true,
+          presets: [],
+          layout: "BaseLayout",
+        });
+        queueMicrotask(() => setSwaggerReady(true));
+      }
+    }, []);
+
+  const initSwagger = () => {
     const win = window as unknown as {
       SwaggerUIBundle?: (config: Record<string, unknown>) => void;
     };
@@ -21,19 +38,19 @@ export default function DocsPage() {
       });
       setSwaggerReady(true);
     }
-  }, []);
+  };
 
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto", padding: "2rem 1.5rem" }}>
       {/* Swagger UI styles */}
       <link
         rel="stylesheet"
-        href="https://unpkg.com/swagger-ui-dist@5.18.2/swagger-ui-css"
+        href="https://unpkg.com/swagger-ui-dist@5.18.2/swagger-ui.css"
       />
 
       <Script
         src="https://unpkg.com/swagger-ui-dist@5.18.2/swagger-ui-bundle.js"
-        onReady={initSwagger}
+        onLoad={initSwagger}
       />
 
       {/* Header */}
@@ -50,7 +67,14 @@ export default function DocsPage() {
         >
           ← Back to StreamPay App
         </Link>
-        <div style={{ display: "flex", alignItems: "center", gap: "1rem", flexWrap: "wrap" }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "1rem",
+            flexWrap: "wrap",
+          }}
+        >
           <h1 style={{ fontSize: "2.25rem", fontWeight: 700, margin: 0 }}>
             ⚡ Accrual Curve API Docs
           </h1>
@@ -84,9 +108,12 @@ export default function DocsPage() {
             Raw openapi.json ↗
           </a>
         </div>
-        <p style={{ color: "#94a3b8", fontSize: "1.05rem", marginTop: "0.5rem" }}>
-          Continuous on-the-fly accrual curves computed directly from contract state with ETag
-          caching, honest staleness indicators, and shared RPC rate budgeting.
+        <p
+          style={{ color: "#94a3b8", fontSize: "1.05rem", marginTop: "0.5rem" }}
+        >
+          Continuous on-the-fly accrual curves computed directly from contract
+          state with ETag caching, honest staleness indicators, and shared RPC
+          rate budgeting.
         </p>
       </div>
 
@@ -107,12 +134,34 @@ export default function DocsPage() {
             padding: "1.25rem",
           }}
         >
-          <h3 style={{ fontSize: "1.1rem", margin: "0 0 0.5rem 0", color: "#38bdf8" }}>
+          <h3
+            style={{
+              fontSize: "1.1rem",
+              margin: "0 0 0.5rem 0",
+              color: "#38bdf8",
+            }}
+          >
             1. Computed, Never Stored
           </h3>
-          <p style={{ color: "#cbd5e1", fontSize: "0.9rem", lineHeight: 1.5, margin: 0 }}>
-            Curve points are derived in real-time using the contract’s exact pure math:
-            <code style={{ display: "block", margin: "0.5rem 0", background: "#1e293b", padding: "0.4rem", borderRadius: "4px" }}>
+          <p
+            style={{
+              color: "#cbd5e1",
+              fontSize: "0.9rem",
+              lineHeight: 1.5,
+              margin: 0,
+            }}
+          >
+            Curve points are derived in real-time using the contract’s exact
+            pure math:
+            <code
+              style={{
+                display: "block",
+                margin: "0.5rem 0",
+                background: "#1e293b",
+                padding: "0.4rem",
+                borderRadius: "4px",
+              }}
+            >
               streamed(t) = deposit × elapsed / duration
             </code>
             Zero points are persisted in databases or files.
@@ -127,13 +176,31 @@ export default function DocsPage() {
             padding: "1.25rem",
           }}
         >
-          <h3 style={{ fontSize: "1.1rem", margin: "0 0 0.5rem 0", color: "#38bdf8" }}>
+          <h3
+            style={{
+              fontSize: "1.1rem",
+              margin: "0 0 0.5rem 0",
+              color: "#38bdf8",
+            }}
+          >
             2. State Hash & ETag Caching
           </h3>
-          <p style={{ color: "#cbd5e1", fontSize: "0.9rem", lineHeight: 1.5, margin: 0 }}>
-            Response includes exact <code style={{ color: "#fcd34d" }}>X-State-Hash</code> computed as SHA-256 of on-chain state.
-            ETag is derived from <code style={{ color: "#fcd34d" }}>hash:id:from:to:step</code>. Clients sending
-            <code style={{ color: "#fcd34d" }}>If-None-Match</code> receive <code style={{ color: "#4ade80" }}>304 Not Modified</code> with zero payload.
+          <p
+            style={{
+              color: "#cbd5e1",
+              fontSize: "0.9rem",
+              lineHeight: 1.5,
+              margin: 0,
+            }}
+          >
+            Response includes exact{" "}
+            <code style={{ color: "#fcd34d" }}>X-State-Hash</code> computed as
+            SHA-256 of on-chain state. ETag is derived from{" "}
+            <code style={{ color: "#fcd34d" }}>hash:id:from:to:step</code>.
+            Clients sending
+            <code style={{ color: "#fcd34d" }}>If-None-Match</code> receive{" "}
+            <code style={{ color: "#4ade80" }}>304 Not Modified</code> with zero
+            payload.
           </p>
         </div>
 
@@ -145,13 +212,30 @@ export default function DocsPage() {
             padding: "1.25rem",
           }}
         >
-          <h3 style={{ fontSize: "1.1rem", margin: "0 0 0.5rem 0", color: "#38bdf8" }}>
+          <h3
+            style={{
+              fontSize: "1.1rem",
+              margin: "0 0 0.5rem 0",
+              color: "#38bdf8",
+            }}
+          >
             3. Honest Staleness Headers
           </h3>
-          <p style={{ color: "#cbd5e1", fontSize: "0.9rem", lineHeight: 1.5, margin: 0 }}>
-            Every response discloses exact freshness: <code style={{ color: "#fcd34d" }}>X-As-Of-Ledger</code>,
-            <code style={{ color: "#fcd34d" }}>X-As-Of-Timestamp</code>, and <code style={{ color: "#fcd34d" }}>Age</code>. If indexer lag exceeds threshold (&gt;60s), an explicit
-            <code style={{ color: "#f87171" }}>Warning: 199</code> header is emitted.
+          <p
+            style={{
+              color: "#cbd5e1",
+              fontSize: "0.9rem",
+              lineHeight: 1.5,
+              margin: 0,
+            }}
+          >
+            Every response discloses exact freshness:{" "}
+            <code style={{ color: "#fcd34d" }}>X-As-Of-Ledger</code>,
+            <code style={{ color: "#fcd34d" }}>X-As-Of-Timestamp</code>, and{" "}
+            <code style={{ color: "#fcd34d" }}>Age</code>. If indexer lag
+            exceeds threshold (&gt;60s), an explicit
+            <code style={{ color: "#f87171" }}>Warning: 199</code> header is
+            emitted.
           </p>
         </div>
 
@@ -163,13 +247,29 @@ export default function DocsPage() {
             padding: "1.25rem",
           }}
         >
-          <h3 style={{ fontSize: "1.1rem", margin: "0 0 0.5rem 0", color: "#38bdf8" }}>
+          <h3
+            style={{
+              fontSize: "1.1rem",
+              margin: "0 0 0.5rem 0",
+              color: "#38bdf8",
+            }}
+          >
             4. Shared RPC Budget Manager (#56)
           </h3>
-          <p style={{ color: "#cbd5e1", fontSize: "0.9rem", lineHeight: 1.5, margin: 0 }}>
-            Calls draw from a unified rate budget protecting both node RPC quotas and per-client budgets.
-            Exhaustion triggers <code style={{ color: "#f87171" }}>429 Too Many Requests</code> with a standard
-            <code style={{ color: "#fcd34d" }}>Retry-After</code> header, serving stale cache when safe.
+          <p
+            style={{
+              color: "#cbd5e1",
+              fontSize: "0.9rem",
+              lineHeight: 1.5,
+              margin: 0,
+            }}
+          >
+            Calls draw from a unified rate budget protecting both node RPC
+            quotas and per-client budgets. Exhaustion triggers{" "}
+            <code style={{ color: "#f87171" }}>429 Too Many Requests</code> with
+            a standard
+            <code style={{ color: "#fcd34d" }}>Retry-After</code> header,
+            serving stale cache when safe.
           </p>
         </div>
       </div>
@@ -180,12 +280,15 @@ export default function DocsPage() {
           background: "#ffffff",
           borderRadius: "8px",
           padding: "1.5rem",
-          boxShadow: "0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)",
+          boxShadow:
+            "0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)",
         }}
       >
         <div id="swagger-ui">
           {!swaggerReady && (
-            <p style={{ color: "#64748b", textAlign: "center", padding: "2rem" }}>
+            <p
+              style={{ color: "#64748b", textAlign: "center", padding: "2rem" }}
+            >
               Loading interactive OpenAPI schema viewer...
             </p>
           )}

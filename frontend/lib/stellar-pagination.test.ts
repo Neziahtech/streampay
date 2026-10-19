@@ -1,14 +1,11 @@
 import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
-import {
-  paginateStreamsByCursor,
-  type StreamView,
-} from "./pagination.ts";
+import { paginateStreamsByCursor, type StreamView } from "./pagination.ts";
 import { computeAvailable } from "./accrual.ts";
 
 function createMockStream(
   id: number | string,
-  overrides: Partial<StreamView> = {}
+  overrides: Partial<StreamView> = {},
 ): StreamView {
   return {
     id: String(id),
@@ -40,7 +37,7 @@ describe("paginateStreamsByCursor", () => {
   it("handles address with 100+ streams across multiple cursor pages", () => {
     // Generate 125 streams with monotonic IDs 1..125
     const allStreams: StreamView[] = Array.from({ length: 125 }, (_, i) =>
-      createMockStream(i + 1)
+      createMockStream(i + 1),
     );
 
     // Page 1: limit 20, default forward
@@ -139,7 +136,7 @@ describe("paginateStreamsByCursor", () => {
         s.endTime,
         BigInt(s.withdrawn),
         s.status,
-        BigInt(s.startTime + 1000)
+        BigInt(s.startTime + 1000),
       );
       assert.equal(avail, 0n);
     }
@@ -160,7 +157,7 @@ describe("paginateStreamsByCursor", () => {
     const page1 = paginateStreamsByCursor(streams, { limit: 2, status: "all" });
     assert.deepEqual(
       page1.streams.map((s) => s.id),
-      ["6", "5"]
+      ["6", "5"],
     );
     assert.equal(page1.nextCursor, "5");
 
@@ -178,7 +175,7 @@ describe("paginateStreamsByCursor", () => {
     // Cursor pagination returns exactly [4, 3] without duplicate or shift!
     assert.deepEqual(
       page2.streams.map((s) => s.id),
-      ["4", "3"]
+      ["4", "3"],
     );
     assert.equal(page2.streams[0].status, "Cancelled");
     assert.equal(page2.streams[1].status, "Active");
@@ -207,7 +204,7 @@ describe("paginateStreamsByCursor", () => {
       end,
       0n,
       "Active",
-      BigInt(asOf)
+      BigInt(asOf),
     );
     assert.equal(serverAvailable, 50_000n);
 
@@ -219,7 +216,7 @@ describe("paginateStreamsByCursor", () => {
       end,
       0n,
       "Active",
-      BigInt(clientNow)
+      BigInt(clientNow),
     );
     assert.equal(clientAvailable, 50_500n);
   });

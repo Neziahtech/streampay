@@ -5,13 +5,14 @@
 export type NotificationChannelType = "webhook" | "email" | "telegram";
 
 export type StreamEventType =
-  | "claim"       // Recipient claimed/withdrew accrued funds
-  | "liveness"    // TTL Sentinel warning/critical cliff alert
-  | "cancel"      // Stream was cancelled
-  | "created"     // New stream created
-  | "topped_up";  // Additional funds deposited into stream
+  | "claim" // Recipient claimed/withdrew accrued funds
+  | "liveness" // TTL Sentinel warning/critical cliff alert
+  | "cancel" // Stream was cancelled
+  | "created" // New stream created
+  | "topped_up"; // Additional funds deposited into stream
 
-export type NotificationDigestOption = "instant" | "hourly_digest" | "daily_digest";
+export type NotificationDigestOption =
+  "instant" | "hourly_digest" | "daily_digest";
 
 export type SubscriptionStatus = "active" | "paused" | "bounced";
 

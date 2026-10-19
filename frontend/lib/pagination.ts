@@ -47,7 +47,7 @@ export interface PaginatedStreamsResponse {
 export function paginateStreamsByCursor(
   allStreams: StreamView[],
   options: CursorPaginationOptions = {},
-  asOfTimestamp: number = Math.floor(Date.now() / 1000)
+  asOfTimestamp: number = Math.floor(Date.now() / 1000),
 ): PaginatedStreamsResponse {
   const {
     cursor = null,
@@ -92,7 +92,10 @@ export function paginateStreamsByCursor(
     const hasMore = sorted.length > pageSize;
     return {
       streams: pageItems,
-      nextCursor: hasMore && pageItems.length > 0 ? pageItems[pageItems.length - 1].id : null,
+      nextCursor:
+        hasMore && pageItems.length > 0
+          ? pageItems[pageItems.length - 1].id
+          : null,
       prevCursor: null,
       hasMore,
       hasPrev: false,
@@ -110,7 +113,10 @@ export function paginateStreamsByCursor(
     const hasMore = sorted.length > pageSize;
     return {
       streams: pageItems,
-      nextCursor: hasMore && pageItems.length > 0 ? pageItems[pageItems.length - 1].id : null,
+      nextCursor:
+        hasMore && pageItems.length > 0
+          ? pageItems[pageItems.length - 1].id
+          : null,
       prevCursor: null,
       hasMore,
       hasPrev: false,
@@ -128,7 +134,10 @@ export function paginateStreamsByCursor(
 
     return {
       streams: pageItems,
-      nextCursor: hasMore && pageItems.length > 0 ? pageItems[pageItems.length - 1].id : null,
+      nextCursor:
+        hasMore && pageItems.length > 0
+          ? pageItems[pageItems.length - 1].id
+          : null,
       prevCursor: hasPrev && pageItems.length > 0 ? pageItems[0].id : null,
       hasMore,
       hasPrev,
@@ -140,13 +149,18 @@ export function paginateStreamsByCursor(
     // In sorted (descending), items with id > cursor appear BEFORE cursor.
     const beforeCursor = sorted.filter((s) => BigInt(s.id) > cursorBigInt);
     // Take the closest pageSize items ending right before the cursor
-    const pageItems = beforeCursor.slice(Math.max(0, beforeCursor.length - pageSize));
+    const pageItems = beforeCursor.slice(
+      Math.max(0, beforeCursor.length - pageSize),
+    );
     const hasPrev = beforeCursor.length > pageSize;
     const hasMore = sorted.some((s) => BigInt(s.id) <= cursorBigInt);
 
     return {
       streams: pageItems,
-      nextCursor: hasMore && pageItems.length > 0 ? pageItems[pageItems.length - 1].id : null,
+      nextCursor:
+        hasMore && pageItems.length > 0
+          ? pageItems[pageItems.length - 1].id
+          : null,
       prevCursor: hasPrev && pageItems.length > 0 ? pageItems[0].id : null,
       hasMore,
       hasPrev,

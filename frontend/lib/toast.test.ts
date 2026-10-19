@@ -43,7 +43,10 @@ describe("Toast System", () => {
     store.removeToast(id2);
     const remaining = store.getToasts();
     assert.strictEqual(remaining.length, 2);
-    assert.strictEqual(remaining.find((t) => t.id === id2), undefined);
+    assert.strictEqual(
+      remaining.find((t) => t.id === id2),
+      undefined,
+    );
     assert.strictEqual(remaining[0].id, id1);
     assert.strictEqual(remaining[1].id, id3);
   });
