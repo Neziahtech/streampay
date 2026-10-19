@@ -454,3 +454,76 @@ fn expired_challenge_nonce_rejected() {
     });
     assert_eq!(result, Err(PasskeyError::ChallengeAlreadyUsed));
 }
+
+#[test]
+fn invalid_bs_without_be_flag_rejected() {
+    let env = new_env();
+    let (_, client) = deploy(&env);
+    let owner = Address::generate(&env);
+    let rp_id_hash = [0x99u8; 32];
+    let (x, y) = fake_pub_key();
+    client.register(
+        &owner,
+        &to_bytes32(&env, &rp_id_hash),
+        &to_bytes32(&env, &x),
+        &to_bytes32(&env, &y),
+        &0u32,
+    );
+
+    let challenge = [0x01u8; 32];
+    let cdj = make_client_data_json(&challenge);
+    // UP (0x01) | BS (0x10) with BE (0x08) == 0 is invalid per WebAuthn Level 3 §6.1.
+    let auth_data_bytes = make_auth_data(&rp_id_hash, 0x11);
+    let result = client.try_verify_and_record(
+        &owner,
+        &to_bytes(&env, &auth_data_bytes),
+        &to_bytes(&env, cdj.as_bytes()),
+        &to_bytes32(&env, &challenge),
+        &to_bytes32(&env, &[1u8; 32]),
+        &to_bytes32(&env, &[1u8; 32]),
+    );
+    assert_eq!(result, Err(Ok(PasskeyError::SignatureInvalid)));
+}
+
+#[test]
+fn zero_or_high_s_signature_returns_signature_invalid() {
+    let env = new_env();
+    let (_, client) = deploy(&env);
+    let owner = Address::generate(&env);
+    let rp_id_hash = [0x9Au8; 32];
+    let (x, y) = fake_pub_key();
+    client.register(
+        &owner,
+        &to_bytes32(&env, &rp_id_hash),
+        &to_bytes32(&env, &x),
+        &to_bytes32(&env, &y),
+        &0u32,
+    );
+
+    let challenge = [0x02u8; 32];
+    let cdj = make_client_data_json(&challenge);
+    let auth_data_bytes = make_auth_data(&rp_id_hash, 0x01);
+
+    // Zero r/s rejected with SignatureInvalid instead of host trap.
+    let res_zero = client.try_verify_and_record(
+        &owner,
+        &to_bytes(&env, &auth_data_bytes),
+        &to_bytes(&env, cdj.as_bytes()),
+        &to_bytes32(&env, &challenge),
+        &to_bytes32(&env, &[0u8; 32]),
+        &to_bytes32(&env, &[0u8; 32]),
+    );
+    assert_eq!(res_zero, Err(Ok(PasskeyError::SignatureInvalid)));
+
+    // High-S (s > n/2) rejected with SignatureInvalid.
+    let res_high_s = client.try_verify_and_record(
+        &owner,
+        &to_bytes(&env, &auth_data_bytes),
+        &to_bytes(&env, cdj.as_bytes()),
+        &to_bytes32(&env, &challenge),
+        &to_bytes32(&env, &[1u8; 32]),
+        &to_bytes32(&env, &[0xFFu8; 32]),
+    );
+    assert_eq!(res_high_s, Err(Ok(PasskeyError::SignatureInvalid)));
+}
+

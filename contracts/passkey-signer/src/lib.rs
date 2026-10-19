@@ -135,6 +135,7 @@ impl PasskeySigner {
         flags: u32,
     ) -> Result<(), PasskeyError> {
         owner.require_auth();
+        crypto::validate_p256_coords(&x, &y)?;
         registry::put_credential(
             &env,
             &owner,
@@ -201,6 +202,11 @@ impl PasskeySigner {
     ) -> Result<(), PasskeyError> {
         // Step 1: load credential.
         let cred = registry::get_credential(&env, &owner)?;
+
+        // Fail fast on replayed challenges before running SHA-256 / P-256 verification.
+        if registry::is_challenge_used(&env, &challenge) {
+            return Err(PasskeyError::ChallengeAlreadyUsed);
+        }
 
         // Step 2–4: verify authData.
         crypto::verify_auth_data(&env, &auth_data, &cred.rp_id_hash, cred.flags)?;
