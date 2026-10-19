@@ -141,6 +141,7 @@ export class RpcManager {
   private bucket: TokenBucket;
   private opts: Required<ManagerOptions>;
   private healthTimer?: ReturnType<typeof setInterval>;
+  private recoveryTimers: Set<ReturnType<typeof setTimeout>> = new Set();
   private bestLedger = 0;
 
   constructor(options: ManagerOptions) {
@@ -185,6 +186,7 @@ export class RpcManager {
       () => void this.checkAllEndpoints(),
       this.opts.healthCheckIntervalMs
     );
+    this.healthTimer.unref?.();
   }
 
   /** Stop health-check timer and release resources. */
@@ -193,6 +195,10 @@ export class RpcManager {
       clearInterval(this.healthTimer);
       this.healthTimer = undefined;
     }
+    for (const timer of this.recoveryTimers) {
+      clearTimeout(timer);
+    }
+    this.recoveryTimers.clear();
   }
 
   // ── Public RPC call ────────────────────────────────────────────────────────
@@ -288,6 +294,7 @@ export class RpcManager {
     const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: req.method, params: req.params });
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.opts.timeoutMs);
+    let recordedFailure = false;
 
     try {
       const resp = await fetch(url, {
@@ -298,16 +305,19 @@ export class RpcManager {
       });
 
       if (resp.status === 429) {
+        recordedFailure = true;
         this.recordFailure(url, "429");
         throw Object.assign(new Error(`${url}: HTTP 429 rate limited`), { code: "RATE_LIMITED" });
       }
       if (!resp.ok) {
+        recordedFailure = true;
         this.recordFailure(url, `HTTP ${resp.status}`);
         throw new Error(`${url}: HTTP ${resp.status}`);
       }
 
       const json = (await resp.json()) as { result?: T; error?: { message: string } };
       if (json.error) {
+        recordedFailure = true;
         this.recordFailure(url, json.error.message);
         throw new Error(`${url} RPC: ${json.error.message}`);
       }
@@ -321,8 +331,12 @@ export class RpcManager {
       return json.result as T;
     } catch (e) {
       if ((e as Error).name === "AbortError") {
+        recordedFailure = true;
         this.recordFailure(url, "timeout");
         throw Object.assign(new Error(`${url}: request timed out after ${this.opts.timeoutMs} ms`), { code: "TIMEOUT" });
+      }
+      if (!recordedFailure) {
+        this.recordFailure(url, (e as Error)?.message ?? "network error");
       }
       throw e;
     } finally {
@@ -332,8 +346,8 @@ export class RpcManager {
 
   /**
    * Hedged read: fires against primary, then if no response within
-   * `hedgeDelayMs`, fires against an alternative. The faster winner is
-   * returned; the slower is cancelled.
+   * `hedgeDelayMs` (or if primary errors immediately), fires against an
+   * alternative. The faster winner is returned; only rejects if both fail.
    */
   private async hedgedCall<T>(req: JsonRpcRequest, primary: string): Promise<T> {
     const alternative = this.pickAlternative(primary);
@@ -343,27 +357,50 @@ export class RpcManager {
 
     return new Promise<T>((resolve, reject) => {
       let settled = false;
-      const settle = (fn: () => void) => {
-        if (!settled) { settled = true; fn(); }
+      let alternativeStarted = false;
+      let primaryError: unknown = null;
+      let alternativeError: unknown = null;
+      let failures = 0;
+
+      const settleResolve = (v: T) => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(hedgeTimer);
+          resolve(v);
+        }
+      };
+
+      const recordLegFailure = (err: unknown, isPrimary: boolean) => {
+        if (settled) return;
+        if (isPrimary) primaryError = err;
+        else alternativeError = err;
+        failures += 1;
+        if (!alternativeStarted) {
+          clearTimeout(hedgeTimer);
+          startAlternative();
+          return;
+        }
+        if (failures >= 2) {
+          settled = true;
+          reject(primaryError ?? alternativeError ?? err);
+        }
+      };
+
+      const startAlternative = () => {
+        if (settled || alternativeStarted) return;
+        alternativeStarted = true;
+        this.singleCall<T>(req, alternative)
+          .then((v) => settleResolve(v))
+          .catch((e) => recordLegFailure(e, false));
       };
 
       // Primary fires immediately.
-      const primaryPromise = this.singleCall<T>(req, primary)
-        .then((v) => settle(() => resolve(v)))
-        .catch((e) => settle(() => reject(e)));
+      this.singleCall<T>(req, primary)
+        .then((v) => settleResolve(v))
+        .catch((e) => recordLegFailure(e, true));
 
       // Alternative fires after hedge delay.
-      const hedgeTimer = setTimeout(() => {
-        if (settled) return;
-        this.singleCall<T>(req, alternative)
-          .then((v) => settle(() => resolve(v)))
-          .catch(() => {
-            // Ignore hedge errors — primary is still running.
-          });
-      }, this.opts.hedgeDelayMs);
-
-      // Clean up timer if primary settles first.
-      primaryPromise.finally(() => clearTimeout(hedgeTimer));
+      const hedgeTimer = setTimeout(startAlternative, this.opts.hedgeDelayMs);
     });
   }
 
@@ -382,10 +419,13 @@ export class RpcManager {
     if (h.failures >= this.opts.failureThreshold) {
       h.healthy = false;
       // Schedule a re-probe after 30 s.
-      setTimeout(() => {
+      const timer = setTimeout(() => {
+        this.recoveryTimers.delete(timer);
         const hh = this.health.get(url);
         if (hh && !hh.healthy) { hh.healthy = true; hh.failures = 0; }
       }, 30_000);
+      timer.unref?.();
+      this.recoveryTimers.add(timer);
     }
     // Log without crashing — the manager must stay operational.
     if (process.env.NODE_ENV !== "test") {

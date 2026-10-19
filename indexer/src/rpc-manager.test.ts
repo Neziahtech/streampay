@@ -277,6 +277,16 @@ describe("RpcManager hedged requests", () => {
     const total = primary.callCount + secondary.callCount;
     assert.equal(total, 1);
   });
+
+  it("fails over immediately to secondary in hedged mode when primary rejects with network error", async () => {
+    endpoint("http://primary", { type: "network-error" });
+    endpoint("http://secondary", { type: "success", ledger: 777 });
+
+    const mgr = makeManager({ hedgeDelayMs: 500, timeoutMs: 2_000 });
+    const result = await mgr.getLatestLedger();
+    assert.equal(result.sequence, 777);
+    mgr.stop();
+  });
 });
 
 // ── Chaos test: endpoint kill mid-index ───────────────────────────────────────

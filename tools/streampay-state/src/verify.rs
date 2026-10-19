@@ -72,7 +72,7 @@ pub fn run(snapshot_path: &str) -> anyhow::Result<()> {
                     ));
                 }
             }
-            "Active" => {
+            "Active" | "Paused" => {
                 // Accumulate unclaimed balance for balance-coverage check.
                 let unclaimed = s.deposit - s.withdrawn;
                 *token_unclaimed.entry(s.token.clone()).or_default() += unclaimed;

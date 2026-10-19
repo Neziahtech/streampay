@@ -17,7 +17,7 @@ pub const SNAPSHOT_SCHEMA_VERSION: u32 = 1;
 /// Run `cargo run --bin streampay-state -- fingerprint` to regenerate.
 ///
 pub const SNAPSHOT_SCHEMA_FINGERPRINT: &str =
-    "a3f9c2e1b4d7f0e2a1c5b8d3e6f9a2b5c8d1e4f7a0b3c6d9e2f5a8b1c4d7e0";
+    "937cb553c56fb9a4760755a5e8f8148d72db80f685a12bc9156dc40f40f92b33";
 
 // ── Stream entry ──────────────────────────────────────────────────────────────
 

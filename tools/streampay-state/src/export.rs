@@ -99,8 +99,16 @@ fn simulate(
     });
     let resp: serde_json::Value = client.post(rpc_url).json(&body).send()?.json()?;
 
-    if let Some(err) = resp["error"].as_str() {
-        return Err(anyhow::anyhow!("simulateTransaction: {err}"));
+    if !resp["error"].is_null() {
+        let err_msg = resp["error"]["message"]
+            .as_str()
+            .map(|s| s.to_string())
+            .or_else(|| resp["error"].as_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| resp["error"].to_string());
+        return Err(anyhow::anyhow!("simulateTransaction: {err_msg}"));
+    }
+    if let Some(sim_err) = resp["result"]["error"].as_str() {
+        return Err(anyhow::anyhow!("simulateTransaction error: {sim_err}"));
     }
     let xdr = resp["result"]["results"][0]["xdr"]
         .as_str()

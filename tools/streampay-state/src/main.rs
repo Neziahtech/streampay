@@ -121,9 +121,10 @@ mod replay_cmd {
         // is structurally sound and that the sandbox RPC is reachable.
         println!("✓ Snapshot verified and sandbox RPC reachable.");
         println!(
-            "  {} streams can be replayed ({} active, {} cancelled, {} depleted)",
+            "  {} streams can be replayed ({} active, {} paused, {} cancelled, {} depleted)",
             snap.streams.len(),
             snap.streams.iter().filter(|s| s.status == "Active").count(),
+            snap.streams.iter().filter(|s| s.status == "Paused").count(),
             snap.streams
                 .iter()
                 .filter(|s| s.status == "Cancelled")
@@ -139,13 +140,13 @@ mod replay_cmd {
         for s in &snap.streams {
             let e = coverage.entry(s.token.clone()).or_default();
             let unclaimed = s.deposit - s.withdrawn;
-            if unclaimed > 0 && s.status == "Active" {
+            if unclaimed > 0 && (s.status == "Active" || s.status == "Paused") {
                 e.0 += unclaimed;
             }
         }
         for (token, (unclaimed, _)) in &coverage {
             let short = &token[..token.len().min(12)];
-            println!("  Token {short}…: {unclaimed} stroops unclaimed across active streams");
+            println!("  Token {short}…: {unclaimed} stroops unclaimed across active/paused streams");
         }
 
         println!(
