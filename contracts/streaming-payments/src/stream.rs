@@ -44,6 +44,15 @@ pub const MIN_BATCH: u32 = 1;
 /// and consumes ~16.2M CPU instructions (~16% of the 100M transaction budget).
 pub const MAX_BATCH: u32 = 25;
 
+/// Lifetime of a pending ownership proposal, in seconds (7 days).
+///
+/// A proposal that is not accepted within this window becomes stale: it can no
+/// longer be accepted (the target must ask the current role holder to propose
+/// again), but the current holder can still cancel it explicitly or replace it
+/// with a fresh proposal. Expiry is enforced against the ledger timestamp, not
+/// storage TTL, so the semantics are identical on every network.
+pub const OWNERSHIP_PROPOSAL_TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
+
 /// TTL maintenance, in ledgers (~5 seconds per ledger on Stellar mainnet).
 ///
 /// Streams live in persistent storage: entries that go untouched are
@@ -52,6 +61,36 @@ pub const MAX_BATCH: u32 = 25;
 /// is actually being used never goes cold.
 pub(crate) const TTL_THRESHOLD_LEDGERS: u32 = 200_000; // extend when TTL drops below ~11.5 days
 pub(crate) const TTL_EXTEND_LEDGERS: u32 = 500_000; // extend to ~29 days
+
+/// The role being handed over by a two-step ownership transfer.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum OwnershipRole {
+    /// The payer: may top up and cancel, and receives cancellation refunds.
+    Sender,
+    /// The claimant: may withdraw accrued funds.
+    Recipient,
+}
+
+/// A pending two-step ownership proposal for one stream.
+///
+/// Proposals live under their own storage key ([`DataKey::PendingOwnership`])
+/// rather than inside [`Stream`], so accepting or cancelling one leaves the
+/// stream's accounting fields untouched and the dedicated key can be given its
+/// own TTL treatment.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingOwnership {
+    pub stream_id: u64,
+    /// The current role holder that created the proposal (and the only address
+    /// allowed to cancel it).
+    pub proposed_by: Address,
+    /// The address that must accept the role before it takes effect.
+    pub new_owner: Address,
+    pub role: OwnershipRole,
+    /// Ledger timestamp at or after which the proposal is stale.
+    pub expires_at: u64,
+}
 
 /// Lifecycle state of a stream.
 #[contracttype]
@@ -175,6 +214,9 @@ pub enum DataKey {
     OracleConfig,
     /// Most recent timestamp report from a publisher (persistent storage).
     OracleReport(Address),
+    /// The pending two-step ownership proposal for the given stream, if any.
+    /// At most one proposal exists per stream at a time.
+    PendingOwnership(u64),
 }
 
 /// Seconds elapsed of the stream window at the given timestamp `now`.
@@ -343,16 +385,49 @@ pub fn put_stream(env: &Env, stream: &Stream) {
 /// Cancel/deplete/top-up flows intentionally do not touch the indexes: they
 /// are append-only discovery aids keyed by *creation*, not by lifecycle.
 pub fn index_stream(env: &Env, stream: &Stream) {
-    push_to_index(
-        env,
-        &DataKey::SenderStreams(stream.sender.clone()),
-        stream.id,
-    );
-    push_to_index(
-        env,
-        &DataKey::RecipientStreams(stream.recipient.clone()),
-        stream.id,
-    );
+    index_sender(env, &stream.sender, stream.id);
+    index_recipient(env, &stream.recipient, stream.id);
+}
+
+/// Appends `id` to the sender's discovery index. Called on creation and when
+/// an accepted ownership transfer installs a new sender.
+pub fn index_sender(env: &Env, sender: &Address, id: u64) {
+    push_to_index(env, &DataKey::SenderStreams(sender.clone()), id);
+}
+
+/// Appends `id` to the recipient's discovery index. Called on creation and
+/// when an accepted ownership transfer installs a new recipient.
+pub fn index_recipient(env: &Env, recipient: &Address, id: u64) {
+    push_to_index(env, &DataKey::RecipientStreams(recipient.clone()), id);
+}
+
+/// Loads the pending ownership proposal for `id`, if one exists, and extends
+/// its storage TTL.
+///
+/// The `Some` check matters: `extend_ttl` on a key that was never written (or
+/// was removed) fails, so we only extend after a successful read.
+pub fn get_pending_ownership(env: &Env, id: u64) -> Option<PendingOwnership> {
+    let key = DataKey::PendingOwnership(id);
+    let storage = env.storage().persistent();
+    let pending: PendingOwnership = storage.get(&key)?;
+    storage.extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+    Some(pending)
+}
+
+/// Persists a pending ownership proposal and extends its storage TTL.
+pub fn put_pending_ownership(env: &Env, pending: &PendingOwnership) {
+    let key = DataKey::PendingOwnership(pending.stream_id);
+    env.storage().persistent().set(&key, pending);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+}
+
+/// Removes a pending ownership proposal. No-op if none exists.
+pub fn remove_pending_ownership(env: &Env, id: u64) {
+    env.storage()
+        .persistent()
+        .remove(&DataKey::PendingOwnership(id));
 }
 
 pub(crate) fn push_to_index(env: &Env, key: &DataKey, id: u64) {

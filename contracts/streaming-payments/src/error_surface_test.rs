@@ -23,7 +23,7 @@ use crate::sponsor;
 use crate::stream::{streamed_at, DataKey};
 use crate::surface::{trace, Branch, Reachability, RETIRED_CODES};
 use crate::test::{Fixture, RefusingFixture};
-use crate::{StreamError, MAX_DURATION_SECONDS, MAX_FEE_BPS};
+use crate::{StreamError, MAX_DURATION_SECONDS, MAX_FEE_BPS, OWNERSHIP_PROPOSAL_TTL_SECONDS};
 
 const DAY: u64 = 24 * 60 * 60;
 const DEPOSIT: i128 = 10_000_000_000;
@@ -891,6 +891,84 @@ fn probe(branch: Branch) -> Option<StreamError> {
                 .mock_all_auths()
                 .try_submit_oracle_time(&pub1, &(now + 4000))))
         }
+        // --------------------------------------------- ownership transfer
+        Branch::ProposeNotAuthorized => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            let stranger = soroban_sdk::Address::generate(&f.env);
+            let target = soroban_sdk::Address::generate(&f.env);
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_propose_ownership_transfer(&stranger, &id, &target)))
+        }
+        Branch::ProposeInvalidTarget => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_propose_ownership_transfer(&f.sender, &id, &f.sender)))
+        }
+        Branch::ProposeAlreadyPending => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            let first = soroban_sdk::Address::generate(&f.env);
+            let second = soroban_sdk::Address::generate(&f.env);
+            f.client
+                .mock_all_auths()
+                .propose_ownership_transfer(&f.sender, &id, &first);
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_propose_ownership_transfer(&f.sender, &id, &second)))
+        }
+        Branch::AcceptNotTarget => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            let target = soroban_sdk::Address::generate(&f.env);
+            let stranger = soroban_sdk::Address::generate(&f.env);
+            f.client
+                .mock_all_auths()
+                .propose_ownership_transfer(&f.sender, &id, &target);
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_accept_ownership_transfer(&stranger, &id)))
+        }
+        Branch::OwnershipProposalExpired => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            let target = soroban_sdk::Address::generate(&f.env);
+            f.client
+                .mock_all_auths()
+                .propose_ownership_transfer(&f.sender, &id, &target);
+            f.advance_time(OWNERSHIP_PROPOSAL_TTL_SECONDS);
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_accept_ownership_transfer(&target, &id)))
+        }
+        Branch::NoPendingOwnership => {
+            let f = Fixture::setup_quiet();
+            let target = soroban_sdk::Address::generate(&f.env);
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_accept_ownership_transfer(&target, &999)))
+        }
+        Branch::CancelProposalNotProposer => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, true);
+            let target = soroban_sdk::Address::generate(&f.env);
+            f.client
+                .mock_all_auths()
+                .propose_ownership_transfer(&f.sender, &id, &target);
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_cancel_ownership_transfer(&f.recipient, &id)))
+        }
         // Invariant-protected: a stored stream always satisfies
         // `0 <= withdrawn <= streamed <= deposit <= i128::MAX`, so these
         // checked subtractions/addition can never cross an i128 boundary —
@@ -1064,7 +1142,11 @@ fn stream_error_variant_list_is_exhaustive() {
             | StreamError::InvalidOracleThreshold
             | StreamError::OraclePublishersNotConfigured
             | StreamError::OracleReportTooOld
-            | StreamError::NotOraclePublisher => StreamError::ALL.contains(&e),
+            | StreamError::NotOraclePublisher
+            | StreamError::NoPendingOwnership
+            | StreamError::OwnershipProposalExpired
+            | StreamError::InvalidTransferTarget
+            | StreamError::OwnershipProposalPending => StreamError::ALL.contains(&e),
         }
     }
 
