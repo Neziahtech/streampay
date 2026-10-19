@@ -471,3 +471,46 @@ fn hex_bytes(b: &soroban_sdk::Bytes) -> std::string::String {
     }
     s
 }
+
+#[test]
+fn reconfiguring_sponsor_mid_window_preserves_spend_and_views_expire_after_window() {
+    let f = Fixture::setup();
+    let sponsor_addr = Address::generate(&f.env);
+    let op = test_signer(&f.env, 11);
+    let ben = test_signer(&f.env, 22);
+    let day_amt = DEPOSIT / 10;
+
+    register_op(&f, &sponsor_addr, &op, 2 * day_amt, 2 * day_amt, DAY);
+    f.client
+        .mock_all_auths()
+        .enroll_beneficiary(&f.recipient, &ben.public_key);
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    f.advance_time(6 * DAY);
+    let deadline = f.env.ledger().timestamp() + DAY;
+
+    assert!(matches!(
+        relay_claim(&f, &sponsor_addr, &op, &ben, id, day_amt, 1, deadline),
+        Ok(Ok(()))
+    ));
+    assert_eq!(f.client.sponsor_period_spend(&sponsor_addr).spend, day_amt);
+
+    register_op(
+        &f,
+        &sponsor_addr,
+        &op,
+        day_amt + day_amt / 2,
+        2 * day_amt,
+        DAY,
+    );
+    assert_eq!(f.client.sponsor_period_spend(&sponsor_addr).spend, day_amt);
+    let over = relay_claim(&f, &sponsor_addr, &op, &ben, id, day_amt, 2, deadline);
+    assert_eq!(relay_rejection(over), StreamError::SponsorBudgetExceeded);
+
+    f.advance_time(DAY + 1);
+    assert_eq!(f.client.sponsor_period_spend(&sponsor_addr).spend, 0);
+    assert_eq!(
+        f.client.beneficiary_spend(&sponsor_addr, &f.recipient).spend,
+        0
+    );
+}
+

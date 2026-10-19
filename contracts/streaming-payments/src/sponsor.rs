@@ -161,15 +161,25 @@ pub fn put_config(env: &Env, sponsor: &Address, cfg: &SponsorConfig) {
 }
 
 pub fn get_config(env: &Env, sponsor: &Address) -> Option<SponsorConfig> {
-    env.storage()
-        .persistent()
-        .get(&SponsorKey::SponsorConfig(sponsor.clone()))
+    let key = SponsorKey::SponsorConfig(sponsor.clone());
+    let cfg: Option<SponsorConfig> = env.storage().persistent().get(&key);
+    if cfg.is_some() {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+    }
+    cfg
 }
 
 pub fn get_operator_key(env: &Env, sponsor: &Address) -> Option<BytesN<32>> {
-    env.storage()
-        .persistent()
-        .get(&SponsorKey::OperatorKey(sponsor.clone()))
+    let sk = SponsorKey::OperatorKey(sponsor.clone());
+    let key: Option<BytesN<32>> = env.storage().persistent().get(&sk);
+    if key.is_some() {
+        env.storage()
+            .persistent()
+            .extend_ttl(&sk, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+    }
+    key
 }
 
 pub fn put_operator_key(env: &Env, sponsor: &Address, key: &BytesN<32>) {
@@ -181,9 +191,14 @@ pub fn put_operator_key(env: &Env, sponsor: &Address, key: &BytesN<32>) {
 }
 
 pub fn get_beneficiary_key(env: &Env, beneficiary: &Address) -> Option<BytesN<32>> {
-    env.storage()
-        .persistent()
-        .get(&SponsorKey::BeneficiaryKey(beneficiary.clone()))
+    let bk = SponsorKey::BeneficiaryKey(beneficiary.clone());
+    let key: Option<BytesN<32>> = env.storage().persistent().get(&bk);
+    if key.is_some() {
+        env.storage()
+            .persistent()
+            .extend_ttl(&bk, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+    }
+    key
 }
 
 pub fn put_beneficiary_key(env: &Env, beneficiary: &Address, key: &BytesN<32>) {
@@ -199,6 +214,20 @@ pub fn get_period(env: &Env, key: &SponsorKey) -> PeriodSpend {
         period_start: 0,
         spend: 0,
     })
+}
+
+pub fn current_period_spend(env: &Env, sponsor: &Address, key: &SponsorKey) -> PeriodSpend {
+    let period = get_period(env, key);
+    if let Some(cfg) = get_config(env, sponsor) {
+        let now = env.ledger().timestamp();
+        if period.spend != 0 && period.effective(cfg.window_seconds, now) == 0 {
+            return PeriodSpend {
+                period_start: now,
+                spend: 0,
+            };
+        }
+    }
+    period
 }
 
 pub fn put_period(env: &Env, key: &SponsorKey, period: &PeriodSpend) {
@@ -299,6 +328,11 @@ pub fn register_sponsor(
         return Err(surface::reject(Branch::RegisterLimitNonPositive));
     }
 
+    let now = env.ledger().timestamp();
+    let prev_cfg = get_config(&env, &sponsor);
+    let period_key = SponsorKey::SponsorPeriod(sponsor.clone());
+    let prev_period = get_period(&env, &period_key);
+
     let cfg = SponsorConfig {
         token: token.clone(),
         per_period_limit,
@@ -308,15 +342,22 @@ pub fn register_sponsor(
     };
     put_config(&env, &sponsor, &cfg);
     put_operator_key(&env, &sponsor, &operator_key);
-    // Fresh budget window for a (re)registration.
-    put_period(
-        &env,
-        &SponsorKey::SponsorPeriod(sponsor.clone()),
-        &PeriodSpend {
-            period_start: env.ledger().timestamp(),
+
+    // Preserve accumulated spend if reconfiguring the same token within an active window;
+    // otherwise start a fresh budget window.
+    let next_period = match prev_cfg {
+        Some(old_cfg)
+            if old_cfg.token == token
+                && prev_period.effective(old_cfg.window_seconds, now) > 0 =>
+        {
+            prev_period
+        }
+        _ => PeriodSpend {
+            period_start: now,
             spend: 0,
         },
-    );
+    };
+    put_period(&env, &period_key, &next_period);
 
     SponsorRegistered {
         sponsor,
