@@ -7,22 +7,22 @@ import { useEffect, useState } from "react";
 export default function DocsPage() {
   const [swaggerReady, setSwaggerReady] = useState(false);
 
-  useEffect(() => {
-    // If SwaggerUI is already on window
-    const win = window as unknown as {
-      SwaggerUIBundle?: (config: Record<string, unknown>) => void;
-    };
-    if (win.SwaggerUIBundle) {
-      win.SwaggerUIBundle({
-        url: "/openapi.json",
-        dom_id: "#swagger-ui",
-        deepLinking: true,
-        presets: [],
-        layout: "BaseLayout",
-      });
-      setSwaggerReady(true);
-    }
-  }, []);
+    useEffect(() => {
+      // If SwaggerUI is already on window
+      const win = window as unknown as {
+        SwaggerUIBundle?: (config: Record<string, unknown>) => void;
+      };
+      if (win.SwaggerUIBundle) {
+        win.SwaggerUIBundle({
+          url: "/openapi.json",
+          dom_id: "#swagger-ui",
+          deepLinking: true,
+          presets: [],
+          layout: "BaseLayout",
+        });
+        queueMicrotask(() => setSwaggerReady(true));
+      }
+    }, []);
 
   const initSwagger = () => {
     const win = window as unknown as {

@@ -52,7 +52,7 @@ export default function StreamDetailClient({
   }, [applyStream, id]);
 
   useEffect(() => {
-    applyStream(initialStream);
+    queueMicrotask(() => applyStream(initialStream));
     void readAvailableAction(id)
       .then((value) => setAvailable(BigInt(value)))
       .catch((e: unknown) => setError(describeError(e)));
