@@ -256,7 +256,7 @@ pub fn available_amount_at(stream: &Stream, now: u64) -> Result<i128, StreamErro
     if stream.status == StreamStatus::Cancelled {
         return Ok(0);
     }
-    let streamed = streamed_amount_at(stream, now)?;
+    let streamed = streamed_amount_at(stream, now)?.max(stream.withdrawn);
     streamed
         .checked_sub(stream.withdrawn)
         .ok_or_else(|| surface::reject(Branch::AvailableBalanceOverflow))
@@ -271,7 +271,7 @@ pub fn available_amount(env: &Env, stream: &Stream) -> Result<i128, StreamError>
 
 /// Payout split at cancellation at reference timestamp `now`: `(recipient_amount, sender_amount)`.
 pub fn cancel_amounts_at(stream: &Stream, now: u64) -> Result<(i128, i128), StreamError> {
-    let streamed = streamed_amount_at(stream, now)?;
+    let streamed = streamed_amount_at(stream, now)?.max(stream.withdrawn);
     let recipient_amount = streamed
         .checked_sub(stream.withdrawn)
         .ok_or_else(|| surface::reject(Branch::CancelSplitOverflow))?;

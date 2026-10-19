@@ -5986,3 +5986,93 @@ fn oracle_mode_accrual_property_bounded_by_staleness() {
         );
     }
 }
+
+#[test]
+fn oracle_fallback_after_ahead_withdrawal_clamps_cancel_and_available_balances() {
+    let f = Fixture::setup();
+    let p1 = soroban_sdk::Address::generate(&f.env);
+    let p2 = soroban_sdk::Address::generate(&f.env);
+    let mut pub_v1 = soroban_sdk::Vec::new(&f.env);
+    pub_v1.push_back(p1.clone());
+
+    f.client
+        .mock_all_auths()
+        .set_oracle_config(&f.governor, &pub_v1, &1, &3600);
+
+    let _unrelated = f.create_stream(DEPOSIT, 0, 10 * DAY, false);
+    let now = f.env.ledger().timestamp();
+    let sid = f.create_stream_with_oracle(DEPOSIT, 0, 1000, true, true);
+
+    f.client
+        .mock_all_auths()
+        .submit_oracle_time(&p1, &(now + 800));
+
+    let withdraw_amt = (DEPOSIT * 80) / 100;
+    f.client.mock_all_auths().withdraw(&sid, &withdraw_amt);
+
+    let mut pub_v2 = soroban_sdk::Vec::new(&f.env);
+    pub_v2.push_back(p1.clone());
+    pub_v2.push_back(p2.clone());
+    f.client
+        .mock_all_auths()
+        .set_oracle_config(&f.governor, &pub_v2, &2, &3600);
+
+    assert_eq!(f.client.mock_all_auths().available(&sid), 0);
+
+    let creator_before = TokenClient::new(&f.env, &f.token).balance(&f.sender);
+    f.client.mock_all_auths().cancel_stream(&f.sender, &sid);
+
+    let creator_after = TokenClient::new(&f.env, &f.token).balance(&f.sender);
+    let beneficiary_bal = TokenClient::new(&f.env, &f.token).balance(&f.recipient);
+    let stream_after = f.client.get_stream(&sid);
+
+    assert_eq!(creator_after - creator_before, DEPOSIT - withdraw_amt);
+    assert_eq!(beneficiary_bal, withdraw_amt);
+    assert_eq!(stream_after.withdrawn, withdraw_amt);
+}
+
+#[test]
+fn oracle_rejects_past_regressing_and_duplicate_publishers() {
+    let f = Fixture::setup();
+    let p1 = soroban_sdk::Address::generate(&f.env);
+
+    let mut dup_pubs = soroban_sdk::Vec::new(&f.env);
+    dup_pubs.push_back(p1.clone());
+    dup_pubs.push_back(p1.clone());
+    let dup_err = f
+        .client
+        .mock_all_auths()
+        .try_set_oracle_config(&f.governor, &dup_pubs, &2, &3600)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(dup_err, StreamError::InvalidOracleThreshold);
+
+    let mut pubs = soroban_sdk::Vec::new(&f.env);
+    pubs.push_back(p1.clone());
+    f.client
+        .mock_all_auths()
+        .set_oracle_config(&f.governor, &pubs, &1, &3600);
+
+    f.advance_time(10_000);
+    let now = f.env.ledger().timestamp();
+
+    let old_err = f
+        .client
+        .mock_all_auths()
+        .try_submit_oracle_time(&p1, &(now - 3601))
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(old_err, StreamError::OracleReportTooOld);
+
+    f.client
+        .mock_all_auths()
+        .submit_oracle_time(&p1, &(now + 500));
+    let reg_err = f
+        .client
+        .mock_all_auths()
+        .try_submit_oracle_time(&p1, &(now + 100))
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(reg_err, StreamError::OracleReportTooOld);
+}
+

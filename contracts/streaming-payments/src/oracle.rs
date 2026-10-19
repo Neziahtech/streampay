@@ -76,6 +76,19 @@ pub fn set_oracle_config(
     if threshold == 0 || threshold > publishers.len() {
         return Err(surface::reject(Branch::InvalidOracleThreshold));
     }
+    let pub_len = publishers.len();
+    let mut i = 0;
+    while i < pub_len {
+        let p_i = publishers.get(i).unwrap();
+        let mut j = i + 1;
+        while j < pub_len {
+            if p_i == publishers.get(j).unwrap() {
+                return Err(surface::reject(Branch::InvalidOracleThreshold));
+            }
+            j += 1;
+        }
+        i += 1;
+    }
     let effective_max_stale = if max_stale_seconds == 0 {
         DEFAULT_MAX_STALE_SECONDS
     } else {
@@ -133,9 +146,17 @@ pub fn submit_oracle_time(
     }
 
     let now_ledger = env.ledger().timestamp();
-    // Guard against crazy future timestamps beyond staleness bound
-    if timestamp > now_ledger.saturating_add(config.max_stale_seconds) {
+    // Guard against timestamps outside staleness bounds (too far in past or future)
+    if timestamp > now_ledger.saturating_add(config.max_stale_seconds)
+        || timestamp < now_ledger.saturating_sub(config.max_stale_seconds)
+    {
         return Err(surface::reject(Branch::OracleReportTooOld));
+    }
+
+    if let Some(prev) = get_oracle_report(env, publisher.clone()) {
+        if timestamp < prev.reported_time {
+            return Err(surface::reject(Branch::OracleReportTooOld));
+        }
     }
 
     let report = OracleReport {
