@@ -186,6 +186,12 @@ pub enum StreamError {
     /// An unexpired ownership proposal already exists for this stream; cancel
     /// or accept it before proposing another.
     OwnershipProposalPending = 63,
+    /// Stream deposit is below the protocol minimum funding threshold (MIN_STREAM_DEPOSIT).
+    DepositBelowMinimum = 64,
+    /// Withdrawal amount is below the protocol minimum claim threshold (MIN_CLAIM_AMOUNT).
+    ClaimBelowMinimum = 65,
+    /// Stream does not qualify for sweeping (it is still active with unwithdrawn funds).
+    StreamNotSweepable = 66,
 }
 
 impl StreamError {
@@ -256,6 +262,9 @@ impl StreamError {
         StreamError::OwnershipProposalExpired,
         StreamError::InvalidTransferTarget,
         StreamError::OwnershipProposalPending,
+        StreamError::DepositBelowMinimum,
+        StreamError::ClaimBelowMinimum,
+        StreamError::StreamNotSweepable,
     ];
 
     /// The stable numeric value carried across the contract boundary

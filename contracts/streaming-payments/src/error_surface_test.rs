@@ -125,6 +125,19 @@ fn probe(branch: Branch) -> Option<StreamError> {
                 &false,
             )))
         }
+        Branch::CreateDepositBelowMinimum => {
+            let f = Fixture::setup_quiet();
+            let now = f.env.ledger().timestamp();
+            Some(rejected!(f.client.mock_all_auths().try_create_stream(
+                &f.sender,
+                &f.recipient,
+                &f.token,
+                &(crate::stream::MIN_STREAM_DEPOSIT - 1),
+                &(now + DAY),
+                &(now + 2 * DAY),
+                &false,
+            )))
+        }
         Branch::CreateStartTimeInPast => {
             let f = Fixture::setup_quiet();
             let now = f.env.ledger().timestamp();
@@ -185,6 +198,15 @@ fn probe(branch: Branch) -> Option<StreamError> {
             f.advance_time(2 * DAY);
             Some(rejected!(f.client.mock_all_auths().try_withdraw(&id, &0)))
         }
+        Branch::WithdrawAmountBelowMinimum => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            f.advance_time(2 * DAY);
+            Some(rejected!(f.client.mock_all_auths().try_withdraw(
+                &id,
+                &(crate::stream::MIN_CLAIM_AMOUNT - 1)
+            )))
+        }
         Branch::WithdrawAmountExceedsAvailable => {
             let f = Fixture::setup_quiet();
             let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
@@ -199,6 +221,21 @@ fn probe(branch: Branch) -> Option<StreamError> {
             let f = Fixture::setup_quiet();
             let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
             Some(rejected!(f.client.mock_all_auths().try_withdraw_max(&id)))
+        }
+        Branch::WithdrawMaxAmountBelowMinimum => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(10_000, DAY, DAY + 10_000, false);
+            f.advance_time(DAY + 10);
+            Some(rejected!(f.client.mock_all_auths().try_withdraw_max(&id)))
+        }
+        // ------------------------------------------------------ sweep_stream
+        Branch::StreamNotSweepable => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_sweep_stream(&id, &None)))
         }
         // ----------------------------------------------------- cancel_stream
         Branch::CancelStreamNotCancellable => {
@@ -1146,7 +1183,10 @@ fn stream_error_variant_list_is_exhaustive() {
             | StreamError::NoPendingOwnership
             | StreamError::OwnershipProposalExpired
             | StreamError::InvalidTransferTarget
-            | StreamError::OwnershipProposalPending => StreamError::ALL.contains(&e),
+            | StreamError::OwnershipProposalPending
+            | StreamError::DepositBelowMinimum
+            | StreamError::ClaimBelowMinimum
+            | StreamError::StreamNotSweepable => StreamError::ALL.contains(&e),
         }
     }
 

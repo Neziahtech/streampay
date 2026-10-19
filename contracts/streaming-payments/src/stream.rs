@@ -33,6 +33,26 @@ pub const MAX_DURATION_SECONDS: u64 = 3_155_760_000;
 /// of the address-index views.
 pub const MAX_PAGE_SIZE: u32 = 50;
 
+/// Minimum stream funding amount permitted (in smallest token units / stroops).
+///
+/// Set to 100 stroops (0.0000100 XLM). On Stellar, 100 stroops is the protocol-level
+/// base fee per operation. Funding a stream below 100 stroops cannot cover the network
+/// transaction cost of its own creation.
+pub const MIN_STREAM_DEPOSIT: i128 = 100;
+
+/// Minimum withdrawal / claim amount permitted (in smallest token units / stroops).
+///
+/// Set to 50 stroops. At a minimum network fee of 100 stroops, claiming less than
+/// 50 stroops consumes more in network transaction fees than the value withdrawn,
+/// resulting in a strictly negative net return (>100% fee-to-value loss).
+pub const MIN_CLAIM_AMOUNT: i128 = 50;
+
+/// Standard residual rent refund credited when sweeping a fully-depleted stream (in stroops).
+///
+/// Reflects the nominal rent credit returned to the designated party when releasing
+/// ~200 bytes of persistent storage back to the ledger state.
+pub const STREAM_RENT_REFUND: i128 = 100;
+
 /// Minimum number of stream entries permitted in a batch.
 pub const MIN_BATCH: u32 = 1;
 
@@ -217,6 +237,12 @@ pub enum DataKey {
     /// The pending two-step ownership proposal for the given stream, if any.
     /// At most one proposal exists per stream at a time.
     PendingOwnership(u64),
+    /// Cumulative rent refund credited to a designated party across swept streams.
+    RentRefund(Address),
+    /// Cumulative count of stale streams swept.
+    TotalStreamsSwept,
+    /// Cumulative amount of residual rent refunded across all sweeps.
+    TotalRentRefunded,
 }
 
 /// Seconds elapsed of the stream window at the given timestamp `now`.
@@ -543,4 +569,69 @@ pub fn set_migration_cursor(env: &Env, cursor: u64) {
     env.storage()
         .instance()
         .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+}
+
+/// Removes a stream from persistent storage, along with its fee record if present.
+pub fn remove_stream(env: &Env, id: u64) {
+    #[cfg(test)]
+    crate::cei_trace::record(&std::format!("remove persistent Stream({id})"));
+    env.storage().persistent().remove(&DataKey::Stream(id));
+    env.storage().persistent().remove(&DataKey::StreamFee(id));
+}
+
+/// Returns the cumulative rent refund balance credited to `party`.
+pub fn rent_refund_balance(env: &Env, party: &Address) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::RentRefund(party.clone()))
+        .unwrap_or(0)
+}
+
+/// Credits rent refund to `party` and extends TTL.
+pub fn credit_rent_refund(env: &Env, party: &Address, amount: i128) -> Result<i128, StreamError> {
+    let key = DataKey::RentRefund(party.clone());
+    let current: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+    let new_total = current
+        .checked_add(amount)
+        .ok_or(StreamError::MathOverflow)?;
+    env.storage().persistent().set(&key, &new_total);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+    Ok(new_total)
+}
+
+/// Records a completed sweep in global instance storage counters.
+pub fn record_sweep(env: &Env, amount: i128) {
+    let swept_key = DataKey::TotalStreamsSwept;
+    let swept: u64 = env.storage().instance().get(&swept_key).unwrap_or(0);
+    env.storage()
+        .instance()
+        .set(&swept_key, &swept.saturating_add(1));
+
+    let refund_key = DataKey::TotalRentRefunded;
+    let total_refund: i128 = env.storage().instance().get(&refund_key).unwrap_or(0);
+    env.storage()
+        .instance()
+        .set(&refund_key, &total_refund.saturating_add(amount));
+
+    env.storage()
+        .instance()
+        .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+}
+
+/// Returns the total number of stale streams swept.
+pub fn total_streams_swept(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKey::TotalStreamsSwept)
+        .unwrap_or(0)
+}
+
+/// Returns the total residual rent refunded across all sweeps.
+pub fn total_rent_refunded(env: &Env) -> i128 {
+    env.storage()
+        .instance()
+        .get(&DataKey::TotalRentRefunded)
+        .unwrap_or(0)
 }
