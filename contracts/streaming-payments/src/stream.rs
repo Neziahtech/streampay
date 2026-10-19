@@ -425,6 +425,14 @@ pub fn is_frozen(env: &Env) -> bool {
         .unwrap_or(false)
 }
 
+/// Checks whether the contract is currently frozen without recording a trace event.
+pub fn is_frozen_quiet(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::ContractFrozen)
+        .unwrap_or(false)
+}
+
 /// Updates the contract freeze state and extends instance storage TTL.
 pub fn set_frozen(env: &Env, frozen: bool) {
     #[cfg(test)]

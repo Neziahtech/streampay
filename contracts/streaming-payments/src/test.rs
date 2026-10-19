@@ -5986,3 +5986,36 @@ fn oracle_mode_accrual_property_bounded_by_staleness() {
         );
     }
 }
+
+#[test]
+fn cannot_unfreeze_mid_migration_and_accept_governor_clears_pending_upgrade() {
+    let f = Fixture::setup_quiet();
+    let _s1 = f.create_stream(DEPOSIT, 0, 10 * DAY, true);
+    let _s2 = f.create_stream(DEPOSIT, 0, 10 * DAY, true);
+
+    let new_gov = Address::generate(&f.env);
+    let wasm_hash = soroban_sdk::BytesN::from_array(&f.env, &[7u8; 32]);
+    f.client
+        .mock_all_auths()
+        .propose_upgrade(&f.governor, &wasm_hash, &(2 * DAY));
+    assert!(f.client.pending_upgrade().is_some());
+
+    f.client
+        .mock_all_auths()
+        .nominate_governor(&f.governor, &new_gov);
+    f.client.mock_all_auths().accept_governor(&new_gov);
+    assert!(f.client.pending_upgrade().is_none());
+
+    f.client.mock_all_auths().set_frozen(&new_gov, &true);
+    let status = f.client.mock_all_auths().migrate_storage(&new_gov, &1, &1);
+    assert!(!status.is_complete);
+
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_set_frozen(&new_gov, &false)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::ContractFrozen);
+}
+

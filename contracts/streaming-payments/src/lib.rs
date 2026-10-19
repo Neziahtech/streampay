@@ -1363,6 +1363,9 @@ impl StreamingPayments {
     /// retroactively.
     pub fn set_fee_bps(env: Env, caller: Address, new_fee_bps: u32) -> Result<(), StreamError> {
         treasury::require_governor(&env, &caller)?;
+        if stream::is_frozen_quiet(&env) {
+            return Err(surface::reject(Branch::ContractFrozen));
+        }
         if new_fee_bps > MAX_FEE_BPS {
             return Err(surface::reject(Branch::SetFeeRateTooHigh));
         }
@@ -1412,6 +1415,7 @@ impl StreamingPayments {
         env.storage()
             .instance()
             .remove(&stream::DataKey::PendingGovernor);
+        stream::remove_pending_upgrade(&env);
         env.storage()
             .instance()
             .extend_ttl(stream::TTL_THRESHOLD_LEDGERS, stream::TTL_EXTEND_LEDGERS);
@@ -1434,6 +1438,9 @@ impl StreamingPayments {
         amount: i128,
     ) -> Result<(), StreamError> {
         treasury::require_governor(&env, &caller)?;
+        if stream::is_frozen_quiet(&env) {
+            return Err(surface::reject(Branch::ContractFrozen));
+        }
         if amount <= 0 {
             return Err(surface::reject(Branch::WithdrawTreasuryAmountNonPositive));
         }
@@ -1749,6 +1756,12 @@ impl StreamingPayments {
     /// remain accessible.
     pub fn set_frozen(env: Env, caller: Address, frozen: bool) -> Result<(), StreamError> {
         treasury::require_governor(&env, &caller)?;
+        if !frozen
+            && stream::migration_cursor(&env) > 0
+            && stream::schema_version(&env) < stream::TARGET_SCHEMA_VERSION
+        {
+            return Err(surface::reject(Branch::ContractFrozen));
+        }
         stream::set_frozen(&env, frozen);
 
         ContractFrozenStateChanged {
@@ -1771,7 +1784,9 @@ impl StreamingPayments {
         delay_seconds: u64,
     ) -> Result<(), StreamError> {
         treasury::require_governor(&env, &caller)?;
-        if delay_seconds < stream::MIN_UPGRADE_DELAY_SECONDS {
+        if delay_seconds < stream::MIN_UPGRADE_DELAY_SECONDS
+            || delay_seconds > stream::MAX_DURATION_SECONDS
+        {
             return Err(surface::reject(Branch::UpgradeDelayTooShort));
         }
         let now = env.ledger().timestamp();

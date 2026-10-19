@@ -65,6 +65,8 @@ pub struct ResolvedTime {
     pub is_oracle: bool,
 }
 
+pub const MAX_ORACLE_PUBLISHERS: u32 = 20;
+
 /// Sets or updates the oracle publisher registry, threshold, and staleness bound.
 /// Must be authorized by the governor.
 pub fn set_oracle_config(
@@ -73,7 +75,11 @@ pub fn set_oracle_config(
     threshold: u32,
     max_stale_seconds: u64,
 ) -> Result<(), StreamError> {
-    if threshold == 0 || threshold > publishers.len() {
+    if threshold == 0
+        || threshold > publishers.len()
+        || publishers.len() > MAX_ORACLE_PUBLISHERS
+        || max_stale_seconds > crate::stream::MAX_DURATION_SECONDS
+    {
         return Err(surface::reject(Branch::InvalidOracleThreshold));
     }
     let effective_max_stale = if max_stale_seconds == 0 {
@@ -148,6 +154,9 @@ pub fn submit_oracle_time(
     env.storage()
         .persistent()
         .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+    env.storage()
+        .instance()
+        .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
 
     OracleTimeReported {
         publisher,
