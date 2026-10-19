@@ -12,9 +12,11 @@ import {
   cancelStream,
   readStream,
   fetchStreamsFor,
+  fetchAssetMeta,
   describeError,
   type StreamView,
 } from "@/lib/stellar";
+import { formatAmount } from "@/lib/format";
 import { loadStreamIds, saveStreamId } from "@/lib/storage";
 import { checkWalletNetwork } from "@/lib/network";
 import StreamForm from "@/components/StreamForm";
@@ -255,7 +257,13 @@ export default function Home() {
           onWithdraw={async (id, amount) => {
             try {
               await withdrawFromStream(address, id, amount);
-              toast.success(`Withdrew ${amount} units from stream #${id}.`);
+              const target = streams.find((s) => s.id === id);
+              let amountLabel = `${amount} units`;
+              if (target) {
+                const meta = await fetchAssetMeta(target.token);
+                amountLabel = `${formatAmount(BigInt(amount), meta.decimals)} ${meta.code}`;
+              }
+              toast.success(`Withdrew ${amountLabel} from stream #${id}.`);
               await refresh(id);
             } catch (e) {
               toast.error(describeError(e));
@@ -264,7 +272,13 @@ export default function Home() {
           onWithdrawMax={async (id) => {
             try {
               const paid = await withdrawMaxFromStream(address, id);
-              toast.success(`Claimed ${paid} units from stream #${id}.`);
+              const target = streams.find((s) => s.id === id);
+              let paidLabel = `${paid} units`;
+              if (target) {
+                const meta = await fetchAssetMeta(target.token);
+                paidLabel = `${formatAmount(paid, meta.decimals)} ${meta.code}`;
+              }
+              toast.success(`Claimed ${paidLabel} from stream #${id}.`);
               await refresh(id);
             } catch (e) {
               toast.error(describeError(e));
@@ -273,7 +287,13 @@ export default function Home() {
           onTopUp={async (id, amount) => {
             try {
               await topUpStream(address, id, amount);
-              toast.success(`Topped up stream #${id} by ${amount} units.`);
+              const target = streams.find((s) => s.id === id);
+              let amountLabel = `${amount} units`;
+              if (target) {
+                const meta = await fetchAssetMeta(target.token);
+                amountLabel = `${formatAmount(BigInt(amount), meta.decimals)} ${meta.code}`;
+              }
+              toast.success(`Topped up stream #${id} by ${amountLabel}.`);
               await refresh(id);
             } catch (e) {
               toast.error(describeError(e));

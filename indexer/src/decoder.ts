@@ -31,6 +31,7 @@ export function decodeEvent(event: RpcEvent): DecodedEvent {
   if (typeof name !== "string" || (typeof streamId !== "bigint" && typeof streamId !== "number" && typeof streamId !== "string")) {
     throw new Error(`Event ${event.id} has an unexpected topic shape`);
   }
+  const rawTx = event.txHash ?? event.transactionHash;
   return {
     id: event.id,
     pagingToken: event.pagingToken ?? String(event.ledger),
@@ -40,5 +41,6 @@ export function decodeEvent(event: RpcEvent): DecodedEvent {
     name,
     streamId: String(streamId),
     data: record(decodeScVal(event.value)),
+    txHash: rawTx ? String(rawTx) : undefined,
   };
 }

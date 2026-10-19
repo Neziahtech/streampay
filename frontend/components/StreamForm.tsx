@@ -4,10 +4,13 @@ import { useEffect, useId, useState } from "react";
 import {
   NATIVE_XLM,
   tokenContractId,
+  fetchAssetMeta,
+  type AssetMeta,
   type StreamArgs,
 } from "@/lib/stellar";
 import { readStreamPolicyAction } from "@/app/actions";
 import type { StreamPolicyView } from "@/lib/stream-types";
+import { formatAmount } from "@/lib/format";
 
 /** Asset choices on the create form: native XLM, or a token contract id. */
 type AssetChoice = "native" | "contract";
@@ -18,6 +21,7 @@ export default function StreamForm({
   onCreate: (args: StreamArgs) => Promise<void>;
 }) {
   const [asset, setAsset] = useState<AssetChoice>("native");
+  const [contractMeta, setContractMeta] = useState<AssetMeta | null>(null);
   const [args, setArgs] = useState<StreamArgs>({
     token: "",
     recipient: "",
@@ -28,6 +32,28 @@ export default function StreamForm({
   const [busy, setBusy] = useState(false);
   const [policy, setPolicy] = useState<StreamPolicyView | null>(null);
   const [policyError, setPolicyError] = useState<string | null>(null);
+
+  // Derived asset metadata: native XLM is always known; contract assets update asynchronously
+  const assetMeta: AssetMeta =
+    asset === "native"
+      ? { code: "XLM", decimals: 7 }
+      : contractMeta ?? { code: "TOKEN", decimals: 7 };
+
+  // Load asset meta for contract token choices
+  useEffect(() => {
+    let active = true;
+    if (asset === "contract") {
+      const token = args.token.trim();
+      if (token) {
+        fetchAssetMeta(token).then((meta) => {
+          if (active) setContractMeta(meta);
+        });
+      }
+    }
+    return () => {
+      active = false;
+    };
+  }, [asset, args.token]);
 
   // Load policy for selected asset
   useEffect(() => {
@@ -253,8 +279,90 @@ export default function StreamForm({
         </div>
       </div>
 
+      {(() => {
+        const depositTrimmed = args.deposit.trim();
+        const depositVal =
+          depositTrimmed && /^\d+$/.test(depositTrimmed)
+            ? BigInt(depositTrimmed)
+            : 0n;
+        const durationDays = parseFloat(args.days || "0");
+        const durationSeconds = Math.floor(durationDays * 86400);
+        const flowRatePerSec =
+          durationSeconds > 0 ? depositVal / BigInt(durationSeconds) : 0n;
+        const flowRatePerDay =
+          durationDays > 0
+            ? depositVal / BigInt(Math.max(1, Math.round(durationDays)))
+            : 0n;
+
+        if (depositVal <= 0n) return null;
+
+        return (
+          <div
+            className="stream-preview"
+            style={{
+              background: "rgba(255, 255, 255, 0.02)",
+              border: "1px solid var(--line)",
+              borderRadius: "8px",
+              padding: "12px 16px",
+              marginTop: "14px",
+              marginBottom: "14px",
+            }}
+            aria-label="Stream preview"
+          >
+            <div
+              style={{
+                fontSize: "0.75rem",
+                fontWeight: 700,
+                color: "var(--accent2)",
+                textTransform: "uppercase",
+                letterSpacing: "0.05em",
+                marginBottom: "8px",
+              }}
+            >
+              Stream Preview
+            </div>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+                gap: "12px",
+              }}
+            >
+              <div>
+                <div className="muted" style={{ fontSize: "0.8rem" }}>
+                  Total Deposit
+                </div>
+                <div className="mono" style={{ fontSize: "1.05rem", fontWeight: 600 }}>
+                  {formatAmount(depositVal, assetMeta.decimals)} {assetMeta.code}
+                </div>
+              </div>
+              {durationSeconds > 0 && (
+                <div>
+                  <div className="muted" style={{ fontSize: "0.8rem" }}>
+                    Daily Flow Rate
+                  </div>
+                  <div className="mono" style={{ fontSize: "1.05rem", fontWeight: 600 }}>
+                    ~{formatAmount(flowRatePerDay, assetMeta.decimals)} {assetMeta.code}/day
+                  </div>
+                </div>
+              )}
+              {durationSeconds > 0 && (
+                <div>
+                  <div className="muted" style={{ fontSize: "0.8rem" }}>
+                    Per-Second Rate
+                  </div>
+                  <div className="mono" style={{ fontSize: "0.95rem", color: "var(--muted)" }}>
+                    ~{formatAmount(flowRatePerSec, assetMeta.decimals)} {assetMeta.code}/s
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+
       <p className="muted">
-        Amounts are in smallest units (7 decimals for XLM and testnet USDC).
+        Amounts are in smallest units ({assetMeta.decimals} decimals for {assetMeta.code}).
         The UI checks the token allowance first and asks Freighter to approve
         the deposit only when it is short — expect one or two signatures.
       </p>
@@ -262,11 +370,14 @@ export default function StreamForm({
       {policy && (
         <p className="muted" style={{ fontSize: "0.85rem" }}>
           Active Policy Floors:
-          {BigInt(policy.minDeposit) > 0n && ` Min Deposit: ${policy.minDeposit}`}
+          {BigInt(policy.minDeposit) > 0n &&
+            ` Min Deposit: ${formatAmount(BigInt(policy.minDeposit), assetMeta.decimals)} ${assetMeta.code}`}
           {policy.minDuration > 0 && ` | Min Duration: ${policy.minDuration}s`}
           {policy.maxDuration > 0 && ` | Max Duration: ${policy.maxDuration}s`}
-          {BigInt(policy.minRate) > 0n && ` | Min Rate: ${policy.minRate}/s`}
-          {BigInt(policy.maxRate) > 0n && ` | Max Rate: ${policy.maxRate}/s`}
+          {BigInt(policy.minRate) > 0n &&
+            ` | Min Rate: ${formatAmount(BigInt(policy.minRate), assetMeta.decimals)} ${assetMeta.code}/s`}
+          {BigInt(policy.maxRate) > 0n &&
+            ` | Max Rate: ${formatAmount(BigInt(policy.maxRate), assetMeta.decimals)} ${assetMeta.code}/s`}
         </p>
       )}
 

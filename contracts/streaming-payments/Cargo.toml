@@ -20,6 +20,9 @@ soroban-sdk.workspace = true
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
+# Out-of-band ed25519 signer for the sponsored-claim tests: the contract
+# verifies real signatures, so tests must produce real ones.
+ed25519-dalek = "2.2.0"
 proptest = "1.6"
 serde_json = "1"
 streampay-model = { version = "0.1.0", path = "../../model" }

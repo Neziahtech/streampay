@@ -11,8 +11,8 @@
 use soroban_sdk::{contractclient, Address, BytesN, Env, Vec};
 
 use crate::{
-    BatchEntry, FeeScan, MigrationStatus, PendingUpgrade, ScheduledIntent, Stream, StreamError,
-    StreamInput, StreamPolicy, TreasuryStatus,
+    BatchEntry, FeeScan, MigrationStatus, PendingUpgrade, PeriodSpend, ScheduledIntent,
+    SponsorConfig, Stream, StreamError, StreamInput, StreamPolicy, TreasuryStatus,
 };
 
 /// Interface of the StreamPay streaming-payments contract.
@@ -29,6 +29,18 @@ pub trait StreamingPaymentsApi {
         start_time: u64,
         end_time: u64,
         cancelable: bool,
+    ) -> Result<u64, StreamError>;
+    #[allow(clippy::too_many_arguments)]
+    fn create_stream_with_oracle(
+        env: Env,
+        sender: Address,
+        recipient: Address,
+        token: Address,
+        deposit_amount: i128,
+        start_time: u64,
+        end_time: u64,
+        cancelable: bool,
+        use_oracle: bool,
     ) -> Result<u64, StreamError>;
     fn create_streams(
         env: Env,
@@ -48,6 +60,7 @@ pub trait StreamingPaymentsApi {
     fn available(env: Env, stream_id: u64) -> Result<i128, StreamError>;
     fn recipient_streams(env: Env, recipient: Address, offset: u32, limit: u32) -> Vec<u64>;
     fn sender_streams(env: Env, sender: Address, offset: u32, limit: u32) -> Vec<u64>;
+    // ---------------------------------------------------------- treasury surface
 
     // --- scheduled intents ---
     #[allow(clippy::too_many_arguments)] // mirrors the contract's scheduling surface
@@ -91,6 +104,45 @@ pub trait StreamingPaymentsApi {
     fn stream_fee(env: Env, stream_id: u64) -> Result<i128, StreamError>;
     fn verify_treasury(env: Env, token: Address, start_id: u64, count: u32) -> FeeScan;
     fn total_streams(env: Env) -> u64;
+
+    // ------------------------------------------------------- sponsorship surface
+    #[allow(clippy::too_many_arguments)] // mirrors the contract's 6-arg register_sponsor
+    fn register_sponsor(
+        env: Env,
+        sponsor: Address,
+        token: Address,
+        per_period_limit: i128,
+        per_beneficiary_limit: i128,
+        window_seconds: u64,
+        operator_key: BytesN<32>,
+    ) -> Result<(), StreamError>;
+    fn set_sponsor_active(env: Env, sponsor: Address, active: bool) -> Result<(), StreamError>;
+    fn rotate_operator_key(
+        env: Env,
+        sponsor: Address,
+        new_operator_key: BytesN<32>,
+    ) -> Result<(), StreamError>;
+    fn enroll_beneficiary(
+        env: Env,
+        beneficiary: Address,
+        public_key: BytesN<32>,
+    ) -> Result<(), StreamError>;
+    #[allow(clippy::too_many_arguments)] // mirrors the contract's 8-arg sponsored_withdraw
+    fn sponsored_withdraw(
+        env: Env,
+        sponsor: Address,
+        beneficiary: Address,
+        stream_id: u64,
+        amount: i128,
+        nonce: u64,
+        deadline: u64,
+        operator_sig: BytesN<64>,
+        beneficiary_sig: BytesN<64>,
+    ) -> Result<(), StreamError>;
+    fn get_sponsor(env: Env, sponsor: Address) -> Option<SponsorConfig>;
+    fn get_beneficiary_public_key(env: Env, beneficiary: Address) -> Option<BytesN<32>>;
+    fn sponsor_period_spend(env: Env, sponsor: Address) -> PeriodSpend;
+    fn beneficiary_spend(env: Env, sponsor: Address, beneficiary: Address) -> PeriodSpend;
     fn policy_init(env: Env, admin: Address);
     fn policy_propose_asset(env: Env, asset: Address, allowed: bool) -> Result<(), StreamError>;
     fn policy_execute_asset(env: Env, asset: Address) -> Result<(), StreamError>;
@@ -129,4 +181,15 @@ pub trait StreamingPaymentsApi {
         count: u32,
     ) -> Result<MigrationStatus, StreamError>;
     fn migration_progress(env: Env) -> MigrationStatus;
+    fn set_oracle_config(
+        env: Env,
+        caller: Address,
+        publishers: Vec<Address>,
+        threshold: u32,
+        max_stale_seconds: u64,
+    ) -> Result<(), StreamError>;
+    fn submit_oracle_time(env: Env, publisher: Address, timestamp: u64) -> Result<(), StreamError>;
+    fn resolve_time(env: Env, stream_id: u64, use_oracle: bool) -> crate::ResolvedTime;
+    fn oracle_config(env: Env) -> Option<crate::OracleConfig>;
+    fn oracle_report(env: Env, publisher: Address) -> Option<crate::OracleReport>;
 }
