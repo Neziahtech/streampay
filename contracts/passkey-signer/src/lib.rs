@@ -135,6 +135,9 @@ impl PasskeySigner {
         flags: u32,
     ) -> Result<(), PasskeyError> {
         owner.require_auth();
+        if flags & !registry::REGISTRATION_FLAGS_REQUIRE_UV != 0 {
+            return Err(PasskeyError::CoseKeyInvalid);
+        }
         registry::put_credential(
             &env,
             &owner,

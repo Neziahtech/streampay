@@ -50,6 +50,7 @@ fn base64url_encode(input: &[u8], out: &mut [u8; 64]) -> usize {
 /// whitespace, and `"<value>"`. Returns a `(start, end)` byte range into
 /// `json` for the value content (excluding surrounding quotes), or `None`.
 fn find_json_string_value(json: &[u8], key: &[u8]) -> Option<(usize, usize)> {
+    let mut found: Option<(usize, usize)> = None;
     let mut i = 0usize;
     while i + key.len() + 4 <= json.len() {
         // Locate opening `"` of a potential key.
@@ -92,16 +93,24 @@ fn find_json_string_value(json: &[u8], key: &[u8]) -> Option<(usize, usize)> {
         }
         j += 1;
         let val_start = j;
-        // Scan to closing `"` (no escape handling needed for our fixed values).
+        // Scan to closing `"` and reject unescaped control chars or escapes.
         while j < json.len() && json[j] != b'"' {
+            if json[j] == b'\\' || json[j] < 0x20 {
+                return None;
+            }
             j += 1;
         }
         if j >= json.len() {
             return None;
         }
-        return Some((val_start, j));
+        // Reject duplicate occurrences of the same key (RFC 8259 duplicate-key shadowing).
+        if found.is_some() {
+            return None;
+        }
+        found = Some((val_start, j));
+        i = j + 1;
     }
-    None
+    found
 }
 
 // ── Public entry point ────────────────────────────────────────────────────────
@@ -119,7 +128,7 @@ pub fn verify_client_data_json(
     challenge: &BytesN<32>,
 ) -> Result<(), PasskeyError> {
     let cdj_len = client_data_json.len() as usize;
-    if cdj_len > MAX_CDJ_LEN {
+    if cdj_len == 0 || cdj_len > MAX_CDJ_LEN {
         return Err(PasskeyError::ClientDataJsonInvalid);
     }
 
@@ -129,6 +138,19 @@ pub fn verify_client_data_json(
         buf[idx] = byte;
     }
     let json = &buf[..cdj_len];
+
+    // Verify top-level `{ ... }` JSON object envelope.
+    let mut start = 0usize;
+    while start < cdj_len && matches!(json[start], b' ' | b'\t' | b'\n' | b'\r') {
+        start += 1;
+    }
+    let mut end = cdj_len;
+    while end > start && matches!(json[end - 1], b' ' | b'\t' | b'\n' | b'\r') {
+        end -= 1;
+    }
+    if end <= start + 1 || json[start] != b'{' || json[end - 1] != b'}' {
+        return Err(PasskeyError::ClientDataJsonInvalid);
+    }
 
     // 1. Verify `type` field.
     let (ts, te) =

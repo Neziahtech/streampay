@@ -454,3 +454,76 @@ fn expired_challenge_nonce_rejected() {
     });
     assert_eq!(result, Err(PasskeyError::ChallengeAlreadyUsed));
 }
+
+#[test]
+fn duplicate_type_or_challenge_key_in_client_data_json_rejected() {
+    let env = new_env();
+    let (_, client) = deploy(&env);
+    let owner = Address::generate(&env);
+    let rp_id_hash = [0x99u8; 32];
+    let (x, y) = fake_pub_key();
+    client.register(
+        &owner,
+        &to_bytes32(&env, &rp_id_hash),
+        &to_bytes32(&env, &x),
+        &to_bytes32(&env, &y),
+        &0u32,
+    );
+
+    let challenge = [0x01u8; 32];
+    let auth_data_bytes = make_auth_data(&rp_id_hash, 0x01);
+
+    let dup_type_cdj = std::format!(
+        r#"{{"type":"webauthn.get","type":"webauthn.create","challenge":"{}"}}"#,
+        base64url(&challenge)
+    );
+    assert_eq!(
+        client.try_verify_and_record(
+            &owner,
+            &to_bytes(&env, &auth_data_bytes),
+            &to_bytes(&env, dup_type_cdj.as_bytes()),
+            &to_bytes32(&env, &challenge),
+            &to_bytes32(&env, &[0u8; 32]),
+            &to_bytes32(&env, &[0u8; 32]),
+        ),
+        Err(Ok(PasskeyError::ClientDataTypeMismatch))
+    );
+
+    let dup_challenge_cdj = std::format!(
+        r#"{{"type":"webauthn.get","challenge":"{}","challenge":"{}"}}"#,
+        base64url(&challenge),
+        base64url(&[0xFFu8; 32])
+    );
+    assert_eq!(
+        client.try_verify_and_record(
+            &owner,
+            &to_bytes(&env, &auth_data_bytes),
+            &to_bytes(&env, dup_challenge_cdj.as_bytes()),
+            &to_bytes32(&env, &challenge),
+            &to_bytes32(&env, &[0u8; 32]),
+            &to_bytes32(&env, &[0u8; 32]),
+        ),
+        Err(Ok(PasskeyError::ChallengeMismatch))
+    );
+}
+
+#[test]
+fn register_rejects_unknown_flags_bits() {
+    let env = new_env();
+    let (_, client) = deploy(&env);
+    let owner = Address::generate(&env);
+    let rp_id_hash = [0x11u8; 32];
+    let (x, y) = fake_pub_key();
+
+    assert_eq!(
+        client.try_register(
+            &owner,
+            &to_bytes32(&env, &rp_id_hash),
+            &to_bytes32(&env, &x),
+            &to_bytes32(&env, &y),
+            &0x04u32,
+        ),
+        Err(Ok(PasskeyError::CoseKeyInvalid))
+    );
+}
+
