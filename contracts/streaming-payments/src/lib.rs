@@ -205,6 +205,10 @@ impl StreamingPayments {
     /// Internal helper: verifies that mutating entrypoints are not called
     /// while the contract is frozen for maintenance or upgrade.
     fn require_not_frozen(env: &Env) -> Result<(), StreamError> {
+        env.storage().instance().extend_ttl(
+            stream::TTL_THRESHOLD_LEDGERS,
+            stream::TTL_EXTEND_LEDGERS,
+        );
         if stream::is_frozen(env) {
             return Err(surface::reject(Branch::ContractFrozen));
         }
@@ -601,6 +605,7 @@ impl StreamingPayments {
         env: Env,
         entries: Vec<BatchEntry>,
     ) -> Result<Vec<Result<u64, StreamError>>, StreamError> {
+        Self::require_not_frozen(&env)?;
         let count = entries.len();
         if count < stream::MIN_BATCH {
             return Err(surface::reject(Branch::CreateBatchEmpty));
@@ -612,18 +617,18 @@ impl StreamingPayments {
         let mut results = Vec::new(&env);
         let mut authorized_senders = Vec::new(&env);
         for entry in entries.iter() {
-            if !authorized_senders.contains(&entry.sender) {
-                entry.sender.require_auth();
-                authorized_senders.push_back(entry.sender.clone());
-            }
-            let res = Self::create_single_batch_entry(&env, &entry);
+            let res = Self::create_single_batch_entry(&env, &entry, &mut authorized_senders);
             results.push_back(res);
         }
 
         Ok(results)
     }
 
-    fn create_single_batch_entry(env: &Env, entry: &BatchEntry) -> Result<u64, StreamError> {
+    fn create_single_batch_entry(
+        env: &Env,
+        entry: &BatchEntry,
+        authorized_senders: &mut Vec<Address>,
+    ) -> Result<u64, StreamError> {
         Self::validate_stream_creation(
             env.ledger().timestamp(),
             entry.deposit,
@@ -637,6 +642,19 @@ impl StreamingPayments {
             .deposit
             .checked_add(fee)
             .ok_or(StreamError::MathOverflow)?;
+        if fee > 0 {
+            let current_treasury = treasury::get_treasury(env, &entry.token);
+            current_treasury
+                .charged_total
+                .checked_add(fee)
+                .ok_or(StreamError::MathOverflow)?;
+        }
+        let next_id = stream::peek_next_stream_id(env)?;
+
+        if !authorized_senders.contains(&entry.sender) {
+            entry.sender.require_auth();
+            authorized_senders.push_back(entry.sender.clone());
+        }
 
         let pull_res = TokenClient::new(env, &entry.token).try_transfer_from(
             &env.current_contract_address(),
@@ -649,7 +667,8 @@ impl StreamingPayments {
             _ => return Err(StreamError::AmountExceedsAvailable),
         }
 
-        let id = stream::next_stream_id(env);
+        let id = next_id;
+        stream::commit_next_stream_id(env, id)?;
         let s = Stream {
             id,
             sender: entry.sender.clone(),
@@ -663,11 +682,11 @@ impl StreamingPayments {
             status: StreamStatus::Active,
             use_oracle: false,
         };
-        stream::put_stream(env, &s);
-        stream::index_stream(env, &s);
         if fee > 0 {
             treasury::apply_fee(env, &entry.token, id, fee)?;
         }
+        stream::put_stream(env, &s);
+        stream::index_stream(env, &s);
 
         StreamCreated {
             stream_id: id,

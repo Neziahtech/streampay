@@ -304,6 +304,25 @@ pub fn next_stream_id(env: &Env) -> u64 {
     id
 }
 
+/// Peeks the next stream id and verifies incrementing by 1 will not overflow `u64::MAX`.
+pub fn peek_next_stream_id(env: &Env) -> Result<u64, StreamError> {
+    let key = DataKey::NextStreamId;
+    let id: u64 = env.storage().persistent().get(&key).unwrap_or(1);
+    let _ = id.checked_add(1).ok_or(StreamError::MathOverflow)?;
+    Ok(id)
+}
+
+/// Commits the next stream id using `checked_add(1)` and extends persistent TTL.
+pub fn commit_next_stream_id(env: &Env, current_id: u64) -> Result<(), StreamError> {
+    let key = DataKey::NextStreamId;
+    let next = current_id.checked_add(1).ok_or(StreamError::MathOverflow)?;
+    env.storage().persistent().set(&key, &next);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+    Ok(())
+}
+
 /// Reserves a contiguous range of stream ids with one persistent write.
 pub fn reserve_stream_ids(env: &Env, count: u32) -> Result<u64, StreamError> {
     let key = DataKey::NextStreamId;
