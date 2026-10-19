@@ -443,6 +443,9 @@ impl StreamNft {
                 return Err(NftError::NotAuthorized);
             }
         }
+        if amount <= 0 {
+            return Err(NftError::InvalidAmount);
+        }
 
         let stream_id = Self::get_stream_id(&env)?;
         let core: Address = env
@@ -456,12 +459,19 @@ impl StreamNft {
             .withdraw(&stream_id, &amount)
             .map_err(|_| NftError::StreamNotActive)?;
 
-        // Auto-burn if stream depleted
+        // Auto-burn if stream depleted, otherwise refresh NFT TTLs
         let stream = core_client
             .get_stream(&stream_id)
             .map_err(|_| NftError::StreamNotActive)?;
         if stream.status == StreamStatus::Depleted {
             let _ = Self::burn_internal(&env, owner);
+        } else {
+            env.storage()
+                .persistent()
+                .extend_ttl(&NftDataKey::Owner, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+            env.storage()
+                .instance()
+                .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
         }
 
         Ok(())
@@ -498,6 +508,13 @@ impl StreamNft {
             .map_err(|_| NftError::StreamNotActive)?;
         if stream.status == StreamStatus::Depleted {
             let _ = Self::burn_internal(&env, owner);
+        } else {
+            env.storage()
+                .persistent()
+                .extend_ttl(&NftDataKey::Owner, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+            env.storage()
+                .instance()
+                .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
         }
 
         Ok(withdrawn)
