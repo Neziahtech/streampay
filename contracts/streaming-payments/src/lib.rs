@@ -623,10 +623,6 @@ impl StreamingPayments {
         if s.status != StreamStatus::Active {
             return Err(surface::reject(Branch::StreamNotActive));
         }
-        let available = stream::available_amount(env, &s)?;
-        if available <= 0 {
-            return Err(surface::reject(Branch::NothingToWithdraw));
-        }
         Ok(s)
     }
 
@@ -853,7 +849,8 @@ impl StreamingPayments {
         let now = env.ledger().timestamp();
         // Expired streams can be swept; if still accrued above dust floor,
         // require the stream to be Depleted.
-        let dust_ok = stream::available_amount(&env, &s) < stream::MIN_CLAIM_AMOUNT;
+        let available = stream::available_amount(&env, &s)?;
+        let dust_ok = available < stream::MIN_CLAIM_AMOUNT;
         if s.end_time > now && !dust_ok && s.status != StreamStatus::Depleted {
             return Err(surface::reject(Branch::StreamNotExpired));
         }

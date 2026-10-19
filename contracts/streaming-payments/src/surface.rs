@@ -160,15 +160,7 @@ pub enum Branch {
     PolicyDurationBelowFloor,
     PolicyDurationAboveCeiling,
     PolicyDepositBelowFloor,
-    // ------------------------------------------------------ dust protection
-    /// `create_stream` / `create_streams`: deposit amount is below `MIN_STREAM_AMOUNT`.
-    StreamTooSmall,
-    /// `withdraw` / `withdraw_max`: claimable balance is below `MIN_CLAIM_AMOUNT`.
-    ClaimAmountTooSmall,
-    /// `sweep`: stream is not fully depleted (remaining_balance != 0).
-    StreamNotDepleted,
-    /// `sweep`: stream has not reached its `end_time`.
-    StreamNotExpired,
+    // ------------------------------------------------ upgrade & freeze
 }
 
 impl Branch {
