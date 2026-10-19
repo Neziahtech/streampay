@@ -418,5 +418,122 @@ describe("Notifications System", () => {
       assert.equal(telegramResult.success, true);
       assert.equal(telegramSent, true);
     });
+
+    it("rejects tampered challenge expiry, cross-address nonce reuse, internal SSRF hosts, and reserved header overrides", async () => {
+      const kpA = Keypair.random();
+      const kpB = Keypair.random();
+      const addrA = kpA.publicKey();
+      const addrB = kpB.publicKey();
+
+      // 1. Challenge expiry extension tampering must be rejected
+      const challengeA = createVerificationChallenge(addrA, 300);
+      const extendedExpiresIso = new Date((challengeA.expiresAt + 86400) * 1000).toISOString();
+      const tamperedMessage = challengeA.message.replace(
+        /Expires At:\s*[^\n]+/,
+        `Expires At: ${extendedExpiresIso}`
+      );
+      const tamperedSig = kpA.sign(Buffer.from(tamperedMessage, "utf8"));
+      const tamperedRes = verifySignatureChallenge(tamperedMessage, tamperedSig, addrA);
+      assert.equal(tamperedRes.valid, false);
+      assert.ok(tamperedRes.reason?.includes("expiration"));
+
+      // 2. Nonce issued for addrA cannot be re-signed by addrB
+      const swappedMessage = challengeA.message.replace(
+        `Address: ${addrA}`,
+        `Address: ${addrB}`
+      );
+      const swappedSig = kpB.sign(Buffer.from(swappedMessage, "utf8"));
+      const swappedRes = verifySignatureChallenge(swappedMessage, swappedSig, addrB);
+      assert.equal(swappedRes.valid, false);
+      assert.ok(swappedRes.reason?.includes("different address"));
+
+      // 3. WebhookNotifier rejects loopback/metadata/NAT64 SSRF targets before invoking fetch
+      let fetchInvoked = false;
+      const mockFetch: FetchFunction = (async () => {
+        fetchInvoked = true;
+        return new Response("ok", { status: 200 });
+      }) as FetchFunction;
+      const notifier = new WebhookNotifier(mockFetch);
+
+      for (const badUrl of [
+        "http://127.0.0.1:8080/internal",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://[::ffff:127.0.0.1]/admin",
+        "http://[64:ff9b::10.0.0.1]/secret",
+      ]) {
+        const ssrfRes = await notifier.deliver({
+          id: "notif_ssrf",
+          idempotencyKey: "evt_ssrf:sub_ssrf",
+          subscriptionId: "sub_ssrf",
+          address: addrA,
+          channel: "webhook",
+          event: {
+            id: "evt_ssrf",
+            type: "claim",
+            address: addrA,
+            timestamp: 1700000000,
+            payload: {
+              streamId: "1",
+              sender: addrA,
+              recipient: addrB,
+              token: "CAS...USDC",
+              deposit: "100",
+            },
+          },
+          config: { webhook: { url: badUrl, secret: "sec" } },
+          attempt: 0,
+          createdAt: 1700000000,
+        });
+        assert.equal(ssrfRes.success, false);
+        assert.equal(ssrfRes.fatal, true);
+        assert.equal(fetchInvoked, false);
+      }
+
+      // 4. customHeaders cannot overwrite X-StreamPay-Signature or Idempotency-Key
+      let capturedHeaders: Record<string, string> = {};
+      const headerNotifier = new WebhookNotifier((async (_url, init) => {
+        capturedHeaders = (init?.headers as Record<string, string>) || {};
+        return new Response("ok", { status: 200 });
+      }) as FetchFunction);
+
+      const headerRes = await headerNotifier.deliver({
+        id: "notif_hdr",
+        idempotencyKey: "real-idempotency-key",
+        subscriptionId: "sub_hdr",
+        address: addrA,
+        channel: "webhook",
+        event: {
+          id: "evt_hdr",
+          type: "claim",
+          address: addrA,
+          timestamp: 1700000000,
+          payload: {
+            streamId: "2",
+            sender: addrA,
+            recipient: addrB,
+            token: "CAS...USDC",
+            deposit: "100",
+          },
+        },
+        config: {
+          webhook: {
+            url: "https://webhook.site/safe",
+            secret: "real_secret",
+            customHeaders: {
+              "X-StreamPay-Signature": "forged-sig",
+              "Idempotency-Key": "forged-key",
+              "X-Custom-Trace": "allowed-trace",
+            },
+          },
+        },
+        attempt: 0,
+        createdAt: 1700000000,
+      });
+
+      assert.equal(headerRes.success, true);
+      assert.equal(capturedHeaders["Idempotency-Key"], "real-idempotency-key");
+      assert.notEqual(capturedHeaders["X-StreamPay-Signature"], "forged-sig");
+      assert.equal(capturedHeaders["X-Custom-Trace"], "allowed-trace");
+    });
   });
 });

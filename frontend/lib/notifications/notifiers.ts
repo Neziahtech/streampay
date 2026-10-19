@@ -1,4 +1,5 @@
 import { createHmac } from "node:crypto";
+import { isIP } from "node:net";
 import type {
   Notifier,
   OutgoingNotification,
@@ -7,6 +8,200 @@ import type {
 } from "./types.ts";
 
 export type FetchFunction = typeof globalThis.fetch;
+
+const RESERVED_HEADER_NAMES = new Set([
+  "content-type",
+  "user-agent",
+  "idempotency-key",
+  "x-streampay-timestamp",
+  "x-streampay-signature",
+  "host",
+  "content-length",
+]);
+
+function isPrivateOrReservedIpv4Octets(parts: number[]): boolean {
+  if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) {
+    return true;
+  }
+  const [a, b, c] = parts;
+  if (a === 0 || a === 10 || a === 127) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true;
+  if (a === 192 && b === 0 && (c === 0 || c === 2)) return true;
+  if (a === 198 && (b === 18 || b === 19)) return true;
+  if (a === 198 && b === 51 && c === 100) return true;
+  if (a === 203 && b === 0 && c === 113) return true;
+  if (a >= 224) return true;
+  return false;
+}
+
+function expandIpv6Words(rawHost: string): number[] | null {
+  const zoneStripped = rawHost.split("%")[0].toLowerCase();
+  let normalized = zoneStripped;
+  if (normalized.includes(".")) {
+    const lastColon = normalized.lastIndexOf(":");
+    if (lastColon === -1) return null;
+    const ipv4Part = normalized.slice(lastColon + 1);
+    const octets = ipv4Part.split(".").map((x) => Number(x));
+    if (octets.length !== 4 || octets.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) {
+      return null;
+    }
+    const hi = ((octets[0] << 8) | octets[1]).toString(16);
+    const lo = ((octets[2] << 8) | octets[3]).toString(16);
+    normalized = `${normalized.slice(0, lastColon)}:${hi}:${lo}`;
+  }
+
+  const doubleColonParts = normalized.split("::");
+  if (doubleColonParts.length > 2) return null;
+
+  const left = doubleColonParts[0] ? doubleColonParts[0].split(":") : [];
+  const right =
+    doubleColonParts.length === 2 && doubleColonParts[1]
+      ? doubleColonParts[1].split(":")
+      : [];
+
+  if (doubleColonParts.length === 1 && left.length !== 8) return null;
+  if (left.length + right.length > 8) return null;
+
+  const missing = 8 - (left.length + right.length);
+  const words = [
+    ...left,
+    ...(doubleColonParts.length === 2 ? Array(missing).fill("0") : []),
+    ...right,
+  ];
+  if (words.length !== 8) return null;
+
+  const parsed: number[] = [];
+  for (const w of words) {
+    if (!/^[0-9a-f]{1,4}$/.test(w)) return null;
+    parsed.push(parseInt(w, 16));
+  }
+  return parsed;
+}
+
+function isDisallowedWebhookHost(hostname: string): boolean {
+  const clean = hostname.replace(/^\[|\]$/g, "").trim().toLowerCase();
+  if (!clean) return true;
+
+  if (
+    clean === "localhost" ||
+    clean.endsWith(".localhost") ||
+    clean.endsWith(".internal") ||
+    clean === "metadata.google.internal"
+  ) {
+    return true;
+  }
+
+  if (clean.includes("%")) return true;
+
+  const ipVersion = isIP(clean);
+  if (ipVersion === 4) {
+    const octets = clean.split(".").map((p) => Number(p));
+    return isPrivateOrReservedIpv4Octets(octets);
+  }
+
+  if (ipVersion === 6 || clean.includes(":")) {
+    const words = expandIpv6Words(clean);
+    if (!words) return true;
+
+    const isUnspecified = words.every((w) => w === 0);
+    const isLoopback = words.slice(0, 7).every((w) => w === 0) && words[7] === 1;
+    if (isUnspecified || isLoopback) return true;
+
+    const w0 = words[0];
+    // Unique local fc00::/7, link-local fe80::/10, multicast ff00::/8
+    if ((w0 & 0xfe00) === 0xfc00 || (w0 & 0xffc0) === 0xfe80 || (w0 & 0xff00) === 0xff00) {
+      return true;
+    }
+    // Documentation 2001:db8::/32
+    if (w0 === 0x2001 && words[1] === 0x0db8) return true;
+
+    // IPv4-mapped (::ffff:0:0/96) or IPv4-compatible (::/96)
+    const isMapped =
+      words.slice(0, 5).every((w) => w === 0) && (words[5] === 0xffff || words[5] === 0);
+    // NAT64 well-known prefix 64:ff9b::/96 or local-use 64:ff9b:1::/48
+    const isNat64 =
+      w0 === 0x0064 &&
+      words[1] === 0xff9b &&
+      ((words[2] === 0 && words[3] === 0 && words[4] === 0 && words[5] === 0) ||
+        words[2] === 1);
+
+    if (isMapped || isNat64) {
+      const octets = [
+        (words[6] >> 8) & 0xff,
+        words[6] & 0xff,
+        (words[7] >> 8) & 0xff,
+        words[7] & 0xff,
+      ];
+      return isPrivateOrReservedIpv4Octets(octets);
+    }
+
+    // 6to4 2002::/16 embeds IPv4 in words[1..2]
+    if (w0 === 0x2002) {
+      const octets = [
+        (words[1] >> 8) & 0xff,
+        words[1] & 0xff,
+        (words[2] >> 8) & 0xff,
+        words[2] & 0xff,
+      ];
+      if (isPrivateOrReservedIpv4Octets(octets)) return true;
+    }
+
+    // Teredo 2001:0000::/32
+    if (w0 === 0x2001 && words[1] === 0x0000) return true;
+  }
+
+  return false;
+}
+
+export function validateNotificationWebhookUrl(rawUrl: string): {
+  valid: boolean;
+  reason?: string;
+} {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return { valid: false, reason: "Malformed webhook URL." };
+  }
+
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    return { valid: false, reason: "Webhook URL must use http or https protocol." };
+  }
+
+  if (parsed.username || parsed.password) {
+    return { valid: false, reason: "Webhook URL must not embed credentials." };
+  }
+
+  if (isDisallowedWebhookHost(parsed.hostname)) {
+    return {
+      valid: false,
+      reason: "Webhook URL points to a disallowed internal, loopback, or private host.",
+    };
+  }
+
+  return { valid: true };
+}
+
+function sanitizeCustomHeaders(
+  customHeaders?: Record<string, string>
+): Record<string, string> {
+  if (!customHeaders) return {};
+  const sanitized: Record<string, string> = {};
+  for (const [key, value] of Object.entries(customHeaders)) {
+    const trimmedKey = key.trim();
+    if (!trimmedKey || RESERVED_HEADER_NAMES.has(trimmedKey.toLowerCase())) {
+      continue;
+    }
+    if (/[\r\n]/.test(trimmedKey) || /[\r\n]/.test(String(value))) {
+      continue;
+    }
+    sanitized[trimmedKey] = String(value);
+  }
+  return sanitized;
+}
 
 /**
  * Webhook delivery adapter with at-least-once guarantee, idempotency keys,
@@ -32,6 +227,17 @@ export class WebhookNotifier implements Notifier {
       };
     }
 
+    const urlValidation = validateNotificationWebhookUrl(config.url);
+    if (!urlValidation.valid) {
+      return {
+        success: false,
+        deliveredAt: Math.floor(Date.now() / 1000),
+        statusMessage: urlValidation.reason || "Disallowed webhook target URL.",
+        retryable: false,
+        fatal: true,
+      };
+    }
+
     const payload = JSON.stringify({
       id: notification.id,
       idempotencyKey: notification.idempotencyKey,
@@ -49,12 +255,12 @@ export class WebhookNotifier implements Notifier {
       : "";
 
     const headers: Record<string, string> = {
+      ...sanitizeCustomHeaders(config.customHeaders),
       "Content-Type": "application/json",
       "User-Agent": "StreamPay-Notifier/1.0",
       "Idempotency-Key": notification.idempotencyKey,
       "X-StreamPay-Timestamp": String(timestamp),
       ...(signature ? { "X-StreamPay-Signature": `t=${timestamp},v1=${signature}` } : {}),
-      ...(config.customHeaders ?? {}),
     };
 
     try {
@@ -62,6 +268,7 @@ export class WebhookNotifier implements Notifier {
         method: "POST",
         headers,
         body: payload,
+        redirect: "error",
       });
 
       const now = Math.floor(Date.now() / 1000);

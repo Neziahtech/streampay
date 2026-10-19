@@ -309,7 +309,9 @@ export class DiscoveryService {
     const listings = paginatedRecords.map((r) => {
       const eqKey = computeEquivalenceClass(r.asset, r.rateBucket, r.durationBucket);
       const size = classCounts.get(eqKey) || 1;
-      return serializePublicListing(r, size, this.kThreshold);
+      return serializePublicListing(r, size, this.kThreshold, {
+        includeLowAnonymity: Boolean(params.includeLowAnonymity),
+      });
     });
 
     return {
@@ -324,7 +326,10 @@ export class DiscoveryService {
   /**
    * Retrieve a single listing by ID with verification attestation.
    */
-  public getListingById(listingId: string): PublicListingView | null {
+  public getListingById(
+    listingId: string,
+    options?: { includeLowAnonymity?: boolean }
+  ): PublicListingView | null {
     const record = discoveryStore.getListing(listingId);
     if (!record || record.state === "WITHDRAWN") {
       return null;
@@ -337,7 +342,11 @@ export class DiscoveryService {
         computeEquivalenceClass(record.asset, record.rateBucket, record.durationBucket)
     ).length;
 
-    return serializePublicListing(record, count, this.kThreshold);
+    if (count < this.kThreshold && options?.includeLowAnonymity === false) {
+      return null;
+    }
+
+    return serializePublicListing(record, count, this.kThreshold, options);
   }
 }
 

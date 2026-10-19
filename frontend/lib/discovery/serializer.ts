@@ -18,7 +18,8 @@ import type {
 export function serializePublicListing(
   record: InternalListingRecord,
   anonymitySetSize: number = 1,
-  kThreshold: number = 3
+  kThreshold: number = 3,
+  options?: { includeLowAnonymity?: boolean }
 ): PublicListingView {
   const bothOptedIn =
     Boolean(record.senderConsent?.shareAddress) &&
@@ -26,6 +27,10 @@ export function serializePublicListing(
 
   const anonymityFlag: AnonymityFlag =
     anonymitySetSize >= kThreshold ? "normal" : "low";
+
+  const canExposeParties =
+    bothOptedIn &&
+    (anonymitySetSize >= kThreshold || options?.includeLowAnonymity !== false);
 
   const publicView: PublicListingView = {
     listingId: record.listingId,
@@ -43,8 +48,8 @@ export function serializePublicListing(
     verificationHash: record.verificationHash,
   };
 
-  // Addresses are exposed ONLY if BOTH parties opted in
-  if (bothOptedIn) {
+  // Addresses are exposed ONLY if BOTH parties opted in AND k-anonymity is satisfied (or low-anonymity is explicitly allowed)
+  if (canExposeParties) {
     publicView.sender = record.sender;
     publicView.recipient = record.recipient;
   }

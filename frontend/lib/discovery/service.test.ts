@@ -535,6 +535,41 @@ describe("Discovery Service & Privacy Egress", () => {
     const res2 = service.withdrawListing(withdrawPayload, { nowSeconds: now });
     assert.equal(res2.success, false);
   });
+
+  it("enforces k-anonymity on getListingById when includeLowAnonymity is false and clears pending proposals on submitListing", async () => {
+    const { submission, nonce, expiry } = createValidSubmission({
+      shareAddressSender: true,
+      shareAddressRecipient: true,
+    });
+
+    discoveryStore.saveProposal("101", {
+      streamId: "101",
+      nonce,
+      expiry,
+      initiatorConsent: submission.senderConsent,
+    });
+    assert.notEqual(discoveryStore.getProposal("101"), undefined);
+
+    const pubRes = await service.submitListing(submission, { nowSeconds: 1700000000 });
+    assert.equal(pubRes.success, true);
+    if (!pubRes.success) return;
+
+    // Pending proposal is cleared once published
+    assert.equal(discoveryStore.getProposal("101"), undefined);
+
+    // Equivalence class size is 1 < k=3: strict lookup with includeLowAnonymity: false returns null
+    const suppressedLookup = service.getListingById(pubRes.listing.listingId, {
+      includeLowAnonymity: false,
+    });
+    assert.equal(suppressedLookup, null);
+
+    // Explicit low-anonymity opt-in returns the listing
+    const explicitLookup = service.getListingById(pubRes.listing.listingId, {
+      includeLowAnonymity: true,
+    });
+    assert.notEqual(explicitLookup, null);
+    assert.equal(explicitLookup?.anonymityFlag, "low");
+  });
 });
 
 function resultError(err: string) {

@@ -29,7 +29,11 @@ export async function GET(
     return NextResponse.json({ error: "Missing listing ID" }, { status: 400 });
   }
 
-  const listing = discoveryService.getListingById(id);
+  const { searchParams } = new URL(req.url);
+  const includeLowAnonymity =
+    searchParams.get("includeLowAnonymity") === "true";
+
+  const listing = discoveryService.getListingById(id, { includeLowAnonymity });
   if (!listing) {
     return NextResponse.json(
       { error: "Listing not found or has been withdrawn" },

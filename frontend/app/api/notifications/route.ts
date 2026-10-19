@@ -3,6 +3,7 @@ import {
   createVerificationChallenge,
   verifySignatureChallenge,
   checkRateLimit,
+  validateNotificationWebhookUrl,
   defaultSubscriptionStore,
   defaultDispatcher,
   type NotificationChannelType,
@@ -12,6 +13,24 @@ import {
   type StreamEvent,
 } from "@/lib/notifications";
 
+function redactSubscriptionSecrets<
+  T extends { config?: SubscriptionConfig }
+>(sub: T): T {
+  if (!sub.config?.webhook?.secret) {
+    return sub;
+  }
+  return {
+    ...sub,
+    config: {
+      ...sub.config,
+      webhook: {
+        ...sub.config.webhook,
+        secret: "***REDACTED***",
+      },
+    },
+  };
+}
+
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const address = searchParams.get("address");
@@ -20,7 +39,9 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "Missing address query parameter" }, { status: 400 });
   }
 
-  const subscriptions = await defaultSubscriptionStore.getSubscriptionsForAddress(address);
+  const subscriptions = (
+    await defaultSubscriptionStore.getSubscriptionsForAddress(address)
+  ).map(redactSubscriptionSecrets);
   return NextResponse.json({ subscriptions });
 }
 
@@ -83,8 +104,15 @@ export async function POST(req: Request) {
 
       // 2. Validate channel config
       if (channel === "webhook") {
-        if (!config.webhook?.url || !config.webhook.url.startsWith("http")) {
+        if (!config.webhook?.url) {
           return NextResponse.json({ error: "Invalid webhook URL." }, { status: 400 });
+        }
+        const urlCheck = validateNotificationWebhookUrl(config.webhook.url);
+        if (!urlCheck.valid) {
+          return NextResponse.json(
+            { error: urlCheck.reason || "Invalid webhook URL." },
+            { status: 400 }
+          );
         }
       } else if (channel === "email") {
         if (!config.email?.email || !config.email.email.includes("@")) {
@@ -105,16 +133,56 @@ export async function POST(req: Request) {
         digest: digest || "instant",
       });
 
-      return NextResponse.json({ subscription });
+      return NextResponse.json({
+        subscription: redactSubscriptionSecrets(subscription),
+      });
     }
 
     if (action === "test_dispatch") {
-      const { subscriptionId, address } = body;
+      const { subscriptionId, address, challengeText, signature } = body;
+      if (!subscriptionId || !address) {
+        return NextResponse.json(
+          { error: "Missing subscriptionId or address parameter." },
+          { status: 400 }
+        );
+      }
+
+      if (challengeText || signature) {
+        const verification = verifySignatureChallenge(
+          String(challengeText || ""),
+          String(signature || ""),
+          address
+        );
+        if (!verification.valid) {
+          return NextResponse.json(
+            { error: `Address verification failed: ${verification.reason}` },
+            { status: 401 }
+          );
+        }
+      }
+
+      if (!checkRateLimit(`test_dispatch:${address}`, 10, 900)) {
+        return NextResponse.json(
+          { error: "Too many test dispatch requests. Please try again later." },
+          { status: 429 }
+        );
+      }
+
       const subs = await defaultSubscriptionStore.getSubscriptionsForAddress(address);
       const sub = subs.find((s) => s.id === subscriptionId);
 
       if (!sub) {
         return NextResponse.json({ error: "Subscription not found." }, { status: 404 });
+      }
+
+      if (sub.channel === "webhook" && sub.config.webhook?.url) {
+        const urlCheck = validateNotificationWebhookUrl(sub.config.webhook.url);
+        if (!urlCheck.valid) {
+          return NextResponse.json(
+            { error: urlCheck.reason || "Disallowed webhook target URL." },
+            { status: 400 }
+          );
+        }
       }
 
       const testEvent: StreamEvent = {
@@ -151,12 +219,28 @@ export async function DELETE(req: Request) {
     const { searchParams } = new URL(req.url);
     const id = searchParams.get("id");
     const address = searchParams.get("address");
+    const challengeText = searchParams.get("challengeText");
+    const signature = searchParams.get("signature");
 
     if (!id || !address) {
       return NextResponse.json(
         { error: "Missing id or address query parameter" },
         { status: 400 }
       );
+    }
+
+    if (challengeText || signature) {
+      const verification = verifySignatureChallenge(
+        String(challengeText || ""),
+        String(signature || ""),
+        address
+      );
+      if (!verification.valid) {
+        return NextResponse.json(
+          { error: `Address verification failed: ${verification.reason}` },
+          { status: 401 }
+        );
+      }
     }
 
     const removed = await defaultSubscriptionStore.removeSubscription(id, address);

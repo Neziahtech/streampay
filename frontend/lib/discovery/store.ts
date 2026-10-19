@@ -49,6 +49,7 @@ export interface IDiscoveryStore {
   addNonce(nonce: string): void;
   saveProposal(proposalId: string, proposal: PendingProposal): void;
   getProposal(proposalId: string): PendingProposal | undefined;
+  deleteProposal(proposalId: string): void;
   clear(): void;
 }
 
@@ -120,8 +121,9 @@ class DiscoveryStore implements IDiscoveryStore {
     };
     this.privateProofVault.set(record.listingId, proof);
 
-    // 2. Mark nonce as consumed
+    // 2. Mark nonce as consumed and clear any pending proposal for this stream
     this.usedNonces.add(record.nonce);
+    this.pendingProposals.delete(record.streamId);
 
     // 3. Store active public record
     this.publicRecords.set(record.listingId, { ...record });
@@ -174,6 +176,10 @@ class DiscoveryStore implements IDiscoveryStore {
 
   public getProposal(proposalId: string) {
     return this.pendingProposals.get(proposalId);
+  }
+
+  public deleteProposal(proposalId: string): void {
+    this.pendingProposals.delete(proposalId);
   }
 
   public clear(): void {

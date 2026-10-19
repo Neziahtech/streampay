@@ -37,6 +37,7 @@ export async function GET(req: NextRequest) {
   // Check if expired
   const now = Math.floor(Date.now() / 1000);
   if (proposal.expiry <= now) {
+    discoveryStore.deleteProposal(streamId);
     return NextResponse.json({ proposal: null }, { status: 200 });
   }
 
@@ -87,6 +88,13 @@ export async function POST(req: NextRequest) {
   ) {
     return NextResponse.json(
       { error: "Invalid proposal payload" },
+      { status: 400 }
+    );
+  }
+
+  if (discoveryStore.hasNonce(payload.nonce)) {
+    return NextResponse.json(
+      { error: "REPLAYED_NONCE" },
       { status: 400 }
     );
   }

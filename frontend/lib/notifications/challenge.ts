@@ -3,7 +3,7 @@ import { Keypair } from "@stellar/stellar-sdk";
 import type { ChallengeMessage } from "./types";
 
 const CHALLENGE_TTL_SECONDS = 300; // 5 minutes validity
-const usedNonces = new Map<string, number>(); // nonce -> expiresAt
+const usedNonces = new Map<string, { address: string; expiresAt: number }>();
 const rateLimitBuckets = new Map<string, { count: number; resetAt: number }>();
 
 /**
@@ -26,8 +26,8 @@ export function createVerificationChallenge(
     "Action: Authorize notification channels (Webhook/Email/Telegram) for StreamPay payment stream events.",
   ].join("\n");
 
-  // Record active nonce with expiration for replay protection
-  usedNonces.set(nonce, expiresAt);
+  // Record active nonce bound to address and server-issued expiration for replay protection
+  usedNonces.set(nonce, { address, expiresAt });
   cleanupExpiredNonces(now);
 
   return {
@@ -50,10 +50,19 @@ export function verifySignatureChallenge(
 ): { valid: boolean; reason?: string } {
   const now = Math.floor(Date.now() / 1000);
 
+  if (
+    !challengeText.startsWith("[StreamPay Notification Subscription]\n") ||
+    !challengeText.endsWith(
+      "\nAction: Authorize notification channels (Webhook/Email/Telegram) for StreamPay payment stream events."
+    )
+  ) {
+    return { valid: false, reason: "Malformed challenge message format." };
+  }
+
   // 1. Extract Address, Nonce, and Expiry from the challenge text
-  const addrMatch = challengeText.match(/Address:\s*([A-Za-z0-9]+)/);
-  const nonceMatch = challengeText.match(/Nonce:\s*([a-f0-9]+)/);
-  const expiresMatch = challengeText.match(/Expires At:\s*([^\n]+)/);
+  const addrMatch = challengeText.match(/^Address:\s*([A-Za-z0-9]+)$/m);
+  const nonceMatch = challengeText.match(/^Nonce:\s*([a-f0-9]+)$/m);
+  const expiresMatch = challengeText.match(/^Expires At:\s*([^\r\n]+)$/m);
 
   if (!addrMatch || !nonceMatch || !expiresMatch) {
     return { valid: false, reason: "Malformed challenge message format." };
@@ -64,6 +73,10 @@ export function verifySignatureChallenge(
   const expiresIso = expiresMatch[1].trim();
   const expiresAt = Math.floor(new Date(expiresIso).getTime() / 1000);
 
+  if (!Number.isFinite(expiresAt)) {
+    return { valid: false, reason: "Malformed challenge message format." };
+  }
+
   // 2. Validate address match
   if (parsedAddress !== expectedAddress) {
     return {
@@ -72,14 +85,30 @@ export function verifySignatureChallenge(
     };
   }
 
-  // 3. Check expiration
-  if (now > expiresAt) {
-    return { valid: false, reason: "Challenge message has expired. Please request a new one." };
+  // 3. Check replay attack protection and server-issued nonce binding
+  const nonceRecord = usedNonces.get(nonce);
+  if (!nonceRecord) {
+    return { valid: false, reason: "Challenge nonce is invalid or has already been consumed." };
   }
 
-  // 4. Check replay attack protection
-  if (!usedNonces.has(nonce)) {
-    return { valid: false, reason: "Challenge nonce is invalid or has already been consumed." };
+  if (nonceRecord.address !== expectedAddress) {
+    return {
+      valid: false,
+      reason: "Challenge nonce was issued for a different address.",
+    };
+  }
+
+  if (expiresAt !== nonceRecord.expiresAt) {
+    return {
+      valid: false,
+      reason: "Challenge expiration does not match server-issued nonce expiration.",
+    };
+  }
+
+  // 4. Check expiration against server-issued bound
+  if (now > nonceRecord.expiresAt) {
+    usedNonces.delete(nonce);
+    return { valid: false, reason: "Challenge message has expired. Please request a new one." };
   }
 
   // 5. Verify ed25519 signature
@@ -139,8 +168,8 @@ export function checkRateLimit(
 }
 
 function cleanupExpiredNonces(now: number) {
-  for (const [nonce, expiresAt] of usedNonces.entries()) {
-    if (now > expiresAt) {
+  for (const [nonce, record] of usedNonces.entries()) {
+    if (now > record.expiresAt) {
       usedNonces.delete(nonce);
     }
   }
