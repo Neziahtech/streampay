@@ -11,9 +11,11 @@ import {
   cancelStream,
   readStream,
   fetchStreamsFor,
+  fetchAssetMeta,
   describeError,
   type StreamView,
 } from "@/lib/stellar";
+import { formatAmount } from "@/lib/format";
 import { loadStreamIds, saveStreamId } from "@/lib/storage";
 import StreamDashboardView from "@/components/StreamDashboardView";
 import { useToast } from "@/components/toast";
@@ -44,6 +46,9 @@ export default function Home() {
       }
       setAddress(address);
       toast.success(`Connected as ${address.slice(0, 8)}…`);
+      // Surface a wallet/app network mismatch here instead of letting it
+      // arrive later as an opaque signing error (issue #33).
+      await checkWalletNetwork();
       // Rehydrate the cached list (ids only; state is always read fresh).
       const cached = loadStreamIds(address);
       if (cached.length > 0) {

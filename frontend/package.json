@@ -9,6 +9,9 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
+    "test": "node --test && vitest run",
+    "test:accrual": "node --test lib/accrual.test.ts",
+    "test:scheduler": "vitest run",
     "test": "node --test",
     "generate:openapi": "npx tsx scripts/generate-openapi.ts",
     "storybook": "storybook dev -p 6006",
@@ -19,9 +22,9 @@
   "dependencies": {
     "@stellar/freighter-api": "^6.0.1",
     "@stellar/stellar-sdk": "^17.2.1",
-    "next": "^16.4.0",
+    "next": "^16.4.2",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.3.1"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",

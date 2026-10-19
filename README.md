@@ -59,6 +59,8 @@ How it works in depth, including the design invariants and the Soroban-specific 
 
 Deep dive (storage model, checked math, reentrancy, TTL strategy, design decisions): [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md).
 
+Historical architecture decision records (ADRs) and trade-off rationales: [`docs/adr/`](./docs/adr/README.md).
+
 Incident response drills and procedures: [`docs/INCIDENT_RUNBOOK.md`](./docs/INCIDENT_RUNBOOK.md).
 
 Metrics, alerting stack, and operational diagnosis: [`docs/RUNBOOK.md`](./docs/RUNBOOK.md) and [`infra/observability`](./infra/observability/README.md).
@@ -91,6 +93,15 @@ Metrics, alerting stack, and operational diagnosis: [`docs/RUNBOOK.md`](./docs/R
 | `stream_fee(stream_id) → i128` | — (read-only) | — | — |
 | `verify_treasury(token, start_id, count) → FeeScan` | — (read-only) | — | — |
 | `total_streams() → u64` | — (read-only) | — | — |
+| `register_sponsor(sponsor, token, per_period_limit, per_beneficiary_limit, window_seconds, operator_key)` | sponsor | — | `SponsorRegistered` |
+| `set_sponsor_active(sponsor, active)` | sponsor | — | `SponsorActiveSet` |
+| `rotate_operator_key(sponsor, new_operator_key)` | sponsor | — | `OperatorKeyRotated` |
+| `enroll_beneficiary(beneficiary, public_key)` | beneficiary | — | `BeneficiaryEnrolled` |
+| `sponsored_withdraw(sponsor, beneficiary, stream_id, amount, nonce, deadline, operator_sig, beneficiary_sig)` | anyone (gas paid by submitter; consent via two ed25519 sigs) | pays out ≤ accrued | `SponsorClaim` |
+| `get_sponsor(sponsor) → Option<SponsorConfig>` | — (read-only) | — | — |
+| `get_beneficiary_public_key(beneficiary) → Option<BytesN<32>>` | — (read-only) | — | — |
+| `sponsor_period_spend(sponsor) → PeriodSpend` | — (read-only) | — | — |
+| `beneficiary_spend(sponsor, beneficiary) → PeriodSpend` | — (read-only) | — | — |
 
 `create_stream` emits `FeeCharged` when a protocol fee applies. `create_streams`
 validates and creates the full batch atomically: if one input fails, none of
@@ -156,6 +167,36 @@ npm run verify-fees -- --contract <C…> --token <C…> --start-ledger <deploy l
 
 Design details, the cancel-refund decision table, and rejected
 alternatives: [`docs/ARCHITECTURE.md` §11](./docs/ARCHITECTURE.md).
+
+## Gas sponsorship (claim for free)
+
+Recipients can withdraw accrued funds without holding XLM for the
+transaction fee: a **sponsor** (a sender, the dApp operator, or any funded
+account) registers a budget — token, per-period cap, per-beneficiary cap,
+window, and an ed25519 operator (relayer) key — and beneficiaries enroll
+their own ed25519 consent key once. A claim is then a fully-specified
+intent (contract, sponsor, beneficiary, token, stream, amount, one-time
+nonce, short deadline) signed by **both** keys; any account may submit
+`sponsored_withdraw` and pays the network fee, while the contract verifies
+both signatures over the SHA-256 digest of the canonical message before
+spending anything. Soroban has no mempool relayer, so this dual-signature
+inner-authorization pattern replaces one — the exact mechanism, message
+layout and check order are documented in
+[`docs/ARCHITECTURE.md` §13](./docs/ARCHITECTURE.md), and the JS ↔ Rust
+wire parity is pinned by frozen test vectors on both sides.
+
+Budgets are hard caps: the period spend and per-beneficiary spend roll
+forward with the window, nonces are one-shot, and an invalid-signature
+attempt traps before any nonce or budget state is consumed — a failed relay
+leaves no trace to wear down.
+Sponsor key rotation is instant — `rotate_operator_key` makes old operator
+signatures stop validating with the next ledger. The frontend exposes the
+whole path as **"Claim for free"** with explicit disclosure of who pays and
+what remains in the budget.
+
+Threat model for this surface (budget-drain griefing, signature
+interception, replay, clock manipulation):
+[`docs/THREAT_MODEL.md` §12](./docs/THREAT_MODEL.md).
 
 ## Getting started (clean machine)
 
@@ -253,6 +294,7 @@ infra/indexer/                  event indexer service with Prometheus metrics & 
 infra/reconciler/               continuous state reconciler and truth verification daemon
 docs/RUNBOOK.md                 operational diagnosis runbook for all alert rules
 docs/ARCHITECTURE.md            design deep-dive
+docs/FEE_AWARE_CLAIMS.md        opt-in fee-aware claim scheduling (constraints + decisions)
 docs/SCHEDULED_INTENTS.md       scheduled intents: keeper guide + threat model
 docs/DEPLOY_PIPELINE.md         sandbox → testnet → mainnet-canary promotion design
 docs/CANARY_RUNBOOK.md          mainnet canary + rollback procedure

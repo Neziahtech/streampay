@@ -148,6 +148,8 @@ pub fn pending_governor(env: &Env) -> Option<Address> {
 /// [`StreamError::NotGovernor`] rather than an SDK auth panic; only a
 /// matching governor's authorization is consumed.
 pub fn require_governor(env: &Env, caller: &Address) -> Result<(), StreamError> {
+    #[cfg(test)]
+    crate::cei_trace::record("read instance Governor");
     let stored: Address = env
         .storage()
         .instance()
@@ -162,6 +164,8 @@ pub fn require_governor(env: &Env, caller: &Address) -> Result<(), StreamError> 
 
 /// Loads the treasury accounting for `token`; missing entries read as zero.
 pub fn get_treasury(env: &Env, token: &Address) -> Treasury {
+    #[cfg(test)]
+    crate::cei_trace::record("read persistent Treasury(token)");
     env.storage()
         .persistent()
         .get(&DataKey::Treasury(token.clone()))
@@ -174,6 +178,8 @@ pub fn get_treasury(env: &Env, token: &Address) -> Treasury {
 /// Persists treasury accounting for `token` and extends its TTL, so a
 /// treasury in active use never archives.
 pub fn put_treasury(env: &Env, token: &Address, treasury: &Treasury) {
+    #[cfg(test)]
+    crate::cei_trace::record("write persistent Treasury(token)");
     let key = DataKey::Treasury(token.clone());
     env.storage().persistent().set(&key, treasury);
     env.storage()

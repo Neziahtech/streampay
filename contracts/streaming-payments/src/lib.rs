@@ -17,6 +17,12 @@
 //! - [`StreamingPayments::cancel_stream`] — sender (or recipient, if the
 //!   stream is `cancelable`) closes the stream with a pro-rata split
 //! - [`StreamingPayments::top_up`] — add funds to a running stream
+//! - [`StreamingPayments::sponsored_withdraw`] — an operator relays a
+//!   recipient's claim and a sponsor absorbs the gas, guarded by a budget
+//!   ledger and nonce replay protection (see the `sponsor` module docs)
+//! - [`StreamingPayments::register_sponsor`] /
+//!   [`StreamingPayments::enroll_beneficiary`] /
+//!   [`StreamingPayments::rotate_operator_key`] — sponsorship setup
 //! - [`StreamingPayments::get_stream`] / [`StreamingPayments::available`] —
 //!   read-only views
 //! - [`StreamingPayments::recipient_streams`] /
@@ -48,6 +54,9 @@
 extern crate std;
 
 #[cfg(test)]
+mod cei_trace;
+mod client_parity_test;
+#[cfg(test)]
 mod differential_harness;
 #[cfg(test)]
 mod differential_test;
@@ -55,16 +64,20 @@ mod differential_test;
 mod error_surface_test;
 mod errors;
 mod events;
+mod oracle;
 mod policy;
 mod schedule;
 #[cfg(test)]
 mod schedule_test;
+pub(crate) mod sponsor;
+#[cfg(test)]
+mod sponsor_test;
 mod stream;
 pub mod surface;
 #[cfg(test)]
 mod test;
-#[cfg(test)]
-mod test_client;
+#[cfg(any(test, feature = "testutils"))]
+pub mod test_client;
 mod treasury;
 pub mod verification;
 
@@ -77,20 +90,24 @@ use surface::Branch;
 
 pub use errors::StreamError;
 pub use events::{
-    ContractFrozenStateChanged, ContractUpgraded, FeeCharged, FeeWithdrawn, PolicyAssetExecuted,
-    PolicyAssetQueued, PolicyHandoffAccepted, PolicyHandoffCancelled, PolicyHandoffProposed,
-    PolicyInitialized, ScheduledIntentCancelled, ScheduledIntentExpired, ScheduledStreamExecuted,
-    StorageMigrated, StreamCancelled, StreamCreated, StreamScheduled, StreamToppedUp,
+    BeneficiaryEnrolled, ContractFrozenStateChanged, ContractUpgraded, FeeCharged, FeeWithdrawn,
+    OperatorKeyRotated, OracleConfigUpdated, OracleStaleFallback, OracleTimeReported,
+    PolicyAssetExecuted, PolicyAssetQueued, PolicyHandoffAccepted, PolicyHandoffCancelled,
+    PolicyHandoffProposed, PolicyInitialized, ScheduledIntentCancelled, ScheduledIntentExpired,
+    ScheduledStreamExecuted, SponsorActiveSet, SponsorClaim, SponsorRegistered, StorageMigrated,
+    StreamCancelled, StreamCreated, StreamPolicySet, StreamScheduled, StreamToppedUp,
     StreamsCreated, UpgradeCancelled, UpgradeProposed, Withdrawn,
 };
-pub use policy::QueuedAssetChange;
+pub use oracle::{OracleConfig, OracleReport, ResolvedTime, DEFAULT_MAX_STALE_SECONDS};
+pub use policy::{validate_stream_args, validate_top_up_args, QueuedAssetChange, StreamPolicy};
 pub use schedule::{IntentStatus, ScheduledIntent, MAX_OCCURRENCES};
+pub use sponsor::{PeriodSpend, SponsorConfig};
 // `streamed_at` is re-exported for the fuzz target and downstream rate
 // calculators: it is a pure function requiring no `Env`.
 pub use stream::{
-    streamed_at, MigrationStatus, PendingUpgrade, Stream, StreamStatus, INITIAL_SCHEMA_VERSION,
-    MAX_DURATION_SECONDS, MAX_MIGRATION_BATCH_SIZE, MAX_PAGE_SIZE, MIN_UPGRADE_DELAY_SECONDS,
-    TARGET_SCHEMA_VERSION,
+    streamed_at, BatchEntry, MigrationStatus, PendingUpgrade, Stream, StreamStatus,
+    INITIAL_SCHEMA_VERSION, MAX_BATCH, MAX_DURATION_SECONDS, MAX_MIGRATION_BATCH_SIZE,
+    MAX_PAGE_SIZE, MIN_BATCH, MIN_UPGRADE_DELAY_SECONDS, TARGET_SCHEMA_VERSION,
 };
 pub use treasury::{fee_amount, FeeScan, Treasury, TreasuryStatus, BPS_DENOMINATOR, MAX_FEE_BPS};
 
@@ -148,12 +165,36 @@ fn pull(
     amount: i128,
     on_failure: Branch,
 ) -> Result<(), StreamError> {
+    #[cfg(test)]
+    cei_trace::record("transfer_from token");
+    let current_contract = env.current_contract_address();
     let res = TokenClient::new(env, token).try_transfer_from(
-        &env.current_contract_address(),
+        &current_contract,
         payer,
-        &env.current_contract_address(),
+        &current_contract,
         &amount,
     );
+    token_result(res, on_failure)
+}
+
+/// Sends `amount` of `token` held by `from` to `recipient` via
+/// `transfer`, mapping a token-side failure to the code `on_failure` declares.
+fn push_from(
+    env: &Env,
+    token: &Address,
+    from: &Address,
+    recipient: &MuxedAddress,
+    amount: i128,
+    on_failure: Branch,
+) -> Result<(), StreamError> {
+    #[cfg(test)]
+    cei_trace::record(match on_failure {
+        Branch::RecipientPayoutFailed => "transfer recipient payout",
+        Branch::SenderRefundFailed => "transfer sender refund",
+        Branch::TreasuryPayoutFailed => "transfer treasury payout",
+        _ => "transfer token",
+    });
+    let res = TokenClient::new(env, token).try_transfer(from, recipient, &amount);
     token_result(res, on_failure)
 }
 
@@ -166,12 +207,14 @@ fn push(
     amount: i128,
     on_failure: Branch,
 ) -> Result<(), StreamError> {
-    let res = TokenClient::new(env, token).try_transfer(
+    push_from(
+        env,
+        token,
         &env.current_contract_address(),
         recipient,
-        &amount,
-    );
-    token_result(res, on_failure)
+        amount,
+        on_failure,
+    )
 }
 
 #[contractimpl]
@@ -235,6 +278,32 @@ impl StreamingPayments {
         end_time: u64,
         cancelable: bool,
     ) -> Result<u64, StreamError> {
+        Self::create_stream_with_oracle(
+            env,
+            sender,
+            recipient,
+            token,
+            deposit_amount,
+            start_time,
+            end_time,
+            cancelable,
+            false,
+        )
+    }
+
+    /// Creates a payment stream with optional oracle reference time source.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_stream_with_oracle(
+        env: Env,
+        sender: Address,
+        recipient: Address,
+        token: Address,
+        deposit_amount: i128,
+        start_time: u64,
+        end_time: u64,
+        cancelable: bool,
+        use_oracle: bool,
+    ) -> Result<u64, StreamError> {
         Self::require_not_frozen(&env)?;
         sender.require_auth();
 
@@ -244,6 +313,10 @@ impl StreamingPayments {
         // Policy check: if the policy module is active, the asset must be on
         // the allowlist. Uninitialized policy permits all assets (opt-in).
         policy::check_asset_allowed(&env, &token)?;
+
+        let stream_policy = policy::get_stream_policy(&env, Some(token.clone()));
+        let duration = end_time - start_time;
+        policy::validate_stream_args(stream_policy.as_ref(), deposit_amount, duration)?;
 
         // Protocol fee, computed at the deposit boundary only. The accrual
         // math (`deposit`, `streamed_at`, cancel splits) never sees it.
@@ -278,6 +351,7 @@ impl StreamingPayments {
             end_time,
             cancelable,
             status: StreamStatus::Active,
+            use_oracle,
         };
         stream::put_stream(&env, &s);
         stream::index_stream(&env, &s);
@@ -364,10 +438,13 @@ impl StreamingPayments {
             end_time,
             cancelable,
             status: StreamStatus::Active,
+            use_oracle: false,
         };
         stream::put_stream(env, &stream);
         stream::index_stream(env, &stream);
 
+        #[cfg(test)]
+        cei_trace::record("event StreamCreated");
         StreamCreated {
             stream_id: id,
             sender,
@@ -419,6 +496,10 @@ impl StreamingPayments {
                 input.end_time,
             )?;
             policy::check_asset_allowed(&env, &input.token)?;
+
+            let stream_policy = policy::get_stream_policy(&env, Some(input.token.clone()));
+            let duration = input.end_time - input.start_time;
+            policy::validate_stream_args(stream_policy.as_ref(), input.deposit_amount, duration)?;
 
             let fee = treasury::fee_amount(input.deposit_amount, fee_bps)?;
             let pull_amount = input
@@ -497,6 +578,7 @@ impl StreamingPayments {
                 end_time: input.end_time,
                 cancelable: input.cancelable,
                 status: StreamStatus::Active,
+                use_oracle: false,
             };
             stream::put_stream(&env, &created);
             stream::index_stream(&env, &created);
@@ -521,6 +603,113 @@ impl StreamingPayments {
         .publish(&env);
 
         Ok(ids)
+    }
+
+    /// Creates a batch of payment streams in a single transaction.
+    ///
+    /// Semantics are all-or-nothing per entry but best-effort across the batch:
+    /// each entry validates its parameters and attempts its own deposit pull.
+    /// Failures are reported per-entry in the returned vector without aborting
+    /// or rolling back successfully created sibling streams.
+    ///
+    /// The entire batch call reverts if `entries` is empty ([`StreamError::BatchEmpty`])
+    /// or exceeds [`MAX_BATCH`] ([`StreamError::BatchTooLarge`]).
+    pub fn create_streams_batch(
+        env: Env,
+        entries: Vec<BatchEntry>,
+    ) -> Result<Vec<Result<u64, StreamError>>, StreamError> {
+        let count = entries.len();
+        if count < stream::MIN_BATCH {
+            return Err(surface::reject(Branch::CreateBatchEmpty));
+        }
+        if count > stream::MAX_BATCH {
+            return Err(surface::reject(Branch::CreateBatchTooLarge));
+        }
+
+        let mut results = Vec::new(&env);
+        let mut authorized_senders = Vec::new(&env);
+        for entry in entries.iter() {
+            if !authorized_senders.contains(&entry.sender) {
+                entry.sender.require_auth();
+                authorized_senders.push_back(entry.sender.clone());
+            }
+            let res = Self::create_single_batch_entry(&env, &entry);
+            results.push_back(res);
+        }
+
+        Ok(results)
+    }
+
+    fn create_single_batch_entry(env: &Env, entry: &BatchEntry) -> Result<u64, StreamError> {
+        Self::validate_stream_creation(
+            env.ledger().timestamp(),
+            entry.deposit,
+            entry.start_time,
+            entry.end_time,
+        )?;
+
+        let fee_bps = treasury::current_fee_bps(env);
+        let fee = treasury::fee_amount(entry.deposit, fee_bps)?;
+        let pull_amount = entry
+            .deposit
+            .checked_add(fee)
+            .ok_or(StreamError::MathOverflow)?;
+
+        let pull_res = TokenClient::new(env, &entry.token).try_transfer_from(
+            &env.current_contract_address(),
+            &entry.sender,
+            &env.current_contract_address(),
+            &pull_amount,
+        );
+        match pull_res {
+            Ok(Ok(())) => {}
+            _ => return Err(StreamError::AmountExceedsAvailable),
+        }
+
+        let id = stream::next_stream_id(env);
+        let s = Stream {
+            id,
+            sender: entry.sender.clone(),
+            recipient: entry.recipient.clone(),
+            token: entry.token.clone(),
+            deposit: entry.deposit,
+            withdrawn: 0,
+            start_time: entry.start_time,
+            end_time: entry.end_time,
+            cancelable: entry.cancelable,
+            status: StreamStatus::Active,
+            use_oracle: false,
+        };
+        stream::put_stream(env, &s);
+        stream::index_stream(env, &s);
+        if fee > 0 {
+            treasury::apply_fee(env, &entry.token, id, fee)?;
+        }
+
+        StreamCreated {
+            stream_id: id,
+            sender: entry.sender.clone(),
+            recipient: entry.recipient.clone(),
+            token: entry.token.clone(),
+            deposit: entry.deposit,
+            start_time: entry.start_time,
+            end_time: entry.end_time,
+            cancelable: entry.cancelable,
+        }
+        .publish(env);
+
+        if fee > 0 {
+            FeeCharged {
+                stream_id: id,
+                token: s.token.clone(),
+                payer: s.sender.clone(),
+                amount: fee,
+                fee_bps,
+            }
+            .publish(env);
+        }
+
+        Ok(id)
     }
 
     /// Withdraws up to `amount` of the accrued-but-unwithdrawn balance and
@@ -565,7 +754,8 @@ impl StreamingPayments {
         }
         let mut s = Self::authorize_withdrawal(&env, stream_id)?;
 
-        let available = stream::available_amount(&env, &s)?;
+        let resolved = oracle::resolve_stream_time(&env, stream_id, s.use_oracle);
+        let available = stream::available_amount_at(&s, resolved.timestamp)?;
         if amount > available {
             return Err(surface::reject(Branch::WithdrawAmountExceedsAvailable));
         }
@@ -588,7 +778,8 @@ impl StreamingPayments {
         Self::require_not_frozen(&env)?;
         let mut s = Self::authorize_withdrawal(&env, stream_id)?;
 
-        let amount = stream::available_amount(&env, &s)?;
+        let resolved = oracle::resolve_stream_time(&env, stream_id, s.use_oracle);
+        let amount = stream::available_amount_at(&s, resolved.timestamp)?;
         if amount <= 0 {
             return Err(surface::reject(Branch::WithdrawMaxNothingToWithdraw));
         }
@@ -621,6 +812,8 @@ impl StreamingPayments {
         }
         stream::put_stream(env, s);
 
+        #[cfg(test)]
+        cei_trace::record("event Withdrawn");
         Withdrawn {
             stream_id: s.id,
             recipient: s.recipient.clone(),
@@ -688,7 +881,8 @@ impl StreamingPayments {
             }
         }
 
-        let (recipient_amount, sender_amount) = stream::cancel_amounts(&env, &s)?;
+        let resolved = oracle::resolve_stream_time(&env, stream_id, s.use_oracle);
+        let (recipient_amount, sender_amount) = stream::cancel_amounts_at(&s, resolved.timestamp)?;
 
         // Effects first (CEI): finalise state before moving tokens.
         s.status = StreamStatus::Cancelled;
@@ -698,6 +892,8 @@ impl StreamingPayments {
             .ok_or_else(|| surface::reject(Branch::CancelSplitOverflow))?;
         stream::put_stream(&env, &s);
 
+        #[cfg(test)]
+        cei_trace::record("event StreamCancelled");
         StreamCancelled {
             stream_id,
             cancelled_by: caller,
@@ -711,28 +907,28 @@ impl StreamingPayments {
         // cancel_at_exact_start_pays_sender_everything verifies correct behavior
         // without the transfer. The >= mutation would only add a no-op transfer of
         // 0 tokens, which is functionally equivalent but unnecessary.
-        if recipient_amount > 0 {
-            push(
-                &env,
-                &s.token,
-                &stream::muxed(&s.recipient),
-                recipient_amount,
-                Branch::RecipientPayoutFailed,
-            )?;
-        }
-        // MUTANT-SUPPRESS: replace > with >= is acceptable because sender_amount
-        // is only 0 when cancel_amounts computes 0 (cancel after end). The test
-        // cancel_after_end_pays_recipient_everything verifies correct behavior
-        // without the transfer. The >= mutation would only add a no-op transfer of
-        // 0 tokens, which is functionally equivalent but unnecessary.
-        if sender_amount > 0 {
-            push(
-                &env,
-                &s.token,
-                &stream::muxed(&s.sender),
-                sender_amount,
-                Branch::SenderRefundFailed,
-            )?;
+        if recipient_amount > 0 || sender_amount > 0 {
+            let current_contract = env.current_contract_address();
+            if recipient_amount > 0 {
+                push_from(
+                    &env,
+                    &s.token,
+                    &current_contract,
+                    &stream::muxed(&s.recipient),
+                    recipient_amount,
+                    Branch::RecipientPayoutFailed,
+                )?;
+            }
+            if sender_amount > 0 {
+                push_from(
+                    &env,
+                    &s.token,
+                    &current_contract,
+                    &stream::muxed(&s.sender),
+                    sender_amount,
+                    Branch::SenderRefundFailed,
+                )?;
+            }
         }
 
         Ok(())
@@ -770,6 +966,9 @@ impl StreamingPayments {
             .ok_or_else(|| surface::reject(Branch::TopUpDepositOverflow))?;
         stream::validate_capacity(new_deposit, s.duration())?;
 
+        let stream_policy = policy::get_stream_policy(&env, Some(s.token.clone()));
+        policy::validate_top_up_args(stream_policy.as_ref(), new_deposit, s.duration())?;
+
         // Interaction: pull the added funds from the sender. A token-side
         // failure maps to a distinct code; the effects below never run, and
         // no partial state survives the `Err`.
@@ -785,6 +984,8 @@ impl StreamingPayments {
         s.deposit = new_deposit;
         stream::put_stream(&env, &s);
 
+        #[cfg(test)]
+        cei_trace::record("event StreamToppedUp");
         StreamToppedUp {
             stream_id,
             sender: s.sender.clone(),
@@ -806,7 +1007,8 @@ impl StreamingPayments {
     /// full remainder at or after `end_time`.
     pub fn available(env: Env, stream_id: u64) -> Result<i128, StreamError> {
         let s = stream::get_stream(&env, stream_id)?;
-        stream::available_amount(&env, &s)
+        let resolved = oracle::resolve_stream_time(&env, stream_id, s.use_oracle);
+        stream::available_amount_at(&s, resolved.timestamp)
     }
 
     /// A page of stream ids where `recipient` is the recipient, in creation
@@ -1022,6 +1224,8 @@ impl StreamingPayments {
         // Pay the keeper its escrowed fee for this occurrence.
         let fee_paid = intent.fee_budget;
         if fee_paid > 0 {
+            #[cfg(test)]
+            cei_trace::record("transfer keeper fee");
             TokenClient::new(&env, &intent.token).transfer(
                 &env.current_contract_address(),
                 stream::muxed(&keeper),
@@ -1029,6 +1233,8 @@ impl StreamingPayments {
             );
         }
 
+        #[cfg(test)]
+        cei_trace::record("event ScheduledStreamExecuted");
         ScheduledStreamExecuted {
             intent_id,
             keeper,
@@ -1077,6 +1283,8 @@ impl StreamingPayments {
         schedule::put_intent(&env, &intent);
 
         if refund > 0 {
+            #[cfg(test)]
+            cei_trace::record("transfer scheduled refund");
             TokenClient::new(&env, &intent.token).transfer(
                 &env.current_contract_address(),
                 stream::muxed(&intent.sender),
@@ -1084,6 +1292,8 @@ impl StreamingPayments {
             );
         }
 
+        #[cfg(test)]
+        cei_trace::record("event ScheduledIntentCancelled");
         ScheduledIntentCancelled {
             intent_id,
             sender: intent.sender.clone(),
@@ -1120,6 +1330,8 @@ impl StreamingPayments {
         schedule::put_intent(&env, &intent);
 
         if refund > 0 {
+            #[cfg(test)]
+            cei_trace::record("transfer scheduled refund");
             TokenClient::new(&env, &intent.token).transfer(
                 &env.current_contract_address(),
                 stream::muxed(&intent.sender),
@@ -1127,6 +1339,8 @@ impl StreamingPayments {
             );
         }
 
+        #[cfg(test)]
+        cei_trace::record("event ScheduledIntentExpired");
         ScheduledIntentExpired {
             intent_id,
             sender: intent.sender.clone(),
@@ -1253,6 +1467,8 @@ impl StreamingPayments {
             .ok_or(StreamError::MathOverflow)?;
         treasury::put_treasury(&env, &token, &t);
 
+        #[cfg(test)]
+        cei_trace::record("event FeeWithdrawn");
         FeeWithdrawn {
             token: token.clone(),
             governor: caller,
@@ -1326,6 +1542,112 @@ impl StreamingPayments {
         next.saturating_sub(1)
     }
 
+    // ------------------------------------------------------- sponsorship ------
+    // Thin delegators onto the `sponsor` module, which holds the budget ledger,
+    // the replay/nonce bookkeeping, and the ed25519 inner-authorization checks.
+
+    /// Registers (or reconfigures) a sponsor budget and its authorized operator
+    /// (relayer) key. See [`sponsor`].
+    #[allow(clippy::too_many_arguments)] // mirrors sponsor::register_sponsor's surface
+    pub fn register_sponsor(
+        env: Env,
+        sponsor: Address,
+        token: Address,
+        per_period_limit: i128,
+        per_beneficiary_limit: i128,
+        window_seconds: u64,
+        operator_key: soroban_sdk::BytesN<32>,
+    ) -> Result<(), StreamError> {
+        sponsor::register_sponsor(
+            env,
+            sponsor,
+            token,
+            per_period_limit,
+            per_beneficiary_limit,
+            window_seconds,
+            operator_key,
+        )
+    }
+
+    /// Pauses or resumes a sponsor's budget.
+    pub fn set_sponsor_active(env: Env, sponsor: Address, active: bool) -> Result<(), StreamError> {
+        sponsor::set_sponsor_active(env, sponsor, active)
+    }
+
+    /// Rotates a sponsor's authorized operator (relayer) key.
+    pub fn rotate_operator_key(
+        env: Env,
+        sponsor: Address,
+        new_operator_key: soroban_sdk::BytesN<32>,
+    ) -> Result<(), StreamError> {
+        sponsor::rotate_operator_key(env, sponsor, new_operator_key)
+    }
+
+    /// Binds (or rotates) a beneficiary's ed25519 consent key.
+    pub fn enroll_beneficiary(
+        env: Env,
+        beneficiary: Address,
+        public_key: soroban_sdk::BytesN<32>,
+    ) -> Result<(), StreamError> {
+        sponsor::enroll_beneficiary(env, beneficiary, public_key)
+    }
+
+    /// Relays a beneficiary's withdrawal with a sponsor absorbing the gas. See
+    /// [`sponsor`] for the inner-authorization and budget semantics.
+    #[allow(clippy::too_many_arguments)] // the full relay surface is the intended client API
+    pub fn sponsored_withdraw(
+        env: Env,
+        sponsor: Address,
+        beneficiary: Address,
+        stream_id: u64,
+        amount: i128,
+        nonce: u64,
+        deadline: u64,
+        operator_sig: soroban_sdk::BytesN<64>,
+        beneficiary_sig: soroban_sdk::BytesN<64>,
+    ) -> Result<(), StreamError> {
+        sponsor::sponsored_withdraw(
+            env,
+            sponsor,
+            beneficiary,
+            stream_id,
+            amount,
+            nonce,
+            deadline,
+            operator_sig,
+            beneficiary_sig,
+        )
+    }
+
+    /// Reads a sponsor's budget configuration, if any.
+    pub fn get_sponsor(env: Env, sponsor: Address) -> Option<sponsor::SponsorConfig> {
+        sponsor::get_config(&env, &sponsor)
+    }
+
+    /// Reads a beneficiary's enrolled consent key, if any.
+    pub fn get_beneficiary_public_key(
+        env: Env,
+        beneficiary: Address,
+    ) -> Option<soroban_sdk::BytesN<32>> {
+        sponsor::get_beneficiary_key(&env, &beneficiary)
+    }
+
+    /// The sponsor's current-window spend.
+    pub fn sponsor_period_spend(env: Env, sponsor: Address) -> sponsor::PeriodSpend {
+        sponsor::get_period(&env, &sponsor::SponsorKey::SponsorPeriod(sponsor))
+    }
+
+    /// A beneficiary's spend within a sponsor's current window.
+    pub fn beneficiary_spend(
+        env: Env,
+        sponsor: Address,
+        beneficiary: Address,
+    ) -> sponsor::PeriodSpend {
+        sponsor::get_period(
+            &env,
+            &sponsor::SponsorKey::BeneficiarySpend(sponsor, beneficiary),
+        )
+    }
     // ------------------------------------------------------------- policy --
     //
     // The optional asset allowlist and governance layer: restricts which assets
@@ -1402,6 +1724,27 @@ impl StreamingPayments {
     /// Returns the queued allowlist change for `asset`, if any.
     pub fn policy_get_queued_asset(env: Env, asset: Address) -> Option<QueuedAssetChange> {
         policy::get_queued_asset(&env, &asset)
+    }
+
+    /// Sets governance policy floors and ceilings for streams of `token`, or global default if `token` is None.
+    /// Governor-only.
+    ///
+    /// Governance timelock hook: this setter gates via `treasury::require_governor` and will route
+    /// through the timelocked proposal queue once governance timelocks are enabled across all operations.
+    pub fn set_stream_policy(
+        env: Env,
+        caller: Address,
+        token: Option<Address>,
+        policy: StreamPolicy,
+    ) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
+        treasury::require_governor(&env, &caller)?;
+        policy::set_stream_policy(&env, token, policy)
+    }
+
+    /// Queries the effective stream policy for `token` (falling back to global policy if unset).
+    pub fn get_stream_policy(env: Env, token: Option<Address>) -> Option<StreamPolicy> {
+        policy::get_stream_policy(&env, token)
     }
 
     // --------------------------------------------- upgrade & migration --
@@ -1624,5 +1967,46 @@ impl StreamingPayments {
             total_streams: total,
             is_complete,
         }
+    }
+
+    // ----------------------------------------------------------- oracle ----
+
+    /// Configures the oracle publisher set, threshold, and staleness bound.
+    /// Authorized by the treasury governor.
+    pub fn set_oracle_config(
+        env: Env,
+        caller: Address,
+        publishers: Vec<Address>,
+        threshold: u32,
+        max_stale_seconds: u64,
+    ) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
+        treasury::require_governor(&env, &caller)?;
+        oracle::set_oracle_config(&env, publishers, threshold, max_stale_seconds)
+    }
+
+    /// Records an authorized external time feed report.
+    pub fn submit_oracle_time(
+        env: Env,
+        publisher: Address,
+        timestamp: u64,
+    ) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
+        oracle::submit_oracle_time(&env, publisher, timestamp)
+    }
+
+    /// Resolves reference timestamp for a given stream id and oracle flag.
+    pub fn resolve_time(env: Env, stream_id: u64, use_oracle: bool) -> ResolvedTime {
+        oracle::resolve_stream_time(&env, stream_id, use_oracle)
+    }
+
+    /// Reads current oracle configuration.
+    pub fn oracle_config(env: Env) -> Option<OracleConfig> {
+        oracle::get_oracle_config(&env)
+    }
+
+    /// Reads latest report from a publisher.
+    pub fn oracle_report(env: Env, publisher: Address) -> Option<OracleReport> {
+        oracle::get_oracle_report(&env, publisher)
     }
 }
