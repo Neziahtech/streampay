@@ -167,12 +167,34 @@ fn pull(
 ) -> Result<(), StreamError> {
     #[cfg(test)]
     cei_trace::record("transfer_from token");
+    let current_contract = env.current_contract_address();
     let res = TokenClient::new(env, token).try_transfer_from(
-        &env.current_contract_address(),
+        &current_contract,
         payer,
-        &env.current_contract_address(),
+        &current_contract,
         &amount,
     );
+    token_result(res, on_failure)
+}
+
+/// Sends `amount` of `token` held by `from` to `recipient` via
+/// `transfer`, mapping a token-side failure to the code `on_failure` declares.
+fn push_from(
+    env: &Env,
+    token: &Address,
+    from: &Address,
+    recipient: &MuxedAddress,
+    amount: i128,
+    on_failure: Branch,
+) -> Result<(), StreamError> {
+    #[cfg(test)]
+    cei_trace::record(match on_failure {
+        Branch::RecipientPayoutFailed => "transfer recipient payout",
+        Branch::SenderRefundFailed => "transfer sender refund",
+        Branch::TreasuryPayoutFailed => "transfer treasury payout",
+        _ => "transfer token",
+    });
+    let res = TokenClient::new(env, token).try_transfer(from, recipient, &amount);
     token_result(res, on_failure)
 }
 
@@ -185,19 +207,14 @@ fn push(
     amount: i128,
     on_failure: Branch,
 ) -> Result<(), StreamError> {
-    #[cfg(test)]
-    cei_trace::record(match on_failure {
-        Branch::RecipientPayoutFailed => "transfer recipient payout",
-        Branch::SenderRefundFailed => "transfer sender refund",
-        Branch::TreasuryPayoutFailed => "transfer treasury payout",
-        _ => "transfer token",
-    });
-    let res = TokenClient::new(env, token).try_transfer(
+    push_from(
+        env,
+        token,
         &env.current_contract_address(),
         recipient,
-        &amount,
-    );
-    token_result(res, on_failure)
+        amount,
+        on_failure,
+    )
 }
 
 #[contractimpl]
@@ -890,28 +907,28 @@ impl StreamingPayments {
         // cancel_at_exact_start_pays_sender_everything verifies correct behavior
         // without the transfer. The >= mutation would only add a no-op transfer of
         // 0 tokens, which is functionally equivalent but unnecessary.
-        if recipient_amount > 0 {
-            push(
-                &env,
-                &s.token,
-                &stream::muxed(&s.recipient),
-                recipient_amount,
-                Branch::RecipientPayoutFailed,
-            )?;
-        }
-        // MUTANT-SUPPRESS: replace > with >= is acceptable because sender_amount
-        // is only 0 when cancel_amounts computes 0 (cancel after end). The test
-        // cancel_after_end_pays_recipient_everything verifies correct behavior
-        // without the transfer. The >= mutation would only add a no-op transfer of
-        // 0 tokens, which is functionally equivalent but unnecessary.
-        if sender_amount > 0 {
-            push(
-                &env,
-                &s.token,
-                &stream::muxed(&s.sender),
-                sender_amount,
-                Branch::SenderRefundFailed,
-            )?;
+        if recipient_amount > 0 || sender_amount > 0 {
+            let current_contract = env.current_contract_address();
+            if recipient_amount > 0 {
+                push_from(
+                    &env,
+                    &s.token,
+                    &current_contract,
+                    &stream::muxed(&s.recipient),
+                    recipient_amount,
+                    Branch::RecipientPayoutFailed,
+                )?;
+            }
+            if sender_amount > 0 {
+                push_from(
+                    &env,
+                    &s.token,
+                    &current_contract,
+                    &stream::muxed(&s.sender),
+                    sender_amount,
+                    Branch::SenderRefundFailed,
+                )?;
+            }
         }
 
         Ok(())

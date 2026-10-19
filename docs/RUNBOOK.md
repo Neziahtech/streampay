@@ -81,7 +81,7 @@ Every payroll operation is subject to formal verification invariants:
 1. **Per-Stream Invariant**: `0 <= withdrawn <= streamed <= deposit` at every ledger sequence.
 2. **Conservation of Funds Invariant**: Contract token balance $\ge \sum (\text{deposit} - \text{withdrawn})$ across all active streams.
 3. **Deterministic CEI Ordering**: All payouts follow strict Checks-Effects-Interactions (CEI) to preclude reentrancy windows.
-4. **No Silent Panics**: All operational rejections emit explicit `StreamError` codes (1..48) defined in [`docs/ERRORS.md`](errors.md) and [`frontend/lib/errors.ts`](../frontend/lib/errors.ts).
+4. **No Silent Panics**: All operational rejections emit explicit `StreamError` codes (1..48) defined in [`docs/ERROR_SURFACE.md`](./ERROR_SURFACE.md) and [`frontend/lib/errors.ts`](../frontend/lib/errors.ts).
 
 ---
 

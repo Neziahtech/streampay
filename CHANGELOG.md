@@ -112,7 +112,7 @@ interface: they are only ever appended to, never renumbered or reused.
   registered in `src/surface.rs`, probed for its declared `StreamError`, and
   checked for coverage — CI fails on any error code with zero reachable
   branches or any branch without a code.
-- Generated [`docs/ERRORS.md`](./docs/ERRORS.md) (entrypoint × branch → code
+- Generated [`docs/ERROR_SURFACE.md`](./docs/ERROR_SURFACE.md) (entrypoint × branch → code
   table) with a CI step that regenerates it and diffs the committed artifact.
 - **Gas sponsorship** (`sponsor.rs`, issue #57): sponsors pay transaction
   costs for recipients claiming accrued funds. Soroban has no mempool
@@ -159,7 +159,7 @@ interface: they are only ever appended to, never renumbered or reused.
   (`CreateDepositTransferFailed`, `TopUpTransferFailed`,
   `RecipientPayoutFailed`, `SenderRefundFailed`, `TreasuryPayoutFailed`), so
   the generated error-surface matrix probes every one of them and
-  `docs/ERRORS.md` documents them like every other branch.
+  `docs/ERROR_SURFACE.md` documents them like every other branch.
 - Non-native asset tests, end to end: full lifecycle
   (create → top-up → withdraw → withdraw_max → cancel) against a registered
   Stellar Asset Contract with supply conservation, allowance/balance pull
@@ -208,6 +208,21 @@ interface: they are only ever appended to, never renumbered or reused.
 - Retired `StreamError::NotStreamSender` (2) and `NotStreamRecipient` (3) as
   unreachable under the append-only policy: the numeric codes are kept and
   reserved, never reused or renumbered.
+- **Generated-artifact gates:** the three "committed output matches its source"
+  CI checks now all call `scripts/check_generated.sh`, which regenerates and
+  then fails on drift *including newly created untracked files*. The
+  differential-vector step previously regenerated the corpus without diffing
+  it, so a stale committed corpus passed. Locally: `npm run generated:check`.
+- `docs/ERRORS.md` → `docs/ERROR_SURFACE.md`. It differed from the generated
+  `docs/errors.md` by case alone, which is invisible on macOS/Windows
+  filesystems and made renames and checkouts ambiguous. No on-chain surface
+  changed; the error catalog regenerated accordingly (content-derived
+  `schema_fingerprint` moved with the doc-comment references).
+- `.gitattributes` pins `.rs/.md/.ts/.tsx/.mjs/.json` to LF so generated
+  artifacts and their sources are byte-stable on a `core.autocrlf=true`
+  checkout (CRLF in committed blobs has already broken the catalog's content
+  hash once — `a3af379`), and `scripts/check_line_endings.sh` + a CI step fail
+  on any blob committed with CRLF, naming the files and the fix.
 
 ### Fixed
 - Create-form failures decode to `StreamError` names like every other path

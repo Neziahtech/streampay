@@ -122,26 +122,74 @@ lint/typecheck/build when frontend files are touched) are the minimum gate.
 
 ## Generated files & CI gates
 
-CI diffs several *generated* artifacts against their sources. If you change the
-error surface (`contracts/streaming-payments/src/errors.rs`, `surface.rs`, or
-new `#[contracterror]` codes) the following gates will fail until you commit the
-regenerated files:
+Several files in this repo are **generated**: CI regenerates them from their
+sources and fails the build on any diff. They are never edited by hand — change
+the source, then regenerate.
 
-1. `docs/ERRORS.md` — regenerated with `npm run errors:regen` (cargo example;
-   CI checks it via `npm run errors:check`).
-2. `docs/errors.md`, `docs/errors/<code>.md`, and `frontend/lib/errors.ts` —
-   regenerated with `node tooling/generate-error-catalog.mjs` (CI's "Error
-   catalog regeneration diff check" re-runs it and fails on any diff).
+| Generated file | Generated from | Gate (CI job) |
+|---|---|---|
+| `docs/ERROR_SURFACE.md` | `contracts/streaming-payments/src/errors.rs` + `surface.rs`, via the `error_surface_doc` cargo example | "Error-surface table is up to date" (Contract) |
+| `docs/errors.md`, `docs/errors/<code>.md`, `frontend/lib/errors.ts` | the same error surface, via `tooling/generate-error-catalog.mjs` | "Error catalog is up to date" (Perf budgets) |
+| `tests/vectors/accrual_vectors.json` | the Rust reference model, via `scripts/generate-vectors.mjs` | "Differential vectors are up to date" (Frontend) |
 
-Run **after** merging `main` into your branch, so you regenerate from the
-current, complete error surface, and commit the outputs. The catalog files carry
-a content-derived `schema_fingerprint` stamp (not a git SHA), so a clean
-regeneration on the same tree always matches CI — no need to worry about the
-stamp changing between pushes.
+All three gates call the same script —
+[`scripts/check_generated.sh`](./scripts/check_generated.sh) — so you can run
+every one of them locally, before pushing:
 
-Other mechanical gates worth running before pushing: `cargo fmt --all` (Format
-check), `cargo clippy --all-targets -- -D warnings` (Clippy), and in
-`frontend/`: `npm run lint`, `npx tsc --noEmit`, `npm test`, `npm run build`.
+```bash
+npm run generated:check        # all three areas
+npm run generated:surface      # or one area: surface | catalog | vectors
+```
+
+The script regenerates in place and then fails on any diff, so a failing run has
+already written the correct files for you; read what it printed, then:
+
+```bash
+git add <the paths it lists>
+git commit
+```
+
+Three things to know:
+
+- Run it **after** merging `main` into your branch, so you regenerate from the
+  complete error surface. The catalog files carry a content-derived
+  `schema_fingerprint` stamp (not a git SHA), so a clean regeneration on the
+  same tree always matches CI.
+- If you add a **new** error code, a new page appears under `docs/errors/`.
+  `git diff` cannot see untracked files, so `git add docs/errors/` — otherwise
+  the gate fails with "produced files that are not committed yet".
+- `docs/ERROR_SURFACE.md` used to be `docs/ERRORS.md`. That name differed from
+  `docs/errors.md` by case alone, which is invisible on macOS/Windows
+  filesystems and made checkouts and renames ambiguous. The rule now: a
+  generated artifact's filename must not collide with another's when the
+  filesystem ignores case.
+
+### Other mechanical gates, in one place
+
+`cargo fmt` and the frontend toolchain account for most other first-push
+failures, so the full pre-flight is:
+
+```bash
+npm run lint:fix          # cargo fmt --all, then commit what it changed
+npm run eol:check         # committed CRLF: the usual cause of a whole-file fmt diff
+cargo clippy --all-targets -- -D warnings
+npm run generated:check
+cd frontend && npm run lint && npx tsc --noEmit && npm test && npm run build
+```
+
+`npm run matrix` chains most of this from the repo root. If every command above
+passes on your branch after merging `main`, CI passes too: the gates are the
+same commands, not CI-only logic.
+
+If `cargo fmt --all -- --check` fails with a diff covering **every line** of a
+file, that file was committed with CRLF (Windows editors and `core.autocrlf=true`
+do this; `.gitattributes` pins `.rs` to LF so it cannot recur). One command
+normalizes the whole tree without losing your work:
+
+```bash
+git add --renormalize .
+git commit -m "chore: normalize line endings to LF"
+```
 
 ## Branch & PR process
 

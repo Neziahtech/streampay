@@ -36,10 +36,10 @@ pub enum StreamError {
     /// No stream exists with the provided id.
     StreamNotFound = 1,
     /// **Retired — never produced.** Reserved role check; retained so the
-    /// numeric code is never reused. See `docs/ERRORS.md`.
+    /// numeric code is never reused. See `docs/ERROR_SURFACE.md`.
     NotStreamSender = 2,
     /// **Retired — never produced.** Reserved role check; retained so the
-    /// numeric code is never reused. See `docs/ERRORS.md`.
+    /// numeric code is never reused. See `docs/ERROR_SURFACE.md`.
     NotStreamRecipient = 3,
     /// The stream is not `cancelable`, so the recipient cannot cancel it.
     StreamNotCancellable = 4,

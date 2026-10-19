@@ -13,6 +13,32 @@ contracts/streaming-payments/test_orderings/*.txt text eol=lf
 # Default: auto-normalize everything else.
 *           text=auto
 
+# -----------------------------------------------------------------------------
+# Sources and generated artifacts: LF on every platform.
+#
+# Three CI gates regenerate a committed file and diff it against the source
+# (scripts/check_generated.sh), and two of them hash their inputs into a
+# content-derived stamp. On a Windows checkout with core.autocrlf=true those
+# files arrive with CRLF while the generators write LF, so a gate can report
+# drift that no amount of re-running clears — this repo has already paid for it
+# once (see `a3af379`, "normalize CRLF before hashing the schema fingerprint").
+# Pinning both sides of each gate to LF makes the working tree byte-identical
+# to the index locally and in CI.
+#
+# *.rs is here because rustfmt emits LF: `cargo fmt --all -- --check` fails a
+# CRLF checkout on the contributor's machine in a way `cargo fmt --all` then
+# re-cleans, which churns whole files for no reason.
+#
+# Must come before the `-text` attestation rules below, since the last
+# matching pattern wins.
+# -----------------------------------------------------------------------------
+*.rs        text eol=lf
+*.md        text eol=lf
+*.ts        text eol=lf
+*.tsx       text eol=lf
+*.mjs       text eol=lf
+*.json      text eol=lf
+
 # Attestation payloads are signed byte-for-byte, so any line-ending
 # normalization would invalidate every signature on a Windows checkout.
 # Must come after `* text=auto` above to take effect.

@@ -82,35 +82,38 @@ the fee ledger independently auditable.
 
 ### Storage layout decision & read/write profiling
 
-A gas optimization evaluation (`scripts/benchmark_storage.sh`, benchmark harness at `contracts/streaming-payments/examples/storage_benchmark.rs`) profiled resource consumption across stream lifecycle operations and evaluated splitting hot mutable fields (`withdrawn`, `status`) from cold immutable fields (`sender`, `recipient`, `token`, `deposit`, `start_time`, `end_time`, `cancelable`).
+A gas optimization evaluation (`contracts/streaming-payments/examples/storage_benchmark.rs`; detailed report in [`docs/FOOTPRINT.md`](FOOTPRINT.md)) profiled resource consumption across stream lifecycle operations and evaluated candidate optimizations including splitting hot mutable fields (`withdrawn`, `status`) from cold immutable fields (`sender`, `recipient`, `token`, `deposit`, `start_time`, `end_time`, `cancelable`).
 
 #### Lifecycle Resource Costs (Monolithic Layout)
 
-| Operation | Type | Storage Footprint | CPU Instructions | Memory (Bytes) |
-|---|---|---|---:|---:|
-| `create_stream` | Write | 1 Stream + 2 Indexes | 509,718 | 201,404 |
-| `get_stream` | Read | 1 Stream Entry | 61,239 | 38,379 |
-| `available` | Read | 1 Stream Entry | 54,361 | 37,727 |
-| `withdraw` | RMW | 1 Stream Entry | 333,895 | 135,533 |
-| `top_up` | RMW | 1 Stream Entry | 419,382 | 159,563 |
-| `cancel_stream` | RMW | 1 Stream Entry | 504,711 | 167,915 |
-| `withdraw_max` | RMW | 1 Stream Entry | 330,953 | 131,167 |
+| Operation | Type | Storage Footprint | CPU Instructions | Memory (Bytes) | Event Bytes (XDR) |
+|---|---|---|---:|---:|---:|
+| `create_stream` | Write | 1 Stream + 2 Indexes | 541,598 | 210,434 | 396 B |
+| `get_stream` | Read | 1 Stream Entry | 66,664 | 40,243 | 0 B |
+| `available` | Read | 1 Stream Entry | 58,284 | 39,461 | 0 B |
+| `withdraw` | RMW | 1 Stream Entry | 347,082 | 138,899 | 236 B |
+| `top_up` | RMW | 1 Stream Entry | 447,290 | 167,390 | ~76 B |
+| `cancel_stream` | RMW | 1 Stream Entry | 523,563 | 171,201 | 248 B |
+| `withdraw_max` | RMW | 1 Stream Entry | 338,663 | 134,329 | 236 B |
+| `sender_streams (5 ids)` | Read | 1 Index Entry | 52,369 | 25,006 | 0 B |
 
 #### Architecture Comparison: Monolithic vs Split (Hot/Cold)
 
 | Storage Pattern | Entry Count | Keys Written/Read | CPU Instructions | Memory (Bytes) |
 |---|:---:|:---:|---:|---:|
-| Monolithic `Stream` Write | 1 | 1 key | 54,004 | 39,817 |
-| Split (Cold + Hot) Write | 2 | 2 keys | 90,988 *(+68.5%)* | 57,315 |
-| Monolithic `Stream` Read | 1 | 1 key | 45,094 | 34,207 |
-| Split Read (Both: required by `withdraw`/`cancel`) | 2 | 2 keys | 71,030 *(+57.5%)* | 47,314 |
-| Split Read (Hot-only: status check) | 1 | 1 key | 39,009 | 25,013 |
+| Monolithic `Stream` Write | 1 | 1 key | 60,956 | 43,537 |
+| Split (Cold + Hot) Write | 2 | 2 keys | 98,480 *(+61.6%)* | 60,375 |
+| Monolithic `Stream` Read | 1 | 1 key | 48,319 | 36,485 |
+| Split Read (Both: required by `withdraw`/`cancel`) | 2 | 2 keys | 73,200 *(+51.5%)* | 47,926 |
+| Split Read (Hot-only: status check) | 1 | 1 key | 41,123 | 25,625 |
 
-#### Storage Layout Decision & Negative Result
+#### Storage Layout Decision & Tradeoff Evaluation
 
-1. **Monolithic Layout Retained:** Stream state remains in a single `DataKey::Stream(u64)` persistent entry (~188 bytes XDR).
-2. **Negative Result for Hot/Cold Splitting:** In Soroban's storage and metering architecture, ledger entry overhead, storage keys, and per-entry footprint fees heavily outweigh minor payload byte differences. Every mutating entrypoint (`withdraw`, `withdraw_max`, `cancel_stream`, `top_up`) strictly requires both configuration fields (token, deposit, window, recipient/sender authorization) and state fields (`withdrawn`, `status`). Splitting state forces two ledger reads and one write across two keys, incurring a **+57.5% CPU read penalty** and a **+68.5% CPU write penalty** without saving gas on any mutation path.
-3. **Double-Read Elimination:** The contract avoids double reads in `withdraw`: `authorize_withdrawal` loads `s` once and passes `&mut s` directly to `pay_out`, preventing redundant re-reads.
+1. **Monolithic Layout Retained:** Stream state remains in a single `DataKey::Stream(u64)` persistent entry (444 bytes XDR payload + 40 bytes key = 484 bytes total).
+2. **Negative Result for Hot/Cold Splitting:** In Soroban's storage and metering architecture, ledger entry overhead, storage keys, and per-entry footprint fees heavily outweigh minor payload byte differences. Every mutating entrypoint (`withdraw`, `withdraw_max`, `cancel_stream`, `top_up`) strictly requires both configuration fields (token, deposit, window, recipient/sender authorization) and state fields (`withdrawn`, `status`). Splitting state forces two ledger reads and one write across two keys, incurring a **+51.5% CPU read penalty** and a **+61.6% CPU write penalty** without saving gas on any mutation path.
+3. **Double-Read & Host Resolution Elimination:** The contract avoids double reads in `withdraw`: `authorize_withdrawal` loads `s` once and passes `&mut s` directly to `pay_out`. In `pull` and `cancel_stream`, `env.current_contract_address()` is resolved once and cached across transfers, saving 548 CPU instructions and 80 memory bytes.
+4. **Native Index Slicing:** In `page_stream_ids`, pagination utilizes native `ids.slice(start..end)`, eliminating manual looping and intermediate allocation overhead.
+
 
 
 ## 3. Accrual math
@@ -328,7 +331,7 @@ reserved role checks that no entrypoint ever produced, so they are kept (never
 renumbered or reused) but marked unreachable.
 
 The authoritative, machine-generated view of this surface lives in
-[`docs/ERRORS.md`](./ERRORS.md): a per-branch table mapping every
+[`docs/ERROR_SURFACE.md`](./ERROR_SURFACE.md): a per-branch table mapping every
 `(entrypoint, condition)` decision to its code, emitted from the contract's own
 instrumentation (`src/surface.rs`) by `cargo run -p streampay-contract --example
 error_surface_doc`, with a CI step that regenerates it and fails on drift. Each
@@ -422,7 +425,7 @@ griefing) is in [`SCHEDULED_INTENTS.md`](./SCHEDULED_INTENTS.md).
 - **Error surface** (`error_surface_test.rs`): the branch registry in
   `surface.rs` is walked by generated tests — one probe per branch asserts the
   exact branch fires its declared code — plus coverage tests proving no code is
-  dead and no branch uncoded. `docs/ERRORS.md` is generated from the same table
+  dead and no branch uncoded. `docs/ERROR_SURFACE.md` is generated from the same table
   and diffed in CI.
 - **`withdraw_max`** shares the `withdraw` payout tail (`pay_out`) so both
   paths inherit the same CEI ordering and reentrancy proof; index pagination
@@ -767,7 +770,7 @@ which surface and how each one may evolve.
   `StreamError::ALL`, an exhaustive-match test forces new variants into that
   list in the same change, the `surface.rs` branch registry ties each variant
   to reachable `(entrypoint, condition)` branches, and CI diffs the generated
-  `docs/ERRORS.md` for drift (§7).
+  `docs/ERROR_SURFACE.md` for drift (§7).
 
 ### 13.2 Storage keys
 

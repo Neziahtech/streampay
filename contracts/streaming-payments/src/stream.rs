@@ -386,15 +386,7 @@ pub fn page_stream_ids(env: &Env, key: &DataKey, offset: u32, limit: u32) -> Vec
     let end = start
         .saturating_add(limit.min(MAX_PAGE_SIZE))
         .min(ids.len());
-    let mut page = Vec::new(env);
-    let mut i = start;
-    while i < end {
-        if let Some(id) = ids.get(i) {
-            page.push_back(id);
-        }
-        i += 1;
-    }
-    page
+    ids.slice(start..end)
 }
 
 /// Returns the current schema version (defaults to INITIAL_SCHEMA_VERSION if unset).

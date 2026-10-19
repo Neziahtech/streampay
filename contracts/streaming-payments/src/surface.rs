@@ -8,7 +8,7 @@
 //!
 //! * the generated test matrix (`error_surface_test.rs`) can prove that every
 //!   *reachable* branch fires its declared code, and
-//! * `docs/ERRORS.md` is generated from the same table (see
+//! * `docs/ERROR_SURFACE.md` is generated from the same table (see
 //!   `examples/error_surface_doc.rs`) and diffed in CI.
 //!
 //! Because the table is data, a hand-maintained list of "which test covers
@@ -473,7 +473,7 @@ impl Branch {
         }
     }
 
-    /// Human-readable condition, used to generate `docs/ERRORS.md`.
+    /// Human-readable condition, used to generate `docs/ERROR_SURFACE.md`.
     pub const fn condition(self) -> &'static str {
         match self {
             Branch::CreateDepositNonPositive => "deposit_amount is zero or negative",

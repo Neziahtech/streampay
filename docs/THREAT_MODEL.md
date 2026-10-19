@@ -147,7 +147,7 @@ Lifecycle states `StreamStatus::Cancelled` and `StreamStatus::Depleted` are stri
 Every new stream is assigned $ID_{k+1} = ID_k + 1$, where IDs begin at 1. No stream ID can ever be reused or re-assigned.
 
 #### Invariant 7: Panic Freedom and Error Code Stability
-The contract must never trigger an unhandled Soroban host panic on valid or invalid user inputs. Every rejection must return a typed `Result<_, StreamError>` matching the numeric codes documented in `docs/ERRORS.md`.
+The contract must never trigger an unhandled Soroban host panic on valid or invalid user inputs. Every rejection must return a typed `Result<_, StreamError>` matching the numeric codes documented in `docs/ERROR_SURFACE.md`.
 
 ---
 

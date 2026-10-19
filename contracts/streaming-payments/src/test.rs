@@ -4840,6 +4840,56 @@ fn measure_batch_instruction_costs() {
     }
 }
 
+#[test]
+fn hot_path_footprint_harness() {
+    let f = Fixture::setup();
+    let duration = 30 * DAY;
+
+    // 1. create_stream
+    f.env.cost_estimate().budget().reset_unlimited();
+    let id = f.create_stream(DEPOSIT, DAY, duration, true);
+    let cpu_create = f.env.cost_estimate().budget().cpu_instruction_cost();
+    assert!(
+        cpu_create <= 560_000,
+        "create_stream exceeded budget: {}",
+        cpu_create
+    );
+
+    // 2. withdraw
+    f.advance_time(DAY + 5 * DAY);
+    f.env.cost_estimate().budget().reset_unlimited();
+    f.client.mock_all_auths().withdraw(&id, &(DEPOSIT / 10));
+    let cpu_withdraw = f.env.cost_estimate().budget().cpu_instruction_cost();
+    assert!(
+        cpu_withdraw <= 360_000,
+        "withdraw exceeded budget: {}",
+        cpu_withdraw
+    );
+
+    // 3. cancel_stream
+    f.advance_time(5 * DAY);
+    f.env.cost_estimate().budget().reset_unlimited();
+    f.client.mock_all_auths().cancel_stream(&f.sender, &id);
+    let cpu_cancel = f.env.cost_estimate().budget().cpu_instruction_cost();
+    assert!(
+        cpu_cancel <= 540_000,
+        "cancel_stream exceeded budget: {}",
+        cpu_cancel
+    );
+
+    // 4. withdraw_max on a fresh stream
+    let id2 = f.create_stream(DEPOSIT, DAY, duration, true);
+    f.advance_time(DAY + duration);
+    f.env.cost_estimate().budget().reset_unlimited();
+    f.client.mock_all_auths().withdraw_max(&id2);
+    let cpu_withdraw_max = f.env.cost_estimate().budget().cpu_instruction_cost();
+    assert!(
+        cpu_withdraw_max <= 350_000,
+        "withdraw_max exceeded budget: {}",
+        cpu_withdraw_max
+    );
+}
+
 // ------------------------------------------------ upgrade & migration tests --
 
 #[test]
