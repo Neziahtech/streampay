@@ -1617,7 +1617,12 @@ impl StreamingPayments {
 
     /// The sponsor's current-window spend.
     pub fn sponsor_period_spend(env: Env, sponsor: Address) -> sponsor::PeriodSpend {
-        sponsor::get_period(&env, &sponsor::SponsorKey::SponsorPeriod(sponsor))
+        let mut p = sponsor::get_period(&env, &sponsor::SponsorKey::SponsorPeriod(sponsor.clone()));
+        if let Some(cfg) = sponsor::get_config(&env, &sponsor) {
+            let now = env.ledger().timestamp();
+            p.spend = p.effective(cfg.window_seconds, now);
+        }
+        p
     }
 
     /// A beneficiary's spend within a sponsor's current window.
@@ -1626,10 +1631,15 @@ impl StreamingPayments {
         sponsor: Address,
         beneficiary: Address,
     ) -> sponsor::PeriodSpend {
-        sponsor::get_period(
+        let mut p = sponsor::get_period(
             &env,
-            &sponsor::SponsorKey::BeneficiarySpend(sponsor, beneficiary),
-        )
+            &sponsor::SponsorKey::BeneficiarySpend(sponsor.clone(), beneficiary),
+        );
+        if let Some(cfg) = sponsor::get_config(&env, &sponsor) {
+            let now = env.ledger().timestamp();
+            p.spend = p.effective(cfg.window_seconds, now);
+        }
+        p
     }
     // ------------------------------------------------------------- policy --
     //

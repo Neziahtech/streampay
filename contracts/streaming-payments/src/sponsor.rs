@@ -292,10 +292,10 @@ pub fn register_sponsor(
     operator_key: BytesN<32>,
 ) -> Result<(), StreamError> {
     sponsor.require_auth();
-    if per_period_limit <= 0 || per_beneficiary_limit <= 0 {
+    if per_period_limit <= 0 || per_beneficiary_limit <= 0 || per_beneficiary_limit > per_period_limit {
         return Err(surface::reject(Branch::RegisterLimitNonPositive));
     }
-    if window_seconds < MIN_WINDOW_SECONDS {
+    if window_seconds < MIN_WINDOW_SECONDS || window_seconds > crate::stream::MAX_DURATION {
         return Err(surface::reject(Branch::RegisterLimitNonPositive));
     }
 
@@ -338,6 +338,12 @@ pub fn set_sponsor_active(env: Env, sponsor: Address, active: bool) -> Result<()
         get_config(&env, &sponsor).ok_or_else(|| surface::reject(Branch::SponsorNotFound))?;
     cfg.active = active;
     put_config(&env, &sponsor, &cfg);
+    let op_key = SponsorKey::OperatorKey(sponsor.clone());
+    if env.storage().persistent().has(&op_key) {
+        env.storage()
+            .persistent()
+            .extend_ttl(&op_key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+    }
 
     SponsorActiveSet {
         sponsor,
@@ -360,7 +366,8 @@ pub fn rotate_operator_key(
 ) -> Result<(), StreamError> {
     sponsor.require_auth();
     // A rotation is only meaningful for an existing budget.
-    get_config(&env, &sponsor).ok_or_else(|| surface::reject(Branch::SponsorNotFound))?;
+    let cfg = get_config(&env, &sponsor).ok_or_else(|| surface::reject(Branch::SponsorNotFound))?;
+    put_config(&env, &sponsor, &cfg);
     put_operator_key(&env, &sponsor, &new_operator_key);
 
     OperatorKeyRotated {
@@ -454,12 +461,20 @@ pub fn sponsored_withdraw(
     // --- budget caps (period, then beneficiary) --------------------------
     let now = env.ledger().timestamp();
     let mut sper = get_period(&env, &SponsorKey::SponsorPeriod(sponsor.clone()));
-    if sper.effective(cfg.window_seconds, now) + amount > cfg.per_period_limit {
+    let next_sper = sper
+        .effective(cfg.window_seconds, now)
+        .checked_add(amount)
+        .ok_or_else(|| surface::reject(Branch::PayoutOverflow))?;
+    if next_sper > cfg.per_period_limit {
         return Err(surface::reject(Branch::SponsorBudgetPeriodExceeded));
     }
     let bkey = SponsorKey::BeneficiarySpend(sponsor.clone(), beneficiary.clone());
     let mut bper = get_period(&env, &bkey);
-    if bper.effective(cfg.window_seconds, now) + amount > cfg.per_beneficiary_limit {
+    let next_bper = bper
+        .effective(cfg.window_seconds, now)
+        .checked_add(amount)
+        .ok_or_else(|| surface::reject(Branch::PayoutOverflow))?;
+    if next_bper > cfg.per_beneficiary_limit {
         return Err(surface::reject(Branch::SponsorBudgetBeneficiaryExceeded));
     }
 
