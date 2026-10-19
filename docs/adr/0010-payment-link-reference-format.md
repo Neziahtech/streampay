@@ -1,7 +1,8 @@
-# ADR 0002: Shareable Payment Link Reference Format and Privacy Blinding
+# ADR 0010: Shareable Payment Link Reference Format and Privacy Blinding
 
-## Status
-Accepted
+Status: Accepted
+Date: 2026-10-17
+Deciders: StreamPay Engineering Team
 
 ## Context
 Freelancers and DAOs frequently invoice clients with shareable links rather than guiding payers through complex wallet setup tutorials.
@@ -71,3 +72,13 @@ If a stream has been cancelled, depleted, or concluded with 0 remaining balance,
 
 ### Negative
 - If the sender modifies the reference string in transit, the checksum invalidates the link, requiring the sender to re-share the valid URL.
+
+## Alternatives Considered
+
+### Option 2: Plaintext Public Keys in URL Query Parameters (`/pay?recipient=G...&stream=123`)
+- Good, because it requires zero encoding or client-side blinding math.
+- Bad, because sharing the link on communication channels (Slack, Discord, Twitter) leaks the payee's full Stellar public key to crawler scrapers and preview unfurlers, compromising address privacy.
+
+### Option 3: Centralized Backend Database URL Shortener
+- Good, because URLs can be arbitrarily short (e.g. `/pay/abc1234`).
+- Bad, because it introduces a centralized database dependency and single point of failure, violating the protocol's trust-minimized, direct-to-RPC architecture.

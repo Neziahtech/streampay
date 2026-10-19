@@ -20,6 +20,11 @@ import {
 import { signTransaction } from "@stellar/freighter-api";
 import type { BatchStreamEntry } from "./batch";
 import {
+  globalFrontendTracer,
+  registerTraceCorrelation,
+} from "./telemetry.ts";
+import { sanitizeAddress } from "./privacy.ts";
+import {
   buildCreateStreamOperationForDays,
   buildWithdrawOperation,
   i128,
@@ -410,10 +415,29 @@ export async function withdrawFromStream(
   streamId: string,
   amount: string
 ): Promise<void> {
-  await send(
-    recipient,
-    buildWithdrawOperation(CONTRACT_ID, streamId, amount),
-    () => undefined
+  return globalFrontendTracer.withSpan(
+    "browser.claim_click",
+    async (span) => {
+      span.setAttributes({
+        "user.action": "withdraw",
+        "stream.id": streamId,
+        "recipient.address": sanitizeAddress(recipient),
+      });
+
+      const { result, txHash } = await sendWithTx(
+        recipient,
+        buildWithdrawOperation(CONTRACT_ID, streamId, amount),
+        () => undefined
+      );
+
+      if (txHash) {
+        span.setAttribute("soroban.tx_hash", txHash);
+        registerTraceCorrelation(txHash, span.context, streamId);
+      }
+
+      return result;
+    },
+    { kind: "CLIENT" }
   );
 }
 
@@ -425,10 +449,29 @@ export async function withdrawMaxFromStream(
   recipient: string,
   streamId: string
 ): Promise<bigint> {
-  return send(
-    recipient,
-    contract().call("withdraw_max", u64(streamId)),
-    (v) => BigInt(scValToNative(v) as bigint)
+  return globalFrontendTracer.withSpan(
+    "browser.claim_click",
+    async (span) => {
+      span.setAttributes({
+        "user.action": "claim_max",
+        "stream.id": streamId,
+        "recipient.address": sanitizeAddress(recipient),
+      });
+
+      const { result, txHash } = await sendWithTx(
+        recipient,
+        contract().call("withdraw_max", u64(streamId)),
+        (v) => BigInt(scValToNative(v) as bigint)
+      );
+
+      if (txHash) {
+        span.setAttribute("soroban.tx_hash", txHash);
+        registerTraceCorrelation(txHash, span.context, streamId);
+      }
+
+      return result;
+    },
+    { kind: "CLIENT" }
   );
 }
 

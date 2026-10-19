@@ -1,7 +1,8 @@
-# ADR 0003: Signing Scheme for Release Build Attestations
+# ADR 0011: Signing Scheme for Release Build Attestations
 
-## Status
-Accepted
+Status: Accepted
+Date: 2026-10-17
+Deciders: StreamPay Security & Infrastructure Team
 
 ## Context
 
@@ -36,9 +37,9 @@ committed at `attestations/signing-key.pub`; the private key lives only in the
 `ATTESTATION_SIGNING_KEY` CI secret and an offline backup. SLSA provenance is
 retained alongside it as a second chain with a different trust root.
 
-### Options considered
+## Alternatives Considered
 
-#### 1. cosign keyless signing with the workflow OIDC identity — rejected
+### 1. cosign keyless signing with the workflow OIDC identity — rejected
 
 All jobs in this repository run on GitHub-hosted `ubuntu-latest` runners, so
 keyless signing *is* technically available. It is still the wrong tool here:
@@ -159,4 +160,4 @@ Two format decisions worth recording:
   and the full component-compromise threat model.
 - [`docs/REPRODUCING.md`](../REPRODUCING.md) — the reproducible-build toolchain
   triad and known non-determinism risks.
-- [`docs/adr/0002-payment-link-reference-format.md`](./0002-payment-link-reference-format.md)
+- [`docs/adr/0010-payment-link-reference-format.md`](./0010-payment-link-reference-format.md)

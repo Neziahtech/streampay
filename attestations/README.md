@@ -24,7 +24,7 @@ scripts/verify_wasm.sh --offline --tag v0.5.0            # no network
 The only dependencies are `bash`, `openssl` and coreutils — deliberately, so a
 deployer can prove a binary on a hardened host with nothing installed. See
 [`docs/ATTESTATION.md`](../docs/ATTESTATION.md) for the payload format and the
-threat model, and [`docs/adr/0003`](../docs/adr/0003-attestation-signing-scheme.md)
+threat model, and [`docs/adr/0011`](../docs/adr/0011-attestation-signing-scheme.md)
 for why this scheme rather than cosign keyless or minisign.
 
 ## Trust anchor

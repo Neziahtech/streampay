@@ -116,7 +116,7 @@ This recomputes the digest, fetches `attestation.json` and its detached Ed25519
 signature, verifies the signature, and asserts the signed payload names the
 bytes you hold. See [`ATTESTATION.md`](./ATTESTATION.md) for the payload format
 and the component-by-component threat model, and
-[`adr/0003`](adr/0003-attestation-signing-scheme.md) for why a repository key
+[`adr/0011`](adr/0011-attestation-signing-scheme.md) for why a repository key
 rather than cosign keyless.
 
 To prove reproducibility directly rather than trusting the attestation's claim:

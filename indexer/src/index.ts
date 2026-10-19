@@ -10,6 +10,7 @@ import { validateWebhookUrl } from "./webhooks/ssrf.js";
 import { OutboxDispatcher } from "./outbox/dispatcher.js";
 import { OutboxMetrics } from "./outbox/metrics.js";
 import { httpPushTransport } from "./outbox/http-transport.js";
+import { traceCorrelationRegistry } from "./telemetry.js";
 
 function parseCursor(raw: unknown): number {
   const value = Number(raw ?? 0);
@@ -39,6 +40,26 @@ export function createApp(
       cursor: store.getState("cursor") ?? null,
       rpcEndpoints: rpcHealth?.() ?? [],
     });
+  });
+
+  // Trace correlation endpoints for distributed tracing across the async event seam
+  app.post("/api/traces/correlate", (req, res) => {
+    const { txHash, traceContext, streamId } = req.body || {};
+    if (!txHash || !traceContext?.traceId || !traceContext?.spanId) {
+      return res.status(400).json({ error: "txHash, traceContext.traceId, and traceContext.spanId are required" });
+    }
+    traceCorrelationRegistry.register(String(txHash), traceContext, streamId ? String(streamId) : undefined);
+    return res.status(200).json({ ok: true, txHash, streamId });
+  });
+
+  app.get("/api/traces/correlate", (req, res) => {
+    const txHash = req.query.txHash as string | undefined;
+    const streamId = req.query.streamId as string | undefined;
+    const context = (txHash ? traceCorrelationRegistry.get(txHash) : null) || (streamId ? traceCorrelationRegistry.getByStream(streamId) : null);
+    if (!context) {
+      return res.status(404).json({ error: "correlation not found" });
+    }
+    return res.json({ ok: true, context });
   });
 
   // GET /streams?recipient=<address>

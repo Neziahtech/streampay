@@ -4,7 +4,7 @@ What ties a published contract Wasm to the sources that produced it, how to
 check it before you deploy, and — the part that is usually hand-waved — exactly
 what each check proves and what it silently does not.
 
-- Signing scheme rationale: [`adr/0003-attestation-signing-scheme.md`](adr/0003-attestation-signing-scheme.md)
+- Signing scheme rationale: [`adr/0011-attestation-signing-scheme.md`](adr/0011-attestation-signing-scheme.md)
 - Reproducible-build toolchain triad: [`REPRODUCING.md`](./REPRODUCING.md)
 - Promotion gates that consume this: [`DEPLOY_PIPELINE.md`](./DEPLOY_PIPELINE.md)
 

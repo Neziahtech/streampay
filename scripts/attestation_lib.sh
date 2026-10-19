@@ -5,7 +5,7 @@
 # Sourced by scripts/attest.sh, scripts/verify_wasm.sh and the tamper audit;
 # it also pulls in lib.sh, so callers get say/info/warn/die/require too.
 #
-# Design notes (see docs/adr/0003-attestation-signing-scheme.md):
+# Design notes (see docs/adr/0011-attestation-signing-scheme.md):
 #   * The signature covers the EXACT bytes of attestation.json. Nothing is
 #     re-canonicalized at verify time, so verification cannot drift from
 #     signing because of a jq version, and jq is not required to verify.

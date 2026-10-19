@@ -10,7 +10,7 @@ contracts/streaming-payments/   the Soroban contract (Rust, no_std)
 frontend/                       minimal Next.js + Freighter UI
 indexer/                        TypeScript Soroban event indexer + SQLite REST API
 fuzz/                           cargo-fuzz harness for the accrual math (own workspace)
-docs/                           ARCHITECTURE.md, GOOD_FIRST_ISSUES.md, DEMO.md
+docs/                           ARCHITECTURE.md, adr/ (decision records), DEMO.md
 .github/workflows/              ci.yml, fuzz.yml, release.yml
 ```
 
@@ -243,6 +243,17 @@ still does: a failing run regenerates the formatting, uploads it as the
    `lib.rs`/`stream.rs` (money-touching code).
 6. Squash-merge with a conventional subject; the squashed subject becomes the
    changelog entry.
+
+## Architecture Decision Records (ADRs)
+
+Significant architectural choices, invariants, or storage/tooling changes are documented as Architecture Decision Records in [`docs/adr/`](./docs/adr/README.md).
+
+- When introducing or altering architectural invariants, create a new record using [`docs/adr/template.md`](./docs/adr/template.md) with the next sequential number.
+- Records are immutable: if superseding a prior decision, mark the previous record as `Superseded by ADR-XXXX` (with a link to the replacement ADR) and link back from the new record.
+- Verify numbering and link integrity locally before opening a PR:
+  ```bash
+  node scripts/check-adrs.mjs
+  ```
 
 ## Good first issues
 

@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "contracts/streaming-payments",
     "contracts/passkey-signer",
+    "contracts/vault",
     "model",
     "tools/streampay-state",
 ]
