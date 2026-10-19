@@ -175,6 +175,9 @@ pub enum DataKey {
     OracleConfig,
     /// Most recent timestamp report from a publisher (persistent storage).
     OracleReport(Address),
+    /// Per-intent protocol fee configuration `(fee_bps, protocol_fee_per_occurrence)`
+    /// recorded when `fee_bps > 0` at `schedule_stream` time (persistent storage).
+    IntentProtocolFee(u64),
 }
 
 /// Seconds elapsed of the stream window at the given timestamp `now`.
@@ -419,6 +422,14 @@ pub fn set_schema_version(env: &Env, version: u32) {
 pub fn is_frozen(env: &Env) -> bool {
     #[cfg(test)]
     crate::cei_trace::record("read instance ContractFrozen");
+    env.storage()
+        .instance()
+        .get(&DataKey::ContractFrozen)
+        .unwrap_or(false)
+}
+
+/// Checks whether the contract is currently frozen without recording a trace event.
+pub fn is_frozen_quiet(env: &Env) -> bool {
     env.storage()
         .instance()
         .get(&DataKey::ContractFrozen)

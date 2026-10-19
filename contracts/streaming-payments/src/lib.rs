@@ -1058,7 +1058,7 @@ impl StreamingPayments {
     ) -> Result<u64, StreamError> {
         sender.require_auth();
 
-        let total_escrow = schedule::validate_schedule(
+        let base_escrow = schedule::validate_schedule(
             &env,
             deposit_amount,
             start_time,
@@ -1069,6 +1069,14 @@ impl StreamingPayments {
             execute_after,
             expires_at,
         )?;
+        let fee_bps = treasury::current_fee_bps(&env);
+        let protocol_fee = treasury::fee_amount(deposit_amount, fee_bps)?;
+        let total_protocol_fee = protocol_fee
+            .checked_mul(occurrences as i128)
+            .ok_or(StreamError::MathOverflow)?;
+        let total_escrow = base_escrow
+            .checked_add(total_protocol_fee)
+            .ok_or(StreamError::MathOverflow)?;
 
         // Effects first (CEI): persist the exact authorized intent before the
         // token call. If the transfer fails, Soroban rolls the whole invocation
@@ -1109,6 +1117,17 @@ impl StreamingPayments {
         };
         schedule::put_intent(&env, &intent);
         schedule::index_intent(&env, &intent);
+        if protocol_fee > 0 {
+            let fee_key = stream::DataKey::IntentProtocolFee(id);
+            env.storage()
+                .persistent()
+                .set(&fee_key, &(fee_bps, protocol_fee));
+            env.storage().persistent().extend_ttl(
+                &fee_key,
+                stream::TTL_THRESHOLD_LEDGERS,
+                stream::TTL_EXTEND_LEDGERS,
+            );
+        }
 
         StreamScheduled {
             intent_id: id,
@@ -1204,6 +1223,34 @@ impl StreamingPayments {
             intent.cancelable,
         );
 
+        let fee_key = stream::DataKey::IntentProtocolFee(intent_id);
+        if let Some((fee_bps, protocol_fee)) = env
+            .storage()
+            .persistent()
+            .get::<_, (u32, i128)>(&fee_key)
+        {
+            if protocol_fee > 0 {
+                treasury::apply_fee(&env, &intent.token, stream_id, protocol_fee)?;
+                FeeCharged {
+                    stream_id,
+                    token: intent.token.clone(),
+                    payer: intent.sender.clone(),
+                    amount: protocol_fee,
+                    fee_bps,
+                }
+                .publish(&env);
+            }
+            if intent.occurrences_remaining == 0 {
+                env.storage().persistent().remove(&fee_key);
+            } else {
+                env.storage().persistent().extend_ttl(
+                    &fee_key,
+                    stream::TTL_THRESHOLD_LEDGERS,
+                    stream::TTL_EXTEND_LEDGERS,
+                );
+            }
+        }
+
         // Pay the keeper its escrowed fee for this occurrence.
         let fee_paid = intent.fee_budget;
         if fee_paid > 0 {
@@ -1242,6 +1289,9 @@ impl StreamingPayments {
     /// `expires_at`, use [`StreamingPayments::reclaim_expired`] instead.
     pub fn cancel_scheduled(env: Env, sender: Address, intent_id: u64) -> Result<(), StreamError> {
         sender.require_auth();
+        if stream::is_frozen_quiet(&env) {
+            return Err(surface::reject(Branch::ContractFrozen));
+        }
 
         let mut intent = schedule::get_intent(&env, intent_id)?;
         if intent.status != IntentStatus::Pending {
@@ -1259,7 +1309,21 @@ impl StreamingPayments {
             return Err(surface::reject(Branch::IntentNotCancellable));
         }
 
-        let refund = intent.remaining_escrow()?;
+        let mut refund = intent.remaining_escrow()?;
+        let fee_key = stream::DataKey::IntentProtocolFee(intent_id);
+        if let Some((_, protocol_fee)) = env
+            .storage()
+            .persistent()
+            .get::<_, (u32, i128)>(&fee_key)
+        {
+            let unexecuted_protocol_fee = protocol_fee
+                .checked_mul(intent.occurrences_remaining as i128)
+                .ok_or(StreamError::MathOverflow)?;
+            refund = refund
+                .checked_add(unexecuted_protocol_fee)
+                .ok_or(StreamError::MathOverflow)?;
+            env.storage().persistent().remove(&fee_key);
+        }
 
         // Effects first (CEI).
         intent.status = IntentStatus::Cancelled;
@@ -1297,6 +1361,9 @@ impl StreamingPayments {
     /// [`StreamError::IntentNotExpired`] if called too early, and with
     /// [`StreamError::IntentNotPending`] if the intent is terminal.
     pub fn reclaim_expired(env: Env, intent_id: u64) -> Result<(), StreamError> {
+        if stream::is_frozen_quiet(&env) {
+            return Err(surface::reject(Branch::ContractFrozen));
+        }
         let mut intent = schedule::get_intent(&env, intent_id)?;
         if intent.status != IntentStatus::Pending {
             return Err(surface::reject(Branch::IntentNotPending));
@@ -1306,7 +1373,21 @@ impl StreamingPayments {
             return Err(surface::reject(Branch::IntentNotExpired));
         }
 
-        let refund = intent.remaining_escrow()?;
+        let mut refund = intent.remaining_escrow()?;
+        let fee_key = stream::DataKey::IntentProtocolFee(intent_id);
+        if let Some((_, protocol_fee)) = env
+            .storage()
+            .persistent()
+            .get::<_, (u32, i128)>(&fee_key)
+        {
+            let unexecuted_protocol_fee = protocol_fee
+                .checked_mul(intent.occurrences_remaining as i128)
+                .ok_or(StreamError::MathOverflow)?;
+            refund = refund
+                .checked_add(unexecuted_protocol_fee)
+                .ok_or(StreamError::MathOverflow)?;
+            env.storage().persistent().remove(&fee_key);
+        }
 
         // Effects first (CEI).
         intent.status = IntentStatus::Expired;

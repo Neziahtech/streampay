@@ -5986,3 +5986,47 @@ fn oracle_mode_accrual_property_bounded_by_staleness() {
         );
     }
 }
+
+#[test]
+fn scheduled_stream_charges_protocol_fee_and_respects_contract_frozen() {
+    let f = Fixture::setup_quiet();
+    f.client.mock_all_auths().set_fee_bps(&f.governor, &100); // 1% protocol fee
+
+    let now = f.env.ledger().timestamp();
+    let sender_before = f.balance(&f.sender);
+    let protocol_fee = DEPOSIT / 100;
+
+    let id = f.client.mock_all_auths().schedule_stream(
+        &f.sender,
+        &f.recipient,
+        &f.token,
+        &DEPOSIT,
+        &(now + DAY),
+        &(now + 11 * DAY),
+        &false,
+        &(2 * DAY),
+        &2,
+        &FEE,
+        &(now + DAY),
+        &(now + 30 * DAY),
+    );
+    assert_eq!(
+        f.balance(&f.sender),
+        sender_before - 2 * (DEPOSIT + FEE + protocol_fee)
+    );
+
+    f.client.mock_all_auths().set_frozen(&f.governor, &true);
+    assert_eq!(
+        f.client
+            .mock_all_auths()
+            .try_cancel_scheduled(&f.sender, &id)
+            .unwrap_err()
+            .unwrap(),
+        StreamError::ContractFrozen
+    );
+    f.client.mock_all_auths().set_frozen(&f.governor, &false);
+
+    f.client.mock_all_auths().cancel_scheduled(&f.sender, &id);
+    assert_eq!(f.balance(&f.sender), sender_before);
+}
+
