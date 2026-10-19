@@ -22,8 +22,8 @@
 extern crate std;
 
 use soroban_sdk::{
-    contract, contractclient, contracterror, contractevent, contractimpl, contracttype, Address,
-    Env, String as SdkString,
+    contract, contractclient, contracterror, contractevent, contractimpl, contracttype,
+    token::TokenClient, Address, Env, String as SdkString,
 };
 use streampay_contract::{Stream, StreamError, StreamStatus};
 
@@ -197,7 +197,7 @@ impl StreamNft {
         if stream.status != StreamStatus::Active {
             return Err(NftError::StreamNotActive);
         }
-        if stream.recipient != recipient {
+        if stream.recipient != recipient && stream.recipient != env.current_contract_address() {
             return Err(NftError::NotAuthorized);
         }
 
@@ -283,6 +283,9 @@ impl StreamNft {
             return Err(NftError::NotAuthorized);
         }
         if amount < 0 || amount > 1 {
+            return Err(NftError::InvalidAmount);
+        }
+        if amount > 0 && live_until_ledger < env.ledger().sequence() {
             return Err(NftError::InvalidAmount);
         }
 
@@ -456,10 +459,13 @@ impl StreamNft {
             .withdraw(&stream_id, &amount)
             .map_err(|_| NftError::StreamNotActive)?;
 
-        // Auto-burn if stream depleted
+        // Route payout to the current NFT owner and auto-burn if stream depleted
         let stream = core_client
             .get_stream(&stream_id)
             .map_err(|_| NftError::StreamNotActive)?;
+        if stream.recipient != owner {
+            TokenClient::new(&env, &stream.token).transfer(&stream.recipient, &owner, &amount);
+        }
         if stream.status == StreamStatus::Depleted {
             let _ = Self::burn_internal(&env, owner);
         }
@@ -496,6 +502,9 @@ impl StreamNft {
         let stream = core_client
             .get_stream(&stream_id)
             .map_err(|_| NftError::StreamNotActive)?;
+        if withdrawn > 0 && stream.recipient != owner {
+            TokenClient::new(&env, &stream.token).transfer(&stream.recipient, &owner, &withdrawn);
+        }
         if stream.status == StreamStatus::Depleted {
             let _ = Self::burn_internal(&env, owner);
         }

@@ -486,3 +486,42 @@ fn test_burn_from_with_operator_allowance() {
     nft.burn_from(&operator, &f.recipient, &1);
     assert_eq!(nft.try_owner().unwrap_err().unwrap(), NftError::TokenBurned);
 }
+
+#[test]
+fn test_transfer_then_withdraw_routes_tokens_to_new_owner() {
+    let f = TestFixture::setup();
+    let stream_id = f.create_stream(10 * DAY, false);
+    let (_nft_addr, nft) = f.deploy_nft(stream_id);
+    nft.mint(&f.recipient);
+
+    let new_recipient = Address::generate(&f.env);
+    nft.transfer(&f.recipient, &new_recipient, &1);
+
+    f.advance_time(3 * DAY);
+    nft.withdraw(&new_recipient, &1_000_000_000);
+    let rest = nft.withdraw_max(&new_recipient);
+    assert_eq!(rest, 2_000_000_000);
+
+    let tok = soroban_sdk::token::TokenClient::new(&f.env, &f.token);
+    assert_eq!(tok.balance(&new_recipient), 3_000_000_000);
+    assert_eq!(tok.balance(&f.recipient), 0);
+}
+
+#[test]
+fn test_approve_rejects_expired_live_until_ledger() {
+    let f = TestFixture::setup();
+    let stream_id = f.create_stream(10 * DAY, false);
+    let (_nft_addr, nft) = f.deploy_nft(stream_id);
+    nft.mint(&f.recipient);
+
+    f.advance_ledger(10);
+    let operator = Address::generate(&f.env);
+    let expired_ledger = f.env.ledger().sequence() - 1;
+    assert_eq!(
+        nft.try_approve(&f.recipient, &operator, &1, &expired_ledger)
+            .unwrap_err()
+            .unwrap(),
+        NftError::InvalidAmount
+    );
+}
+
