@@ -462,6 +462,9 @@ impl StreamingPayments {
         if count == 0 {
             return Ok(ids);
         }
+        if count > stream::MAX_BATCH {
+            return Err(surface::reject(Branch::CreateBatchTooLarge));
+        }
 
         sender.require_auth();
 
@@ -942,6 +945,8 @@ impl StreamingPayments {
             return Err(surface::reject(Branch::StreamNotActive));
         }
         s.sender.require_auth();
+
+        policy::check_asset_allowed(&env, &s.token)?;
 
         let new_deposit = s
             .deposit

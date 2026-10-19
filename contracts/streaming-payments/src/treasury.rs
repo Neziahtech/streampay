@@ -284,14 +284,21 @@ pub struct FeeScan {
 /// (`count` clamped to [`MAX_PAGE_SIZE`]) — no unbounded scans.
 pub fn scan_fees(env: &Env, token: &Address, start_id: u64, count: u32) -> FeeScan {
     // Next id to hand out; streams occupy ids 1..=next_id-1.
-    let next_id: u64 = env
-        .storage()
-        .persistent()
-        .get(&DataKey::NextStreamId)
-        .unwrap_or(1);
+    let next_id: u64 = if env.storage().persistent().has(&DataKey::NextStreamId) {
+        let v: u64 = env.storage().persistent().get(&DataKey::NextStreamId).unwrap();
+        env.storage().persistent().extend_ttl(
+            &DataKey::NextStreamId,
+            TTL_THRESHOLD_LEDGERS,
+            TTL_EXTEND_LEDGERS,
+        );
+        v
+    } else {
+        1
+    };
     let start = start_id.max(1);
+    let page = count.clamp(1, MAX_PAGE_SIZE) as u64;
     let end = start
-        .saturating_add((count.min(MAX_PAGE_SIZE)) as u64)
+        .saturating_add(page)
         .min(next_id);
 
     let mut fees_in_range: i128 = 0;

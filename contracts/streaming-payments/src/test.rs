@@ -5986,3 +5986,66 @@ fn oracle_mode_accrual_property_bounded_by_staleness() {
         );
     }
 }
+
+#[test]
+fn top_up_rejects_delisted_asset() {
+    let f = Fixture::setup();
+    f.client
+        .mock_all_auths()
+        .add_allowed_asset(&f.governor, &f.token);
+    let id = f.create_stream(DEPOSIT / 2, DAY, 10 * DAY, false);
+
+    // Governor delists the token after stream creation.
+    let other_token = Address::generate(&f.env);
+    f.client
+        .mock_all_auths()
+        .add_allowed_asset(&f.governor, &other_token);
+    f.client
+        .mock_all_auths()
+        .remove_allowed_asset(&f.governor, &f.token);
+
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_top_up(&id, &1000)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::AssetNotAllowed);
+}
+
+#[test]
+fn create_streams_rejects_batch_exceeding_max_batch() {
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+    let mut inputs = soroban_sdk::Vec::new(&f.env);
+    for _ in 0..51 {
+        inputs.push_back(crate::StreamInput {
+            recipient: f.recipient.clone(),
+            token: f.token.clone(),
+            deposit_amount: 100,
+            start_time: now + DAY,
+            end_time: now + 2 * DAY,
+            cancelable: false,
+            use_oracle: false,
+        });
+    }
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_create_streams(&f.sender, &inputs)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::BatchTooLarge);
+}
+
+#[test]
+fn verify_treasury_clamps_zero_count_to_one() {
+    let f = Fixture::setup();
+    set_fee(&f, 100);
+    let _id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+
+    let scan = f.client.verify_treasury(&f.token, &1, &0);
+    assert_eq!(scan.scanned_count, 1);
+    assert!(scan.done);
+}
+
