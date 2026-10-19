@@ -319,20 +319,52 @@ pub fn cancel_handoff(env: &Env) -> Result<(), StreamError> {
     Ok(())
 }
 
-/// Loads the effective stream policy for `token`, falling back to global policy.
+/// Loads the effective stream policy for `token`, falling back to global policy
+/// (and inheriting global bounds for any unset `0` fields on a token override).
 pub fn get_stream_policy(env: &Env, token: Option<Address>) -> Option<StreamPolicy> {
+    let global: Option<StreamPolicy> = env
+        .storage()
+        .instance()
+        .get(&PolicyDataKey::GlobalStreamPolicy);
     if let Some(token_addr) = token {
         let key = PolicyDataKey::StreamPolicy(token_addr);
         if let Some(policy) = env.storage().persistent().get::<_, StreamPolicy>(&key) {
             env.storage()
                 .persistent()
                 .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+            if let Some(g) = global {
+                return Some(StreamPolicy {
+                    min_deposit: if policy.min_deposit > 0 {
+                        policy.min_deposit
+                    } else {
+                        g.min_deposit
+                    },
+                    min_duration: if policy.min_duration > 0 {
+                        policy.min_duration
+                    } else {
+                        g.min_duration
+                    },
+                    max_duration: if policy.max_duration > 0 {
+                        policy.max_duration
+                    } else {
+                        g.max_duration
+                    },
+                    min_rate: if policy.min_rate > 0 {
+                        policy.min_rate
+                    } else {
+                        g.min_rate
+                    },
+                    max_rate: if policy.max_rate > 0 {
+                        policy.max_rate
+                    } else {
+                        g.max_rate
+                    },
+                });
+            }
             return Some(policy);
         }
     }
-    env.storage()
-        .instance()
-        .get(&PolicyDataKey::GlobalStreamPolicy)
+    global
 }
 
 /// Sets the stream policy for `token` (or default global policy if `token` is None).
@@ -341,6 +373,20 @@ pub fn set_stream_policy(
     token: Option<Address>,
     new_policy: StreamPolicy,
 ) -> Result<(), StreamError> {
+    if new_policy.min_deposit < 0 || new_policy.min_rate < 0 || new_policy.max_rate < 0 {
+        return Err(StreamError::ZeroAmount);
+    }
+    if new_policy.min_duration > crate::stream::MAX_DURATION_SECONDS
+        || new_policy.max_duration > crate::stream::MAX_DURATION_SECONDS
+    {
+        return Err(StreamError::DurationTooLong);
+    }
+    if new_policy.max_duration > 0 && new_policy.min_duration > new_policy.max_duration {
+        return Err(StreamError::InvalidTimeRange);
+    }
+    if new_policy.max_rate > 0 && new_policy.min_rate > new_policy.max_rate {
+        return Err(StreamError::PolicyRateAboveCeiling);
+    }
     let old_policy = get_stream_policy(env, token.clone());
     if let Some(ref token_addr) = token {
         let key = PolicyDataKey::StreamPolicy(token_addr.clone());

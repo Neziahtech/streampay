@@ -1894,12 +1894,12 @@ impl StreamingPayments {
         }
 
         let cursor = stream::migration_cursor(&env);
+        let next_unmigrated = cursor.saturating_add(1).min(total);
         let effective_start = if start_id == 0 {
-            cursor.saturating_add(1)
+            next_unmigrated
         } else {
-            start_id
+            start_id.clamp(1, next_unmigrated)
         };
-        let effective_start = effective_start.clamp(1, total);
         let end_id = (effective_start.saturating_add(batch_size).saturating_sub(1)).min(total);
 
         // Migrate each stream in the batch: read, verify, touch TTL, re-store.

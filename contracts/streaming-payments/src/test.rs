@@ -5986,3 +5986,37 @@ fn oracle_mode_accrual_property_bounded_by_staleness() {
         );
     }
 }
+
+#[test]
+fn migrate_storage_cannot_skip_unmigrated_streams_and_policy_validates_bounds() {
+    let f = Fixture::setup();
+    let _s1 = f.create_stream(DEPOSIT, 0, 10 * DAY, true);
+    let _s2 = f.create_stream(DEPOSIT, 0, 10 * DAY, true);
+    let _s3 = f.create_stream(DEPOSIT, 0, 10 * DAY, true);
+
+    // 1. Freeze and attempt out-of-order migration starting at stream 3 with count = 1
+    f.client.mock_all_auths().set_frozen(&f.governor, &true);
+    let p1 = f.client.mock_all_auths().migrate_storage(&f.governor, &3, &1);
+    assert!(!p1.is_complete);
+    assert_eq!(p1.cursor, 1);
+    assert_eq!(f.client.schema_version(), INITIAL_SCHEMA_VERSION);
+
+    // 2. Unfreeze and verify inverted/negative StreamPolicy bounds are rejected
+    f.client.mock_all_auths().set_frozen(&f.governor, &false);
+    let inverted_rate = crate::StreamPolicy {
+        min_deposit: 100,
+        min_duration: 60,
+        max_duration: 3600,
+        min_rate: 500,
+        max_rate: 100,
+    };
+    assert_eq!(
+        f.client
+            .mock_all_auths()
+            .try_set_stream_policy(&f.governor, &None, &inverted_rate)
+            .unwrap_err()
+            .unwrap(),
+        StreamError::PolicyRateAboveCeiling
+    );
+}
+
