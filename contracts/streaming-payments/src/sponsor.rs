@@ -208,12 +208,17 @@ pub fn put_period(env: &Env, key: &SponsorKey, period: &PeriodSpend) {
         .extend_ttl(key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
 }
 
+pub const MAX_CLAIM_WINDOW_SECONDS: u64 = (TTL_THRESHOLD_LEDGERS as u64) * 5;
+
 pub fn nonce_used(env: &Env, sponsor: &Address, beneficiary: &Address, nonce: u64) -> bool {
-    env.storage().persistent().has(&SponsorKey::ClaimNonce(
-        sponsor.clone(),
-        beneficiary.clone(),
-        nonce,
-    ))
+    let key = SponsorKey::ClaimNonce(sponsor.clone(), beneficiary.clone(), nonce);
+    let used = env.storage().persistent().has(&key);
+    if used {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+    }
+    used
 }
 
 pub fn mark_nonce(env: &Env, sponsor: &Address, beneficiary: &Address, nonce: u64) {
@@ -291,13 +296,17 @@ pub fn register_sponsor(
     window_seconds: u64,
     operator_key: BytesN<32>,
 ) -> Result<(), StreamError> {
+    if stream::is_frozen(&env) {
+        return Err(surface::reject(Branch::ContractFrozen));
+    }
     sponsor.require_auth();
     if per_period_limit <= 0 || per_beneficiary_limit <= 0 {
         return Err(surface::reject(Branch::RegisterLimitNonPositive));
     }
-    if window_seconds < MIN_WINDOW_SECONDS {
+    if window_seconds < MIN_WINDOW_SECONDS || window_seconds > stream::MAX_DURATION_SECONDS {
         return Err(surface::reject(Branch::RegisterLimitNonPositive));
     }
+    crate::policy::check_asset_allowed(&env, &token)?;
 
     let cfg = SponsorConfig {
         token: token.clone(),
@@ -333,6 +342,9 @@ pub fn register_sponsor(
 /// Pauses or resumes a sponsor's budget. Requires the sponsor's own
 /// authorization. Pausing keeps all budget state; resuming reuses it.
 pub fn set_sponsor_active(env: Env, sponsor: Address, active: bool) -> Result<(), StreamError> {
+    if stream::is_frozen(&env) {
+        return Err(surface::reject(Branch::ContractFrozen));
+    }
     sponsor.require_auth();
     let mut cfg =
         get_config(&env, &sponsor).ok_or_else(|| surface::reject(Branch::SponsorNotFound))?;
@@ -358,6 +370,9 @@ pub fn rotate_operator_key(
     sponsor: Address,
     new_operator_key: BytesN<32>,
 ) -> Result<(), StreamError> {
+    if stream::is_frozen(&env) {
+        return Err(surface::reject(Branch::ContractFrozen));
+    }
     sponsor.require_auth();
     // A rotation is only meaningful for an existing budget.
     get_config(&env, &sponsor).ok_or_else(|| surface::reject(Branch::SponsorNotFound))?;
@@ -381,6 +396,9 @@ pub fn enroll_beneficiary(
     beneficiary: Address,
     public_key: BytesN<32>,
 ) -> Result<(), StreamError> {
+    if stream::is_frozen(&env) {
+        return Err(surface::reject(Branch::ContractFrozen));
+    }
     beneficiary.require_auth();
     put_beneficiary_key(&env, &beneficiary, &public_key);
 
@@ -444,7 +462,8 @@ pub fn sponsored_withdraw(
     // --- consent / replay / expiry ---------------------------------------
     let beneficiary_key = get_beneficiary_key(&env, &beneficiary)
         .ok_or_else(|| surface::reject(Branch::BeneficiaryNotEnrolled))?;
-    if env.ledger().timestamp() > deadline {
+    let now_ts = env.ledger().timestamp();
+    if now_ts > deadline || deadline > now_ts.saturating_add(MAX_CLAIM_WINDOW_SECONDS) {
         return Err(surface::reject(Branch::ClaimExpired));
     }
     if nonce_used(&env, &sponsor, &beneficiary, nonce) {
