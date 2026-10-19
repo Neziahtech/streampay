@@ -132,6 +132,11 @@ pub fn is_asset_allowed(env: &Env, asset: &Address) -> bool {
     }
     let key = PolicyDataKey::Asset(asset.clone());
     let allowed: Option<bool> = env.storage().persistent().get(&key);
+    if allowed.is_some() {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+    }
     allowed.unwrap_or(true)
 }
 
@@ -200,6 +205,9 @@ pub fn propose_asset(env: &Env, asset: Address, allowed: bool) -> Result<(), Str
     env.storage()
         .persistent()
         .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+    env.storage()
+        .instance()
+        .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
 
     PolicyAssetQueued {
         asset,
@@ -232,7 +240,10 @@ pub fn execute_asset(env: &Env, asset: Address) -> Result<(), StreamError> {
         .ok_or_else(|| surface::reject(Branch::PolicyNoQueuedChange))?;
 
     let now = env.ledger().timestamp();
-    if now < queued.executable_after {
+    let effective_unlock = queued
+        .executable_after
+        .max(queued.queued_at.saturating_add(timelock_delay(env)));
+    if now < effective_unlock {
         return Err(surface::reject(Branch::PolicyTimelockNotElapsed));
     }
 
@@ -242,6 +253,9 @@ pub fn execute_asset(env: &Env, asset: Address) -> Result<(), StreamError> {
     env.storage()
         .persistent()
         .extend_ttl(&asset_key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+    env.storage()
+        .instance()
+        .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
 
     let queue_key = PolicyDataKey::QueuedAsset(asset.clone());
     env.storage().persistent().remove(&queue_key);
@@ -258,6 +272,13 @@ pub fn execute_asset(env: &Env, asset: Address) -> Result<(), StreamError> {
 /// Proposes a new admin for the two-step handoff (admin-only).
 pub fn propose_handoff(env: &Env, new_admin: Address) -> Result<(), StreamError> {
     let current_admin = require_admin(env)?;
+    if new_admin == current_admin {
+        env.storage().instance().remove(&PolicyDataKey::PendingAdmin);
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+        return Ok(());
+    }
     env.storage()
         .instance()
         .set(&PolicyDataKey::PendingAdmin, &new_admin);
@@ -330,9 +351,16 @@ pub fn get_stream_policy(env: &Env, token: Option<Address>) -> Option<StreamPoli
             return Some(policy);
         }
     }
-    env.storage()
+    let global: Option<StreamPolicy> = env
+        .storage()
         .instance()
-        .get(&PolicyDataKey::GlobalStreamPolicy)
+        .get(&PolicyDataKey::GlobalStreamPolicy);
+    if global.is_some() {
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+    }
+    global
 }
 
 /// Sets the stream policy for `token` (or default global policy if `token` is None).
