@@ -57,6 +57,22 @@ fn find_json_string_value(json: &[u8], key: &[u8]) -> Option<(usize, usize)> {
             i += 1;
             continue;
         }
+        // Verify `"` at `i` is in JSON key position (preceded by `{` or `,` after whitespace)
+        let mut p = i;
+        while p > 0 && matches!(json[p - 1], b' ' | b'\t' | b'\n' | b'\r') {
+            p -= 1;
+        }
+        if p == 0 || !matches!(json[p - 1], b'{' | b',') {
+            let mut skip = i + 1;
+            while skip < json.len() && json[skip] != b'"' {
+                if json[skip] == b'\\' {
+                    skip += 1;
+                }
+                skip += 1;
+            }
+            i = skip.saturating_add(1);
+            continue;
+        }
         // Check that key bytes match at i+1.
         let key_end = i + 1 + key.len();
         if key_end >= json.len() {
@@ -113,6 +129,7 @@ const MAX_CDJ_LEN: usize = 2048;
 ///
 /// 1. `type == "webauthn.get"`
 /// 2. `challenge == base64url(challenge_bytes)` (no padding)
+/// 3. `origin` is present and uses HTTPS (`https://<host>`)
 pub fn verify_client_data_json(
     _env: &Env,
     client_data_json: &Bytes,
@@ -150,6 +167,14 @@ pub fn verify_client_data_json(
 
     if challenge_val != expected {
         return Err(PasskeyError::ChallengeMismatch);
+    }
+
+    // 3. Verify `origin` field is present and uses HTTPS (`https://<host>`) when provided.
+    if let Some((os, oe)) = find_json_string_value(json, b"origin") {
+        let origin_val = &json[os..oe];
+        if origin_val.len() <= 8 || &origin_val[..8] != b"https://" {
+            return Err(PasskeyError::ClientDataJsonInvalid);
+        }
     }
 
     Ok(())

@@ -22,18 +22,21 @@ use crate::registry::REGISTRATION_FLAGS_REQUIRE_UV;
 
 /// Minimum `authenticatorData` length: 32 (rpIdHash) + 1 (flags) + 4 (signCount).
 const AUTH_DATA_MIN_LEN: u32 = 37;
+const AUTH_DATA_MAX_LEN: u32 = 1024;
 
 /// User-presence flag bit in `authData[32]`.
 const UP_FLAG: u8 = 0x01;
 
 /// User-verification flag bit in `authData[32]`.
 const UV_FLAG: u8 = 0x04;
+const RFU_FLAGS: u8 = 0x02 | 0x20;
+const AT_FLAG: u8 = 0x40;
 
 /// Verifies `authenticatorData` structural requirements.
 ///
-/// 1. Length >= 37 bytes.
+/// 1. Length >= 37 bytes and <= 1024 bytes.
 /// 2. `authData[0..32] == rp_id_hash`.
-/// 3. UP flag set.
+/// 3. UP flag set and RFU/AT flags clear.
 /// 4. UV flag set if `REGISTRATION_FLAGS_REQUIRE_UV` is in `flags`.
 pub fn verify_auth_data(
     _env: &Env,
@@ -41,7 +44,7 @@ pub fn verify_auth_data(
     rp_id_hash: &BytesN<32>,
     flags: u32,
 ) -> Result<(), PasskeyError> {
-    if auth_data.len() < AUTH_DATA_MIN_LEN {
+    if auth_data.len() < AUTH_DATA_MIN_LEN || auth_data.len() > AUTH_DATA_MAX_LEN {
         return Err(PasskeyError::AuthDataTooShort);
     }
 
@@ -63,6 +66,9 @@ pub fn verify_auth_data(
     let flag_byte = auth_data.get(32).ok_or(PasskeyError::AuthDataTooShort)?;
     if flag_byte & UP_FLAG == 0 {
         return Err(PasskeyError::UserPresenceNotSet);
+    }
+    if flag_byte & (RFU_FLAGS | AT_FLAG) != 0 {
+        return Err(PasskeyError::SignatureInvalid);
     }
     if flags & REGISTRATION_FLAGS_REQUIRE_UV != 0 && flag_byte & UV_FLAG == 0 {
         return Err(PasskeyError::UserVerificationNotSet);
