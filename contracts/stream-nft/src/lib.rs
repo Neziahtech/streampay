@@ -146,6 +146,10 @@ impl StreamNft {
         if env.storage().instance().has(&NftDataKey::CoreContract) {
             return Err(NftError::AlreadyInitialized);
         }
+        admin.require_auth();
+        if stream_id == 0 {
+            return Err(NftError::InvalidAmount);
+        }
 
         env.storage()
             .instance()
@@ -208,6 +212,9 @@ impl StreamNft {
         env.storage()
             .persistent()
             .extend_ttl(&NftDataKey::Owner, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
 
         NftMinted {
             stream_id,
@@ -290,6 +297,7 @@ impl StreamNft {
         if amount == 0 {
             env.storage().persistent().remove(&key);
         } else {
+            let _ = Self::require_active_stream(&env)?;
             let record = Allowance {
                 amount: 1,
                 live_until_ledger,
@@ -299,6 +307,9 @@ impl StreamNft {
                 .persistent()
                 .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
         }
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
 
         Ok(())
     }
@@ -538,13 +549,16 @@ impl StreamNft {
             return Err(NftError::InvalidAmount);
         }
 
-        let stream_id = Self::get_stream_id(env)?;
+        let stream_id = Self::require_active_stream(env)?;
 
         // Update owner
         env.storage().persistent().set(&NftDataKey::Owner, &to);
         env.storage()
             .persistent()
             .extend_ttl(&NftDataKey::Owner, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
 
         NftTransferred {
             stream_id,
@@ -561,9 +575,29 @@ impl StreamNft {
 
         env.storage().persistent().remove(&NftDataKey::Owner);
         env.storage().instance().set(&NftDataKey::Burned, &true);
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
 
         NftBurned { stream_id, owner }.publish(env);
         Ok(())
+    }
+
+    fn require_active_stream(env: &Env) -> Result<u64, NftError> {
+        let stream_id = Self::get_stream_id(env)?;
+        let core: Address = env
+            .storage()
+            .instance()
+            .get(&NftDataKey::CoreContract)
+            .ok_or(NftError::NotInitialized)?;
+        let core_client = CoreStreamPayClient::new(env, &core);
+        let stream = core_client
+            .get_stream(&stream_id)
+            .map_err(|_| NftError::StreamNotActive)?;
+        if stream.status != StreamStatus::Active {
+            return Err(NftError::StreamNotActive);
+        }
+        Ok(stream_id)
     }
 
     fn require_initialized(env: &Env) -> Result<(), NftError> {

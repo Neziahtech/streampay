@@ -486,3 +486,58 @@ fn test_burn_from_with_operator_allowance() {
     nft.burn_from(&operator, &f.recipient, &1);
     assert_eq!(nft.try_owner().unwrap_err().unwrap(), NftError::TokenBurned);
 }
+
+#[test]
+fn test_initialize_requires_admin_auth_and_nonzero_stream_id() {
+    let f = TestFixture::setup();
+    let nft_address = f.env.register(StreamNft, ());
+    let nft = StreamNftClient::new(&f.env, &nft_address);
+
+    assert_eq!(
+        nft.try_initialize(&f.core_address, &f.governor, &0)
+            .unwrap_err()
+            .unwrap(),
+        NftError::InvalidAmount
+    );
+
+    f.env.mock_auths(&[]);
+    assert!(nft
+        .try_initialize(&f.core_address, &f.governor, &1)
+        .is_err());
+}
+
+#[test]
+fn test_transfer_and_approve_rejected_when_core_stream_cancelled() {
+    let f = TestFixture::setup();
+    let stream_id = f.create_stream(10 * DAY, true);
+    let (_nft_addr, nft) = f.deploy_nft(stream_id);
+    nft.mint(&f.recipient);
+
+    let operator = Address::generate(&f.env);
+    let buyer = Address::generate(&f.env);
+    let live_until = f.env.ledger().sequence() + 100;
+    nft.approve(&f.recipient, &operator, &1, &live_until);
+
+    f.advance_time(2 * DAY);
+    f.core_client.cancel_stream(&f.sender, &stream_id);
+
+    assert_eq!(
+        nft.try_transfer(&f.recipient, &buyer, &1)
+            .unwrap_err()
+            .unwrap(),
+        NftError::StreamNotActive
+    );
+    assert_eq!(
+        nft.try_transfer_from(&operator, &f.recipient, &buyer, &1)
+            .unwrap_err()
+            .unwrap(),
+        NftError::StreamNotActive
+    );
+    assert_eq!(
+        nft.try_approve(&f.recipient, &buyer, &1, &live_until)
+            .unwrap_err()
+            .unwrap(),
+        NftError::StreamNotActive
+    );
+}
+
