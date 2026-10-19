@@ -194,11 +194,16 @@ pub fn resolve_stream_time(env: &Env, stream_id: u64, use_oracle: bool) -> Resol
         };
     };
 
+    let min_allowed_time = ledger_time.saturating_sub(config.max_stale_seconds);
+    let max_allowed_time = ledger_time.saturating_add(config.max_stale_seconds);
     let mut valid_times = Vec::new(env);
     for publisher in config.publishers.iter() {
         if let Some(report) = get_oracle_report(env, publisher) {
-            // Freshness check: current ledger time must not exceed report.ledger_time + max_stale_seconds
-            if ledger_time <= report.ledger_time.saturating_add(config.max_stale_seconds) {
+            // Freshness and bounds check: report must be recent and reported_time within [ledger_time - max_stale, ledger_time + max_stale]
+            if ledger_time <= report.ledger_time.saturating_add(config.max_stale_seconds)
+                && report.reported_time >= min_allowed_time
+                && report.reported_time <= max_allowed_time
+            {
                 valid_times.push_back(report.reported_time);
             }
         }
@@ -235,8 +240,9 @@ pub fn resolve_stream_time(env: &Env, stream_id: u64, use_oracle: bool) -> Resol
         i += 1;
     }
 
-    // Median of sorted timestamps
-    let median_time = valid_times.get(n / 2).unwrap();
+    // Lower median of sorted timestamps so a single rogue publisher in a 2-of-3 quorum
+    // with 2 active reports cannot skew stream time upward to max_stale_seconds.
+    let median_time = valid_times.get((n - 1) / 2).unwrap();
 
     ResolvedTime {
         timestamp: median_time,

@@ -121,10 +121,12 @@ impl PeriodSpend {
     /// Spend counted against the *current* window at `now`: an elapsed window
     /// has effectively zero spend (it rolls over before the next claim).
     pub fn effective(&self, window_seconds: u64, now: u64) -> i128 {
-        if now.saturating_sub(self.period_start) < window_seconds {
-            self.spend
-        } else {
+        if (self.spend == 0 && self.period_start == 0)
+            || now.saturating_sub(self.period_start) >= window_seconds
+        {
             0
+        } else {
+            self.spend
         }
     }
 
@@ -133,7 +135,9 @@ impl PeriodSpend {
     /// `i128` (defensive: caps are validated `> 0` and a passing cap check
     /// already keeps the sum well inside `i128`).
     fn spend_more(&mut self, amount: i128, now: u64, window: u64) -> Result<(), StreamError> {
-        if now.saturating_sub(self.period_start) >= window {
+        if (self.spend == 0 && self.period_start == 0)
+            || now.saturating_sub(self.period_start) >= window
+        {
             self.period_start = now;
             self.spend = 0;
         }
@@ -454,12 +458,20 @@ pub fn sponsored_withdraw(
     // --- budget caps (period, then beneficiary) --------------------------
     let now = env.ledger().timestamp();
     let mut sper = get_period(&env, &SponsorKey::SponsorPeriod(sponsor.clone()));
-    if sper.effective(cfg.window_seconds, now) + amount > cfg.per_period_limit {
+    let next_sper = sper
+        .effective(cfg.window_seconds, now)
+        .checked_add(amount)
+        .ok_or_else(|| surface::reject(Branch::PayoutOverflow))?;
+    if next_sper > cfg.per_period_limit {
         return Err(surface::reject(Branch::SponsorBudgetPeriodExceeded));
     }
     let bkey = SponsorKey::BeneficiarySpend(sponsor.clone(), beneficiary.clone());
     let mut bper = get_period(&env, &bkey);
-    if bper.effective(cfg.window_seconds, now) + amount > cfg.per_beneficiary_limit {
+    let next_bper = bper
+        .effective(cfg.window_seconds, now)
+        .checked_add(amount)
+        .ok_or_else(|| surface::reject(Branch::PayoutOverflow))?;
+    if next_bper > cfg.per_beneficiary_limit {
         return Err(surface::reject(Branch::SponsorBudgetBeneficiaryExceeded));
     }
 

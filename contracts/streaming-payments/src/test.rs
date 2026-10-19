@@ -5986,3 +5986,37 @@ fn oracle_mode_accrual_property_bounded_by_staleness() {
         );
     }
 }
+
+#[test]
+fn oracle_2_of_3_with_two_reports_resists_single_rogue_future_spike() {
+    let f = Fixture::setup();
+    let honest1 = Address::generate(&f.env);
+    let honest2 = Address::generate(&f.env);
+    let rogue = Address::generate(&f.env);
+    let publishers = soroban_sdk::Vec::from_array(
+        &f.env,
+        [honest1.clone(), honest2.clone(), rogue.clone()],
+    );
+
+    f.client
+        .mock_all_auths()
+        .set_oracle_config(&f.governor, &publishers, &2, &3600);
+    let id_oracle = f.create_stream_with_oracle(DEPOSIT, 0, 10 * DAY, false, true);
+    let id_ledger = f.create_stream_with_oracle(DEPOSIT, 0, 10 * DAY, false, false);
+
+    f.advance_time(100);
+    let now = f.env.ledger().timestamp();
+    f.client
+        .mock_all_auths()
+        .submit_oracle_time(&honest1, &now);
+    f.client
+        .mock_all_auths()
+        .submit_oracle_time(&rogue, &(now + 3600));
+
+    // Single rogue publisher must NOT fast-forward resolved accrual above ledger time (`now`)
+    assert_eq!(
+        f.client.mock_all_auths().available(&id_oracle),
+        f.client.mock_all_auths().available(&id_ledger)
+    );
+}
+
