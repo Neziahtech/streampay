@@ -132,6 +132,11 @@ pub fn is_asset_allowed(env: &Env, asset: &Address) -> bool {
     }
     let key = PolicyDataKey::Asset(asset.clone());
     let allowed: Option<bool> = env.storage().persistent().get(&key);
+    if allowed.is_some() {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+    }
     allowed.unwrap_or(true)
 }
 

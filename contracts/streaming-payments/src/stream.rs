@@ -301,6 +301,9 @@ pub fn next_stream_id(env: &Env) -> u64 {
     let key = DataKey::NextStreamId;
     let id: u64 = env.storage().persistent().get(&key).unwrap_or(1);
     env.storage().persistent().set(&key, &id.saturating_add(1));
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
     id
 }
 
@@ -312,6 +315,9 @@ pub fn reserve_stream_ids(env: &Env, count: u32) -> Result<u64, StreamError> {
         .checked_add(count as u64)
         .ok_or(StreamError::MathOverflow)?;
     env.storage().persistent().set(&key, &next);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
     Ok(first)
 }
 
@@ -319,10 +325,16 @@ pub fn reserve_stream_ids(env: &Env, count: u32) -> Result<u64, StreamError> {
 pub fn get_stream(env: &Env, id: u64) -> Result<Stream, StreamError> {
     #[cfg(test)]
     crate::cei_trace::record(&std::format!("read persistent Stream({id})"));
+    let key = DataKey::Stream(id);
+    let stream: Stream = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .ok_or_else(|| surface::reject(Branch::StreamNotFound))?;
     env.storage()
         .persistent()
-        .get(&DataKey::Stream(id))
-        .ok_or_else(|| surface::reject(Branch::StreamNotFound))
+        .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+    Ok(stream)
 }
 
 /// Persists a stream and extends its storage TTL.

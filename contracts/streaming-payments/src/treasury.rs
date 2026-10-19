@@ -224,10 +224,13 @@ pub fn apply_fee(
 /// floored to zero). Callers that expose this publicly should first check
 /// the stream exists.
 pub fn stream_fee(env: &Env, stream_id: u64) -> i128 {
-    let record: Option<StreamFeeRecord> = env
-        .storage()
-        .persistent()
-        .get(&DataKey::StreamFee(stream_id));
+    let key = DataKey::StreamFee(stream_id);
+    let record: Option<StreamFeeRecord> = env.storage().persistent().get(&key);
+    if record.is_some() {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+    }
     record.map_or(0, |r| r.amount)
 }
 
