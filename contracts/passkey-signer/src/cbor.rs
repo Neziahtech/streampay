@@ -44,62 +44,110 @@ fn base64url_encode(input: &[u8], out: &mut [u8; 64]) -> usize {
 
 // ── JSON key–value scanner ────────────────────────────────────────────────────
 
-/// Finds the string value for `key` inside `json` bytes.
+/// Finds the top-level string value for `key` inside `json` bytes.
 ///
-/// Scans for `"<key>"` followed by optional whitespace, `:`, optional
-/// whitespace, and `"<value>"`. Returns a `(start, end)` byte range into
-/// `json` for the value content (excluding surrounding quotes), or `None`.
+/// Tracks JSON object/array nesting depth and string escape sequences (`\"`, `\\`)
+/// so substring matches inside string values or nested objects cannot spoof
+/// `"type"` or `"challenge"`. Returns a `(start, end)` byte range into `json`
+/// for the unescaped value content (excluding surrounding quotes), or `None`.
 fn find_json_string_value(json: &[u8], key: &[u8]) -> Option<(usize, usize)> {
     let mut i = 0usize;
-    while i + key.len() + 4 <= json.len() {
-        // Locate opening `"` of a potential key.
-        if json[i] != b'"' {
-            i += 1;
-            continue;
+    let mut depth = 0usize;
+    let mut expecting_key = false;
+
+    while i < json.len() {
+        match json[i] {
+            b' ' | b'\t' | b'\n' | b'\r' => {
+                i += 1;
+            }
+            b'{' => {
+                depth += 1;
+                if depth == 1 {
+                    expecting_key = true;
+                }
+                i += 1;
+            }
+            b'}' => {
+                if depth == 0 {
+                    return None;
+                }
+                depth -= 1;
+                expecting_key = false;
+                i += 1;
+            }
+            b'[' => {
+                depth += 1;
+                i += 1;
+            }
+            b']' => {
+                if depth == 0 {
+                    return None;
+                }
+                depth -= 1;
+                i += 1;
+            }
+            b',' => {
+                if depth == 1 {
+                    expecting_key = true;
+                }
+                i += 1;
+            }
+            b'"' => {
+                let str_start = i + 1;
+                let mut k = str_start;
+                let mut has_escape = false;
+                while k < json.len() {
+                    if json[k] == b'\\' {
+                        has_escape = true;
+                        k += 2;
+                        continue;
+                    }
+                    if json[k] == b'"' {
+                        break;
+                    }
+                    k += 1;
+                }
+                if k >= json.len() {
+                    return None;
+                }
+                let str_end = k;
+                i = k + 1;
+
+                if depth == 1 && expecting_key {
+                    expecting_key = false;
+                    while i < json.len() && matches!(json[i], b' ' | b'\t' | b'\n' | b'\r') {
+                        i += 1;
+                    }
+                    if i >= json.len() || json[i] != b':' {
+                        return None;
+                    }
+                    i += 1;
+                    while i < json.len() && matches!(json[i], b' ' | b'\t' | b'\n' | b'\r') {
+                        i += 1;
+                    }
+                    if !has_escape && &json[str_start..str_end] == key {
+                        if i >= json.len() || json[i] != b'"' {
+                            return None;
+                        }
+                        let val_start = i + 1;
+                        let mut v = val_start;
+                        while v < json.len() {
+                            if json[v] == b'\\' {
+                                return None;
+                            }
+                            if json[v] == b'"' {
+                                return Some((val_start, v));
+                            }
+                            v += 1;
+                        }
+                        return None;
+                    }
+                }
+            }
+            _ => {
+                i += 1;
+            }
         }
-        // Check that key bytes match at i+1.
-        let key_end = i + 1 + key.len();
-        if key_end >= json.len() {
-            break;
-        }
-        if &json[i + 1..key_end] != key {
-            i += 1;
-            continue;
-        }
-        // Expect closing `"` after the key.
-        if json[key_end] != b'"' {
-            i += 1;
-            continue;
-        }
-        // Skip whitespace then `:`.
-        let mut j = key_end + 1;
-        while j < json.len() && matches!(json[j], b' ' | b'\t' | b'\n' | b'\r') {
-            j += 1;
-        }
-        if j >= json.len() || json[j] != b':' {
-            i += 1;
-            continue;
-        }
-        j += 1;
-        // Skip whitespace before value.
-        while j < json.len() && matches!(json[j], b' ' | b'\t' | b'\n' | b'\r') {
-            j += 1;
-        }
-        // Expect opening `"` of string value.
-        if j >= json.len() || json[j] != b'"' {
-            i += 1;
-            continue;
-        }
-        j += 1;
-        let val_start = j;
-        // Scan to closing `"` (no escape handling needed for our fixed values).
-        while j < json.len() && json[j] != b'"' {
-            j += 1;
-        }
-        if j >= json.len() {
-            return None;
-        }
-        return Some((val_start, j));
     }
     None
 }

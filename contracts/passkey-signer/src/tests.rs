@@ -347,6 +347,22 @@ fn wrong_type_in_client_data_json_rejected() {
         &to_bytes32(&env, &[0u8; 32]),
     );
     assert_eq!(result, Err(Ok(PasskeyError::ClientDataTypeMismatch)));
+
+    // Ensure a spoofed `"type":"webauthn.get"` embedded inside a preceding JSON string value
+    // cannot bypass the top-level `"type"` check.
+    let spoofed_cdj = std::format!(
+        r#"{{"note":"\"type\":\"webauthn.get\"","type":"webauthn.create","challenge":"{}","origin":"https://streampay.app"}}"#,
+        base64url(&challenge)
+    );
+    let spoofed_result = client.try_verify_and_record(
+        &owner,
+        &to_bytes(&env, &auth_data_bytes),
+        &to_bytes(&env, spoofed_cdj.as_bytes()),
+        &to_bytes32(&env, &challenge),
+        &to_bytes32(&env, &[0u8; 32]),
+        &to_bytes32(&env, &[0u8; 32]),
+    );
+    assert_eq!(spoofed_result, Err(Ok(PasskeyError::ClientDataTypeMismatch)));
 }
 
 #[test]
@@ -438,7 +454,19 @@ fn verify_without_registration_returns_not_found() {
 fn expired_challenge_nonce_rejected() {
     let env = new_env();
     let (contract_id, client) = deploy(&env);
-    let challenge = to_bytes32(&env, &[0xCCu8; 32]);
+    let owner = Address::generate(&env);
+    let rp_id_hash = [0x99u8; 32];
+    let (x, y) = fake_pub_key();
+    client.register(
+        &owner,
+        &to_bytes32(&env, &rp_id_hash),
+        &to_bytes32(&env, &x),
+        &to_bytes32(&env, &y),
+        &0u32,
+    );
+
+    let challenge_arr = [0xCCu8; 32];
+    let challenge = to_bytes32(&env, &challenge_arr);
     env.as_contract(&contract_id, || {
         crate::registry::record_challenge(&env, &challenge).expect("first record should succeed");
     });
@@ -453,4 +481,18 @@ fn expired_challenge_nonce_rejected() {
         crate::registry::record_challenge(&env, &challenge)
     });
     assert_eq!(result, Err(PasskeyError::ChallengeAlreadyUsed));
+
+    // Calling verify_and_record with an already-used challenge must fail fast
+    // with ChallengeAlreadyUsed before reaching secp256r1_verify.
+    let auth_data_bytes = make_auth_data(&rp_id_hash, 0x01);
+    let cdj = make_client_data_json(&challenge_arr);
+    let verify_result = client.try_verify_and_record(
+        &owner,
+        &to_bytes(&env, &auth_data_bytes),
+        &to_bytes(&env, cdj.as_bytes()),
+        &challenge,
+        &to_bytes32(&env, &[0u8; 32]),
+        &to_bytes32(&env, &[0u8; 32]),
+    );
+    assert_eq!(verify_result, Err(Ok(PasskeyError::ChallengeAlreadyUsed)));
 }

@@ -135,12 +135,28 @@ function findCoseByteString(cose: Uint8Array, label: number): Uint8Array | null 
   // Encode label as CBOR negative integer: (-1 - label) using major type 1.
   // label=-2 → 0x21; label=-3 → 0x22
   const cbor_label = 0x20 | ((-1 - label) & 0x1F);
-  for (let i = 0; i < cose.length - 34; i++) {
-    if (cose[i] === cbor_label) {
-      // Next bytes should be 0x58 0x20 (byte string of length 32).
-      if (cose[i + 1] === 0x58 && cose[i + 2] === 0x20) {
-        return cose.slice(i + 3, i + 35);
-      }
+  let i = 0;
+  // Skip CBOR map header (major type 5: 0xA0..0xBF)
+  if (i < cose.length && (cose[i] & 0xE0) === 0xA0) {
+    const info = cose[i] & 0x1F;
+    i += info < 24 ? 1 : info === 24 ? 2 : 3;
+  }
+  while (i < cose.length) {
+    const keyByte = cose[i];
+    if (keyByte === cbor_label && i + 35 <= cose.length && cose[i + 1] === 0x58 && cose[i + 2] === 0x20) {
+      return cose.slice(i + 3, i + 35);
+    }
+    // Advance past key
+    i += 1;
+    if (i >= cose.length) break;
+    // Advance past value (if it's a 32-byte bstr 0x58 0x20, jump 34 bytes so we never scan inside coordinate bytes!)
+    if (cose[i] === 0x58 && i + 1 < cose.length) {
+      const len = cose[i + 1];
+      i += 2 + len;
+    } else if ((cose[i] & 0xE0) === 0x40 && (cose[i] & 0x1F) < 24) {
+      i += 1 + (cose[i] & 0x1F);
+    } else {
+      i += 1;
     }
   }
   return null;
@@ -360,18 +376,43 @@ export async function loginWithPasskey(owner: string): Promise<PasskeyLoginResul
  */
 export function decodeDerSignature(der: Uint8Array): { r: Uint8Array; s: Uint8Array } {
   let offset = 0;
-  if (der[offset++] !== 0x30) throw new Error("not a DER SEQUENCE");
+  if (offset >= der.length || der[offset++] !== 0x30) throw new Error("not a DER SEQUENCE");
   // Skip length byte(s).
-  if (der[offset] & 0x80) offset += (der[offset] & 0x7F) + 1;
-  else offset += 1;
+  if (offset >= der.length) throw new Error("truncated DER SEQUENCE length");
+  if (der[offset] & 0x80) {
+    const numBytes = der[offset] & 0x7F;
+    if (numBytes === 0 || offset + 1 + numBytes > der.length) {
+      throw new Error("invalid DER SEQUENCE length indicator");
+    }
+    offset += numBytes + 1;
+  } else {
+    offset += 1;
+  }
 
   function readInteger(): Uint8Array {
-    if (der[offset++] !== 0x02) throw new Error("expected DER INTEGER");
-    const len = der[offset++];
+    if (offset >= der.length || der[offset++] !== 0x02) throw new Error("expected DER INTEGER");
+    if (offset >= der.length) throw new Error("truncated DER INTEGER length");
+    let len = der[offset++];
+    if (len & 0x80) {
+      const numBytes = len & 0x7F;
+      if (numBytes === 0 || numBytes > 2 || offset + numBytes > der.length) {
+        throw new Error("invalid DER INTEGER length indicator");
+      }
+      len = 0;
+      for (let i = 0; i < numBytes; i++) {
+        len = (len << 8) | der[offset++];
+      }
+    }
+    if (len === 0 || offset + len > der.length) throw new Error("DER INTEGER out of bounds");
     const raw = der.slice(offset, offset + len);
     offset += len;
-    // Strip leading zero byte (sign indicator) and pad to 32 bytes.
-    const stripped = raw[0] === 0 ? raw.slice(1) : raw;
+    // Strip leading zero padding bytes (sign indicator) and pad to 32 bytes.
+    let start = 0;
+    while (start < raw.length - 1 && raw[start] === 0) {
+      start += 1;
+    }
+    const stripped = raw.slice(start);
+    if (stripped.length > 32) throw new Error("DER INTEGER exceeds 32 bytes");
     const padded = new Uint8Array(32);
     padded.set(stripped, 32 - stripped.length);
     return padded;

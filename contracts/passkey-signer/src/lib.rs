@@ -202,7 +202,12 @@ impl PasskeySigner {
         // Step 1: load credential.
         let cred = registry::get_credential(&env, &owner)?;
 
-        // Step 2–4: verify authData.
+        // Step 2: fail-fast if challenge nonce was already consumed.
+        if registry::is_owner_challenge_used(&env, &owner, &challenge) {
+            return Err(PasskeyError::ChallengeAlreadyUsed);
+        }
+
+        // Step 3–4: verify authData.
         crypto::verify_auth_data(&env, &auth_data, &cred.rp_id_hash, cred.flags)?;
 
         // Step 5: verify clientDataJSON fields.
@@ -220,7 +225,7 @@ impl PasskeySigner {
         )?;
 
         // Step 8: record nonce to prevent replay.
-        registry::record_challenge(&env, &challenge)?;
+        registry::record_owner_challenge(&env, &owner, &challenge)?;
 
         Ok(())
     }
