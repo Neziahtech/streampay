@@ -1626,10 +1626,16 @@ impl StreamingPayments {
         sponsor: Address,
         beneficiary: Address,
     ) -> sponsor::PeriodSpend {
-        sponsor::get_period(
-            &env,
-            &sponsor::SponsorKey::BeneficiarySpend(sponsor, beneficiary),
-        )
+        match sponsor::get_config(&env, &sponsor) {
+            Some(cfg) => sponsor::get_period(
+                &env,
+                &sponsor::SponsorKey::BeneficiarySpend(sponsor, cfg.token, beneficiary),
+            ),
+            None => sponsor::PeriodSpend {
+                period_start: 0,
+                spend: 0,
+            },
+        }
     }
     // ------------------------------------------------------------- policy --
     //

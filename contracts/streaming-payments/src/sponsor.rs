@@ -79,8 +79,8 @@ pub enum SponsorKey {
     SponsorPeriod(Address),
     /// A beneficiary's enrolled ed25519 consent key.
     BeneficiaryKey(Address),
-    /// A beneficiary's spend within the sponsor's current budget window.
-    BeneficiarySpend(Address, Address),
+    /// A beneficiary's spend within the sponsor's current budget window, scoped by `(sponsor, token, beneficiary)`.
+    BeneficiarySpend(Address, Address, Address),
     /// A spent claim nonce, keyed by `(sponsor, beneficiary, nonce)`.
     ClaimNonce(Address, Address, u64),
 }
@@ -415,6 +415,9 @@ pub fn sponsored_withdraw(
     operator_sig: BytesN<64>,
     beneficiary_sig: BytesN<64>,
 ) -> Result<(), StreamError> {
+    if stream::is_frozen(&env) {
+        return Err(surface::reject(Branch::ContractFrozen));
+    }
     // --- sponsor budget --------------------------------------------------
     let cfg = get_config(&env, &sponsor).ok_or_else(|| surface::reject(Branch::SponsorNotFound))?;
     if !cfg.active {
@@ -457,7 +460,7 @@ pub fn sponsored_withdraw(
     if sper.effective(cfg.window_seconds, now) + amount > cfg.per_period_limit {
         return Err(surface::reject(Branch::SponsorBudgetPeriodExceeded));
     }
-    let bkey = SponsorKey::BeneficiarySpend(sponsor.clone(), beneficiary.clone());
+    let bkey = SponsorKey::BeneficiarySpend(sponsor.clone(), cfg.token.clone(), beneficiary.clone());
     let mut bper = get_period(&env, &bkey);
     if bper.effective(cfg.window_seconds, now) + amount > cfg.per_beneficiary_limit {
         return Err(surface::reject(Branch::SponsorBudgetBeneficiaryExceeded));
@@ -507,11 +510,14 @@ pub fn sponsored_withdraw(
     .publish(&env);
 
     // --- interaction last: pay the beneficiary from the stream -----------
-    TokenClient::new(&env, &cfg.token).transfer(
+    match TokenClient::new(&env, &cfg.token).try_transfer(
         &env.current_contract_address(),
         stream::muxed(&s.recipient),
         &amount,
-    );
+    ) {
+        Ok(Ok(())) => {}
+        _ => return Err(surface::reject(Branch::RecipientPayoutFailed)),
+    }
 
     Ok(())
 }
