@@ -82,6 +82,16 @@ export class StreamStore {
       console.error("Failed to queue webhook delivery for event:", err);
     }
 
+    this.applyEventProjection(event);
+  }
+
+  private applyEventProjection(event: {
+    streamId: string;
+    name: string;
+    ledger: number;
+    ledgerClosedAt: string;
+    data: Record<string, unknown>;
+  }): void {
     const d = event.data;
     const existing = this.db.prepare("SELECT * FROM streams WHERE stream_id = ?").get(event.streamId) as Record<string, unknown> | undefined;
     const get = (key: string): string | null => d[key] === undefined || d[key] === null ? null : String(d[key]);
@@ -152,6 +162,79 @@ export class StreamStore {
       cancelable=excluded.cancelable, status=excluded.status, cancelled_by=excluded.cancelled_by,
       recipient_amount=excluded.recipient_amount, sender_amount=excluded.sender_amount,
       last_ledger=excluded.last_ledger, updated_at=excluded.updated_at`).run(row);
+  }
+
+  /**
+   * Reconcile a chain reorg across both the outbox journal and the primary
+   * stream/event/webhook read projections for all events above `afterLedger`.
+   */
+  retractAfterLedger(afterLedger: number, reason: string): { events_retracted: number; intents_retracted: number } {
+    return this.db.transaction(() => {
+      const affectedStreams = (
+        this.db
+          .prepare("SELECT DISTINCT stream_id FROM events WHERE ledger > ?")
+          .all(afterLedger) as Array<{ stream_id: string }>
+      ).map((r) => r.stream_id);
+
+      const outboxResult = this.outbox.retractAfterLedger(afterLedger, reason);
+
+      const nowIso = new Date().toISOString();
+      this.db
+        .prepare(
+          `UPDATE webhook_deliveries
+           SET status = 'dead_letter', error = 'reorg_retracted', completed_at = ?
+           WHERE status = 'pending' AND event_id IN (SELECT id FROM events WHERE ledger > ?)`
+        )
+        .run(nowIso, afterLedger);
+
+      this.db.prepare("DELETE FROM events WHERE ledger > ?").run(afterLedger);
+
+      for (const streamId of affectedStreams) {
+        this.db.prepare("DELETE FROM streams WHERE stream_id = ?").run(streamId);
+        const remaining = this.db
+          .prepare(
+            "SELECT id, stream_id, name, ledger, ledger_closed_at, payload FROM events WHERE stream_id = ? ORDER BY ledger ASC, rowid ASC"
+          )
+          .all(streamId) as Array<{
+          id: string;
+          stream_id: string;
+          name: string;
+          ledger: number;
+          ledger_closed_at: string;
+          payload: string;
+        }>;
+        for (const ev of remaining) {
+          let data: Record<string, unknown> = {};
+          try {
+            data = JSON.parse(ev.payload) as Record<string, unknown>;
+          } catch {}
+          this.applyEventProjection({
+            streamId: ev.stream_id,
+            name: ev.name,
+            ledger: ev.ledger,
+            ledgerClosedAt: ev.ledger_closed_at,
+            data,
+          });
+        }
+      }
+
+      const lastLedgerStr = this.getState("lastLedger");
+      if (lastLedgerStr !== undefined && Number(lastLedgerStr) > afterLedger) {
+        this.setState("lastLedger", String(afterLedger));
+        const survivingCursor = this.db
+          .prepare(
+            "SELECT ledger_cursor FROM outbox_events WHERE ledger <= ? AND retracted_at IS NULL ORDER BY seq DESC LIMIT 1"
+          )
+          .get(afterLedger) as { ledger_cursor: string } | undefined;
+        if (survivingCursor?.ledger_cursor) {
+          this.setState("cursor", survivingCursor.ledger_cursor);
+        } else {
+          this.db.prepare("DELETE FROM indexer_state WHERE key = 'cursor'").run();
+        }
+      }
+
+      return outboxResult;
+    })();
   }
 
   getStream(id: string): Stream | undefined {

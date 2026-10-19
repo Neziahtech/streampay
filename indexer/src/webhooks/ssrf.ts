@@ -58,33 +58,121 @@ function isDisallowedIpv4(ip: string): boolean {
 }
 
 /**
- * Checks if an IPv6 address belongs to a disallowed internal range.
+ * Expands an IPv6 address (including embedded dotted-quad IPv4) into 8 16-bit words.
+ * Returns null if the address cannot be parsed.
+ */
+function parseIpv6Words(ip: string): number[] | null {
+  let clean = ip.toLowerCase().trim();
+  if (clean.startsWith("[") && clean.endsWith("]")) {
+    clean = clean.slice(1, -1);
+  }
+  const zoneIdx = clean.indexOf("%");
+  if (zoneIdx !== -1) {
+    clean = clean.slice(0, zoneIdx);
+  }
+  // Convert trailing dotted-quad IPv4 (e.g. ::ffff:127.0.0.1 or ::169.254.169.254) into two 16-bit hex groups
+  const lastColon = clean.lastIndexOf(":");
+  if (lastColon !== -1 && clean.slice(lastColon + 1).includes(".")) {
+    const ipv4Str = clean.slice(lastColon + 1);
+    const parts = ipv4Str.split(".").map(Number);
+    if (parts.length !== 4 || parts.some((p) => Number.isNaN(p) || p < 0 || p > 255)) {
+      return null;
+    }
+    const hi = ((parts[0] << 8) | parts[1]).toString(16);
+    const lo = ((parts[2] << 8) | parts[3]).toString(16);
+    clean = `${clean.slice(0, lastColon + 1)}${hi}:${lo}`;
+  }
+
+  const dblParts = clean.split("::");
+  if (dblParts.length > 2) return null;
+  const left = dblParts[0] ? dblParts[0].split(":") : [];
+  const right = dblParts.length === 2 && dblParts[1] ? dblParts[1].split(":") : [];
+  const missing = 8 - (left.length + right.length);
+  if ((dblParts.length === 1 && missing !== 0) || (dblParts.length === 2 && missing < 1)) {
+    return null;
+  }
+  const full = dblParts.length === 2 ? [...left, ...Array(missing).fill("0"), ...right] : left;
+  if (full.length !== 8) return null;
+  const words: number[] = [];
+  for (const g of full) {
+    if (!/^[0-9a-f]{1,4}$/.test(g)) return null;
+    words.push(parseInt(g, 16));
+  }
+  return words;
+}
+
+function wordsToIpv4(hi: number, lo: number): string {
+  return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+}
+
+/**
+ * Checks if an IPv6 address belongs to a disallowed internal, special-purpose, or IPv4-transition range.
  */
 function isDisallowedIpv6(ip: string): boolean {
-  const norm = ip.toLowerCase();
+  const words = parseIpv6Words(ip);
+  if (!words) return true; // fail-closed on malformed IPv6
 
-  // Loopback ::1
-  if (norm === "::1" || norm === "0:0:0:0:0:0:0:1") return true;
+  const [w0, w1, w2, w3, w4, w5, w6, w7] = words;
 
-  // Unspecified ::
-  if (norm === "::" || norm === "0:0:0:0:0:0:0:0") return true;
-
-  // Link-local fe80::/10
-  if (norm.startsWith("fe8") || norm.startsWith("fe9") || norm.startsWith("fea") || norm.startsWith("feb")) {
+  // Unspecified ::/128 or Loopback ::1/128
+  if (w0 === 0 && w1 === 0 && w2 === 0 && w3 === 0 && w4 === 0 && w5 === 0 && w6 === 0 && (w7 === 0 || w7 === 1)) {
     return true;
   }
 
-  // Unique local fc00::/7 (fc00... or fd00...)
-  if (norm.startsWith("fc") || norm.startsWith("fd")) {
+  // IPv4-compatible ::/96 (RFC 4291 deprecated) — e.g. ::127.0.0.1 (::7f00:1) or ::169.254.169.254 (::a9fe:a9fe)
+  if (w0 === 0 && w1 === 0 && w2 === 0 && w3 === 0 && w4 === 0 && w5 === 0) {
     return true;
   }
 
-  // IPv4 mapped ::ffff:x.x.x.x
-  if (norm.includes("::ffff:")) {
-    const ipv4Part = norm.split("::ffff:")[1];
-    if (ipv4Part && net.isIPv4(ipv4Part)) {
-      return isDisallowedIpv4(ipv4Part);
-    }
+  // IPv4-mapped ::ffff:0:0/96 and IPv4-translated ::ffff:0:0:0/96 (RFC 2765)
+  if (
+    w0 === 0 &&
+    w1 === 0 &&
+    w2 === 0 &&
+    w3 === 0 &&
+    ((w4 === 0 && w5 === 0xffff) || (w4 === 0xffff && w5 === 0))
+  ) {
+    return isDisallowedIpv4(wordsToIpv4(w6, w7));
+  }
+
+  // NAT64 Well-Known Prefix 64:ff9b::/96 (RFC 6052) and Local-Use NAT64 64:ff9b:1::/48 (RFC 8215)
+  if (w0 === 0x0064 && w1 === 0xff9b && ((w2 === 0 && w3 === 0 && w4 === 0 && w5 === 0) || w2 === 1)) {
+    return isDisallowedIpv4(wordsToIpv4(w6, w7));
+  }
+
+  // Discard-Only Prefix 100::/64 (RFC 6666)
+  if (w0 === 0x0100 && w1 === 0 && w2 === 0 && w3 === 0) {
+    return true;
+  }
+
+  // IETF Protocol Assignments 2001::/23 (includes Teredo 2001:0000::/32, Benchmarking 2001:2::/48, Orchid 2001:10::/28 & 2001:20::/28)
+  if (w0 === 0x2001 && w1 < 0x0200) {
+    return true;
+  }
+
+  // Documentation 2001:db8::/32 (RFC 3849)
+  if (w0 === 0x2001 && w1 === 0x0db8) {
+    return true;
+  }
+
+  // 6to4 2002::/16 (RFC 3056) — embeds IPv4 in w1:w2
+  if (w0 === 0x2002) {
+    return isDisallowedIpv4(wordsToIpv4(w1, w2));
+  }
+
+  // Unique local fc00::/7 (fc00..fdff)
+  if ((w0 & 0xfe00) === 0xfc00) {
+    return true;
+  }
+
+  // Link-local fe80::/10 (fe80..febf) and deprecated Site-local fec0::/10 (fec0..feff)
+  if ((w0 & 0xffc0) === 0xfe80 || (w0 & 0xffc0) === 0xfec0) {
+    return true;
+  }
+
+  // Multicast ff00::/8
+  if ((w0 & 0xff00) === 0xff00) {
+    return true;
   }
 
   return false;
@@ -110,7 +198,11 @@ export async function validateWebhookUrl(urlString: string): Promise<SsrfCheckRe
     return { safe: false, reason: `Disallowed protocol: ${parsed.protocol}` };
   }
 
-  const hostname = parsed.hostname.toLowerCase();
+  const rawHostname = parsed.hostname.toLowerCase();
+  const hostname =
+    rawHostname.startsWith("[") && rawHostname.endsWith("]")
+      ? rawHostname.slice(1, -1)
+      : rawHostname;
 
   // Explicit cloud metadata and internal hostnames
   if (
@@ -132,7 +224,7 @@ export async function validateWebhookUrl(urlString: string): Promise<SsrfCheckRe
     return { safe: true, resolvedIp: hostname };
   }
 
-  if (net.isIPv6(hostname)) {
+  if (net.isIPv6(hostname) || rawHostname.startsWith("[")) {
     if (isDisallowedIpv6(hostname)) {
       return { safe: false, reason: `Disallowed private or reserved IPv6: ${hostname}` };
     }

@@ -471,6 +471,85 @@ describe("outbox: reorg retraction", () => {
       store.close();
     }
   });
+
+  it("rolls back streams, events, pending webhook deliveries, and cursor state on StreamStore.retractAfterLedger", () => {
+    const store = new StreamStore(":memory:");
+    try {
+      store.webhooks.createEndpoint({ url: "https://example.com/hook", events: ["*"] });
+      store.ingestPage(
+        [
+          {
+            id: "ev-create-1",
+            name: "stream_created",
+            streamId: "1",
+            ledger: 100,
+            ledgerClosedAt: "2026-01-01T00:00:00Z",
+            pagingToken: "pt-100",
+            data: {
+              sender: "GSENDER",
+              recipient: "GRECIPIENT",
+              token: "CASSET",
+              deposit: "1000",
+              start_time: "10",
+              end_time: "110",
+              cancelable: true,
+            },
+          },
+          {
+            id: "ev-cancel-1",
+            name: "stream_cancelled",
+            streamId: "1",
+            ledger: 105,
+            ledgerClosedAt: "2026-01-01T00:01:00Z",
+            pagingToken: "pt-105",
+            data: {
+              cancelled_by: "GSENDER",
+              recipient_amount: "400",
+              sender_amount: "600",
+            },
+          },
+          {
+            id: "ev-create-2",
+            name: "stream_created",
+            streamId: "2",
+            ledger: 106,
+            ledgerClosedAt: "2026-01-01T00:02:00Z",
+            pagingToken: "pt-106",
+            data: {
+              sender: "GSENDER",
+              recipient: "GRECIPIENT",
+              token: "CASSET",
+              deposit: "500",
+              start_time: "20",
+              end_time: "120",
+              cancelable: true,
+            },
+          },
+        ],
+        "pt-106",
+        106
+      );
+
+      assert.equal(store.getStream("1")?.status, "cancelled");
+      assert.equal(store.getStream("1")?.withdrawn, "400");
+      assert.ok(store.getStream("2"));
+
+      const res = store.retractAfterLedger(100, "reorg_rollback");
+      assert.equal(res.events_retracted, 2);
+
+      const s1 = store.getStream("1");
+      assert.ok(s1);
+      assert.equal(s1.status, "active");
+      assert.equal(s1.withdrawn, "0");
+      assert.equal(s1.lastLedger, 100);
+      assert.equal(store.getStream("2"), undefined);
+      assert.equal(store.getStreamHistory("1").length, 1);
+      assert.equal(store.getState("lastLedger"), "100");
+      assert.equal(store.webhooks.getDueDeliveries(10).length, 1);
+    } finally {
+      store.close();
+    }
+  });
 });
 
 describe("outbox HTTP surface", () => {

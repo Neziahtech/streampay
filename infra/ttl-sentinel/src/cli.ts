@@ -268,24 +268,46 @@ async function runScan(cfg: SentinelConfig, flags: Flags): Promise<number> {
   } while (true);
 }
 
-function runRent(cfg: SentinelConfig, flags: Flags): Promise<number> {
+async function runRent(cfg: SentinelConfig, flags: Flags): Promise<number> {
   const state = loadState(cfg.statePath);
-  const streams = flags.streams ?? state.maxStreamId;
-  // Default to the pessimistic layout: every stream has its own address pair,
-  // so each index entry holds a single id (2 index entries per stream).
-  const addresses = flags.addresses ?? Math.max(streams, 0);
-  const sizes = estimatedSizes({ indexesPerAddressIds: addresses > 0 ? Math.ceil(streams / addresses) : 1 });
+  let streams = flags.streams ?? state.maxStreamId;
+  let addresses = flags.addresses ?? Math.max(streams, 0);
+  let sizes = estimatedSizes({ indexesPerAddressIds: addresses > 0 ? Math.ceil(streams / addresses) : 1 });
+  let counts: Partial<Record<EntryClass, number>> = {
+    stream: streams,
+    index: addresses * 2,
+    counter: 1,
+    instance: 1,
+    code: 1,
+  };
+
+  if (flags.live) {
+    requireContract(cfg);
+    const cadence = new CadenceMeter({ floorSec: cfg.floorLedgerSec, targetSec: cfg.targetLedgerSec });
+    const scanner = new Scanner({ rpc: new HttpRpcClient(cfg.rpcUrl), cfg, state, cadence });
+    const { report } = await scanner.scan();
+    saveState(cfg.statePath, state);
+    streams = flags.streams ?? report.streams.present;
+    const liveIndexes = report.indexes.filter((i) => i.present).length;
+    addresses = flags.addresses ?? Math.ceil(liveIndexes / 2);
+    sizes = sizesFromReport(report);
+    counts = {
+      ...countsFromReport(report),
+      stream: streams,
+      index: flags.addresses !== undefined ? addresses * 2 : liveIndexes,
+    };
+  }
   if (flags.codeBytes !== undefined) sizes.code = flags.codeBytes;
 
   const projection = projectMonthlyRent({
-    counts: { stream: streams, index: addresses * 2, counter: 1, instance: 1, code: 1 },
+    counts,
     sizes,
     stateSizeBytes: BigInt(cfg.sorobanStateSizeBytes || '0'),
   });
 
   if (flags.json) {
     process.stdout.write(JSON.stringify({ streams, addresses, sizes, rent: projection }, null, 2) + '\n');
-    return Promise.resolve(0);
+    return 0;
   }
 
   const rows = projection.rows.map(
@@ -304,7 +326,7 @@ function runRent(cfg: SentinelConfig, flags: Flags): Promise<number> {
       `  marginal per live stream: ${projection.perStreamMonthlyXlmAtState} XLM/month\n` +
       `  (sizes are measured XDR byte lengths; code rent includes the 1/3 code-entry discount)\n`,
   );
-  return Promise.resolve(0);
+  return 0;
 }
 
 async function runExtend(cfg: SentinelConfig, flags: Flags): Promise<number> {

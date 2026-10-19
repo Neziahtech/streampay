@@ -72,11 +72,20 @@ describe("Webhook System", () => {
   });
 
   describe("SSRF Protection Guard", () => {
-    it("rejects loopback addresses", async () => {
+    it("rejects loopback addresses and IPv6 transition/NAT64/mapped bypasses", async () => {
       assert.strictEqual((await validateWebhookUrl("http://127.0.0.1:8080/webhook")).safe, false);
       assert.strictEqual((await validateWebhookUrl("http://localhost:3000/events")).safe, false);
       assert.strictEqual((await validateWebhookUrl("http://127.1.2.3/hook")).safe, false);
       assert.strictEqual((await validateWebhookUrl("http://[::1]:9000/hook")).safe, false);
+      assert.strictEqual((await validateWebhookUrl("http://[::7f00:1]:8080/hook")).safe, false);
+      assert.strictEqual((await validateWebhookUrl("http://[::a9fe:a9fe]/latest/meta-data")).safe, false);
+      assert.strictEqual((await validateWebhookUrl("http://[::ffff:7f00:1]:8080/hook")).safe, false);
+      assert.strictEqual((await validateWebhookUrl("http://[::ffff:a9fe:a9fe]/latest/meta-data")).safe, false);
+      assert.strictEqual((await validateWebhookUrl("http://[64:ff9b::7f00:1]:8080/hook")).safe, false);
+      assert.strictEqual((await validateWebhookUrl("http://[64:ff9b::a9fe:a9fe]/latest/meta-data")).safe, false);
+      assert.strictEqual((await validateWebhookUrl("http://[2002:7f00:1::1]:8080/hook")).safe, false);
+      assert.strictEqual((await validateWebhookUrl("http://[2001:0000::1]:8080/hook")).safe, false);
+      assert.strictEqual((await validateWebhookUrl("http://[ff02::1]:8080/hook")).safe, false);
     });
 
     it("rejects private RFC-1918 addresses", async () => {

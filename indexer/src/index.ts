@@ -149,7 +149,7 @@ export function createApp(
     const afterLedger = Number(req.body?.after_ledger);
     if (!Number.isInteger(afterLedger) || afterLedger < 0) return res.status(400).json({ error: "after_ledger must be a non-negative integer" });
     const reason = typeof req.body?.reason === "string" ? req.body.reason : "reorg";
-    const result = store.outbox.retractAfterLedger(afterLedger, reason);
+    const result = store.retractAfterLedger(afterLedger, reason);
     outboxMetrics?.observeRetract(result.events_retracted, result.intents_retracted);
     return res.json(result);
   });

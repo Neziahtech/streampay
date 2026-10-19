@@ -60,6 +60,10 @@ test('scan without a contract id fails loudly', async () => {
   await assert.rejects(() => main(['scan', '--state', tempState()]), /no contract id/);
 });
 
+test('rent --live without a contract id fails loudly instead of silently using offline estimates', async () => {
+  await assert.rejects(() => main(['rent', '--live', '--state', tempState()]), /no contract id/);
+});
+
 test('extend refuses to run while the extender is disabled (read-only core)', async () => {
   await assert.rejects(
     () => main(['extend', '--contract', CONTRACT_ID, '--state', tempState()]),
