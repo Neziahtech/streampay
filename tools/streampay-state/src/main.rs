@@ -146,7 +146,9 @@ mod replay_cmd {
         }
         for (token, (unclaimed, _)) in &coverage {
             let short = &token[..token.len().min(12)];
-            println!("  Token {short}…: {unclaimed} stroops unclaimed across active/paused streams");
+            println!(
+                "  Token {short}…: {unclaimed} stroops unclaimed across active/paused streams"
+            );
         }
 
         println!(
