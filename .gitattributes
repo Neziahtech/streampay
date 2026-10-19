@@ -7,5 +7,14 @@ Dockerfile  text eol=lf
 *.yml       text eol=lf
 *.yaml      text eol=lf
 
+# Golden test files use LF
+contracts/streaming-payments/test_orderings/*.txt text eol=lf
+
 # Default: auto-normalize everything else.
 *           text=auto
+
+# Attestation payloads are signed byte-for-byte, so any line-ending
+# normalization would invalidate every signature on a Windows checkout.
+# Must come after `* text=auto` above to take effect.
+attestations/**/*.json  -text
+attestations/**/*.sig   -text

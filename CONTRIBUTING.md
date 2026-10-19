@@ -56,6 +56,7 @@ cd fuzz && cargo +nightly fuzz run streamed_at -- -max_total_time=60 && cd ..
 cd frontend && npm install
 npm run lint
 npm run typecheck
+npm test        # unit tests + recorded fee-series simulation (vitest)
 npm run build
 ```
 
@@ -116,7 +117,31 @@ lint/typecheck/build when frontend files are touched) are the minimum gate.
   changes — it's the source of truth for design decisions, including
   rejected alternatives, the append-only public-interface rules (§13), and
   the Soroban-specific traps to avoid rediscovering the hard way (§14).
-- Error codes and events are documented in tables; keep the tables in sync.
+- Error codes and events are documented in tables; keep the tables in sync —
+  see **Generated files & CI gates** below for the exact commands.
+
+## Generated files & CI gates
+
+CI diffs several *generated* artifacts against their sources. If you change the
+error surface (`contracts/streaming-payments/src/errors.rs`, `surface.rs`, or
+new `#[contracterror]` codes) the following gates will fail until you commit the
+regenerated files:
+
+1. `docs/ERRORS.md` — regenerated with `npm run errors:regen` (cargo example;
+   CI checks it via `npm run errors:check`).
+2. `docs/errors.md`, `docs/errors/<code>.md`, and `frontend/lib/errors.ts` —
+   regenerated with `node tooling/generate-error-catalog.mjs` (CI's "Error
+   catalog regeneration diff check" re-runs it and fails on any diff).
+
+Run **after** merging `main` into your branch, so you regenerate from the
+current, complete error surface, and commit the outputs. The catalog files carry
+a content-derived `schema_fingerprint` stamp (not a git SHA), so a clean
+regeneration on the same tree always matches CI — no need to worry about the
+stamp changing between pushes.
+
+Other mechanical gates worth running before pushing: `cargo fmt --all` (Format
+check), `cargo clippy --all-targets -- -D warnings` (Clippy), and in
+`frontend/`: `npm run lint`, `npx tsc --noEmit`, `npm test`, `npm run build`.
 
 ## Branch & PR process
 
@@ -130,7 +155,7 @@ lint/typecheck/build when frontend files are touched) are the minimum gate.
    - [ ] `cargo fmt --all -- --check`
    - [ ] `cargo clippy --all-targets -- -D warnings`
    - [ ] `cargo test -p streampay-contract`
-   - [ ] `cd frontend && npm run lint && npm run typecheck && npm run build` (if frontend touched)
+   - [ ] `cd frontend && npm run lint && npm run typecheck && npm test && npm run build` (if frontend touched)
    - [ ] Tests for new behavior; ARCHITECTURE.md updated for design changes
    - [ ] CHANGELOG.md gets an entry under **Unreleased**
 5. **Reviews**: one maintainer approval for docs/frontend, two for changes to
@@ -140,7 +165,7 @@ lint/typecheck/build when frontend files are touched) are the minimum gate.
 
 ## Good first issues
 
-See [`docs/GOOD_FIRST_ISSUES.md`](./GOOD_FIRST_ISSUES.md) — each ticket has
+See [`docs/GOOD_FIRST_ISSUES.md`](./docs/GOOD_FIRST_ISSUES.md) — each ticket has
 acceptance criteria and a difficulty label. Claim one by commenting "I'd like
 to take this" and open a draft PR early so reviewers can steer. Bounties for
 some issues are posted on GrantFox (install the GrantFox GitHub App on your
