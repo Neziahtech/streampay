@@ -2230,23 +2230,48 @@ fn set_fee_bps_applies_to_new_streams_only() {
 }
 
 #[test]
-fn top_ups_are_fee_free() {
+fn top_up_charges_protocol_fee() {
     let f = Fixture::setup();
-    // Headroom for the deposit + fee pull plus the top-up pull.
-    StellarAssetClient::new(&f.env, &f.token).mint(&f.sender, &DEPOSIT);
     set_fee(&f, 100);
-    let fee = DEPOSIT / 100;
+    let fee_initial = DEPOSIT / 100;
+    let top_up_amount = DEPOSIT;
+    let fee_top_up = top_up_amount / 100;
+    let total_fees = fee_initial + fee_top_up;
+
+    // Headroom for deposit + initial fee pull and top-up + top-up fee pull.
+    StellarAssetClient::new(&f.env, &f.token).mint(&f.sender, &(top_up_amount + fee_top_up));
     let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
 
-    f.client.mock_all_auths().top_up(&id, &DEPOSIT);
+    f.client.mock_all_auths().top_up(&id, &top_up_amount);
 
-    // The fee is charged once, at creation: top-ups pull face value only.
-    assert_eq!(f.client.treasury_status(&f.token).charged_total, fee);
-    assert_eq!(f.client.stream_fee(&id), fee); // unchanged
+    // Both creation and top-up charge fees at the deposit boundary:
+    assert_eq!(f.client.treasury_status(&f.token).charged_total, total_fees);
+    assert_eq!(f.client.stream_fee(&id), total_fees);
     assert_eq!(
         TokenClient::new(&f.env, &f.token).balance(&f.client.address),
-        2 * DEPOSIT + fee
+        DEPOSIT + top_up_amount + total_fees
     );
+
+    // Reconcile via verify_treasury scan:
+    let scan = f.client.verify_treasury(&f.token, &1, &10);
+    assert_eq!(scan.fees_in_range, total_fees);
+    assert!(scan.done);
+}
+
+#[test]
+fn top_up_fee_floors_to_zero_for_dusty_amount() {
+    let f = Fixture::setup();
+    set_fee(&f, 1); // 1 bp
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let initial_fee = f.client.stream_fee(&id);
+
+    // 1 bp on 9_999 floors to 0
+    let dusty_top_up = 9_999i128;
+    StellarAssetClient::new(&f.env, &f.token).mint(&f.sender, &dusty_top_up);
+    f.client.mock_all_auths().top_up(&id, &dusty_top_up);
+
+    assert_eq!(f.client.stream_fee(&id), initial_fee);
+    assert_eq!(f.client.treasury_status(&f.token).charged_total, initial_fee);
 }
 
 #[test]

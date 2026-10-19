@@ -206,11 +206,21 @@ pub fn apply_fee(
     put_treasury(env, token, &treasury);
 
     let fee_key = DataKey::StreamFee(stream_id);
+    let current_fee = env
+        .storage()
+        .persistent()
+        .get::<_, StreamFeeRecord>(&fee_key)
+        .map(|r| r.amount)
+        .unwrap_or(0);
+    let total_amount = current_fee
+        .checked_add(amount)
+        .ok_or(StreamError::MathOverflow)?;
+
     env.storage().persistent().set(
         &fee_key,
         &StreamFeeRecord {
             token: token.clone(),
-            amount,
+            amount: total_amount,
         },
     );
     env.storage()
