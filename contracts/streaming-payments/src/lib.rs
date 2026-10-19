@@ -1255,7 +1255,8 @@ impl StreamingPayments {
         if now >= intent.expires_at {
             return Err(surface::reject(Branch::IntentExpired));
         }
-        if now >= intent.execute_after {
+        let next_exec = intent.next_execute_after()?;
+        if now >= next_exec {
             return Err(surface::reject(Branch::IntentNotCancellable));
         }
 

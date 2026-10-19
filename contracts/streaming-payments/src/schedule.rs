@@ -251,13 +251,20 @@ pub fn validate_schedule(
         return Err(reject(Branch::ScheduleInvalidParameters));
     }
 
-    // The whole recurrence window must fit in u64.
+    // The whole recurrence window must fit in u64, and every occurrence's
+    // execution window must start strictly before `expires_at`.
     let last_shift = interval
         .checked_mul((occurrences - 1) as u64)
         .ok_or_else(|| reject(Branch::ScheduleInvalidParameters))?;
     end_time
         .checked_add(last_shift)
         .ok_or_else(|| reject(Branch::ScheduleInvalidParameters))?;
+    let last_execute_after = execute_after
+        .checked_add(last_shift)
+        .ok_or_else(|| reject(Branch::ScheduleInvalidParameters))?;
+    if expires_at <= last_execute_after {
+        return Err(reject(Branch::ScheduleInvalidParameters));
+    }
 
     // The full up-front escrow must fit in i128.
     let per = deposit
