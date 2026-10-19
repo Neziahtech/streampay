@@ -146,6 +146,9 @@ impl StreamNft {
         if env.storage().instance().has(&NftDataKey::CoreContract) {
             return Err(NftError::AlreadyInitialized);
         }
+        if core_contract == env.current_contract_address() {
+            return Err(NftError::NotAuthorized);
+        }
 
         env.storage()
             .instance()
@@ -279,7 +282,7 @@ impl StreamNft {
         from.require_auth();
         Self::require_not_burned(&env)?;
         let owner = Self::require_owner(&env)?;
-        if from != owner {
+        if from != owner || spender == owner {
             return Err(NftError::NotAuthorized);
         }
         if amount < 0 || amount > 1 {
@@ -363,6 +366,7 @@ impl StreamNft {
         if amount != 1 {
             return Err(NftError::InvalidAmount);
         }
+        Self::require_burnable_by_holder(&env, &owner)?;
 
         Self::burn_internal(&env, owner)
     }
@@ -388,12 +392,29 @@ impl StreamNft {
         if current_allowance < 1 {
             return Err(NftError::InsufficientAllowance);
         }
+        Self::require_burnable_by_holder(&env, &owner)?;
 
         env.storage()
             .persistent()
             .remove(&NftDataKey::Allowance(spender));
 
         Self::burn_internal(&env, owner)
+    }
+
+    fn require_burnable_by_holder(env: &Env, owner: &Address) -> Result<(), NftError> {
+        let stream_id = Self::get_stream_id(env)?;
+        let core: Address = env
+            .storage()
+            .instance()
+            .get(&NftDataKey::CoreContract)
+            .ok_or(NftError::NotInitialized)?;
+        let core_client = CoreStreamPayClient::new(env, &core);
+        if let Ok(stream) = core_client.get_stream(&stream_id) {
+            if stream.status == StreamStatus::Active && *owner != stream.recipient {
+                return Err(NftError::StreamNotFinalized);
+            }
+        }
+        Ok(())
     }
 
     /// Finalize and burn the NFT if the core stream is in a terminal status
@@ -461,6 +482,11 @@ impl StreamNft {
             .get_stream(&stream_id)
             .map_err(|_| NftError::StreamNotActive)?;
         if stream.status == StreamStatus::Depleted {
+            if caller != owner {
+                env.storage()
+                    .persistent()
+                    .remove(&NftDataKey::Allowance(caller));
+            }
             let _ = Self::burn_internal(&env, owner);
         }
 
@@ -497,6 +523,11 @@ impl StreamNft {
             .get_stream(&stream_id)
             .map_err(|_| NftError::StreamNotActive)?;
         if stream.status == StreamStatus::Depleted {
+            if caller != owner {
+                env.storage()
+                    .persistent()
+                    .remove(&NftDataKey::Allowance(caller));
+            }
             let _ = Self::burn_internal(&env, owner);
         }
 
