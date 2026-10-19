@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, Vec};
+use soroban_sdk::{contracterror, contracttype, Address};
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -12,15 +12,35 @@ pub struct AmendmentRecord {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DataKey {
-    RefillRule(u64),
-    GovernanceCaps,
-    Agents(u64),
-    AmendmentLog(u64), // stream_id -> Vec<AmendmentRecord>
+pub struct GovernanceCaps {
+    pub max_per_stream_cap: i128,
+    pub max_global_account_cap: i128,
 }
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DataKey {
+    Admin,
+    RefillRule(u64),
+    GovernanceCaps,
+    Agents(u64),
+    AmendmentLog(u64), // stream_id -> Vec<AmendmentRecord>
+    StreamPaused(u64),
+    StreamBalance(u64),
+    StreamWithdrawn(u64),
+    StreamToken(u64),
+    StreamRecipient(u64),
+    StreamSender(u64),
+    StreamRate(u64),
+    StreamEndTime(u64),
+}
+
+pub const TTL_THRESHOLD_LEDGERS: u32 = 100_000;
+pub const TTL_EXTEND_LEDGERS: u32 = 500_000;
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
 pub enum StreamPayError {
     Unauthorized = 200,
     RefillRuleNotFound = 201,
