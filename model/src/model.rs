@@ -426,27 +426,54 @@ impl StreamPayModel {
         let token = s.token.clone();
         let sender = s.sender.clone();
 
+        let fee = fee_amount(amount, self.fee_bps)?;
+        let pull_amount = amount
+            .checked_add(fee)
+            .ok_or(ModelError::MathOverflow)?;
+
         let sender_bal = self
             .token_balances
             .entry((sender.clone(), token.clone()))
             .or_insert(0);
         *sender_bal = sender_bal
-            .checked_sub(amount)
+            .checked_sub(pull_amount)
             .ok_or(ModelError::MathOverflow)?;
 
-        let contract_bal = self.contract_balances.entry(token).or_insert(0);
+        let contract_bal = self.contract_balances.entry(token.clone()).or_insert(0);
         *contract_bal = contract_bal
-            .checked_add(amount)
+            .checked_add(pull_amount)
             .ok_or(ModelError::MathOverflow)?;
 
         s.deposit = new_deposit;
 
+        if fee > 0 {
+            let t = self.treasuries.entry(token.clone()).or_default();
+            t.charged_total = t
+                .charged_total
+                .checked_add(fee)
+                .ok_or(ModelError::MathOverflow)?;
+
+            let existing_fee = self.stream_fees.get(&stream_id).map_or(0, |(_, amt)| *amt);
+            self.stream_fees
+                .insert(stream_id, (token.clone(), existing_fee + fee));
+        }
+
         self.events.push(ModelEvent::StreamToppedUp {
             stream_id,
-            sender,
+            sender: sender.clone(),
             amount,
             new_deposit,
         });
+
+        if fee > 0 {
+            self.events.push(ModelEvent::FeeCharged {
+                stream_id,
+                token,
+                payer: sender,
+                amount: fee,
+                fee_bps: self.fee_bps,
+            });
+        }
 
         Ok(())
     }

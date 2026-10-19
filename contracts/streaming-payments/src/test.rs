@@ -2230,22 +2230,96 @@ fn set_fee_bps_applies_to_new_streams_only() {
 }
 
 #[test]
-fn top_ups_are_fee_free() {
+fn top_ups_charge_protocol_fee_and_accumulate() {
     let f = Fixture::setup();
-    // Headroom for the deposit + fee pull plus the top-up pull.
-    StellarAssetClient::new(&f.env, &f.token).mint(&f.sender, &DEPOSIT);
-    set_fee(&f, 100);
-    let fee = DEPOSIT / 100;
+    // Headroom for initial deposit + fee, and top-up + fee.
+    StellarAssetClient::new(&f.env, &f.token).mint(&f.sender, &(2 * DEPOSIT));
+    set_fee(&f, 100); // 100 bps = 1%
+    let fee1 = DEPOSIT / 100;
     let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
 
-    f.client.mock_all_auths().top_up(&id, &DEPOSIT);
+    assert_eq!(f.client.treasury_status(&f.token).charged_total, fee1);
+    assert_eq!(f.client.stream_fee(&id), fee1);
 
-    // The fee is charged once, at creation: top-ups pull face value only.
-    assert_eq!(f.client.treasury_status(&f.token).charged_total, fee);
-    assert_eq!(f.client.stream_fee(&id), fee); // unchanged
+    let top_up_amount = DEPOSIT / 2;
+    let fee2 = top_up_amount / 100;
+    f.client.mock_all_auths().top_up(&id, &top_up_amount);
+
+    // The fee is charged on top-up as well, accumulating in treasury totals and per-stream fee
+    assert_eq!(
+        f.client.treasury_status(&f.token).charged_total,
+        fee1 + fee2
+    );
+    assert_eq!(f.client.stream_fee(&id), fee1 + fee2);
     assert_eq!(
         TokenClient::new(&f.env, &f.token).balance(&f.client.address),
-        2 * DEPOSIT + fee
+        DEPOSIT + top_up_amount + fee1 + fee2
+    );
+}
+
+#[test]
+fn top_up_fee_bypass_exploit_prevented() {
+    let f = Fixture::setup();
+    // Reproduction scenario from Issue #345:
+    // 1. Configure fee_bps = 100 (1%).
+    // 2. Sender creates stream with deposit = 1 (fee floored to 0).
+    // 3. Sender invokes top_up(stream_id, 1_000_000).
+    // Verified: Fee is accurately pulled and accounted for on top-up, eliminating protocol revenue leakage.
+    set_fee(&f, 100);
+    StellarAssetClient::new(&f.env, &f.token).mint(&f.sender, &2_000_000);
+
+    let id = f.create_stream(1, DAY, 10 * DAY, false);
+    assert_eq!(f.client.stream_fee(&id), 0);
+    assert_eq!(f.client.treasury_status(&f.token).charged_total, 0);
+
+    let top_up_amount = 1_000_000i128;
+    let expected_fee = top_up_amount * 100 / 10_000; // 10,000
+    f.client.mock_all_auths().top_up(&id, &top_up_amount);
+
+    assert_eq!(f.client.stream_fee(&id), expected_fee);
+    assert_eq!(
+        f.client.treasury_status(&f.token).charged_total,
+        expected_fee
+    );
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.client.address),
+        1 + top_up_amount + expected_fee
+    );
+}
+
+#[test]
+fn top_up_with_fee_emits_fee_charged_event() {
+    let f = Fixture::setup();
+    set_fee(&f, 100);
+    StellarAssetClient::new(&f.env, &f.token).mint(&f.sender, &DEPOSIT);
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+
+    // Drain creation events
+    let _ = f.env.events().all();
+
+    let top_up_amount = 50_000i128;
+    let expected_fee = 500i128;
+    f.client.mock_all_auths().top_up(&id, &top_up_amount);
+
+    let topped_up = crate::StreamToppedUp {
+        stream_id: id,
+        sender: f.sender.clone(),
+        amount: top_up_amount,
+        new_deposit: DEPOSIT + top_up_amount,
+    };
+    let fee_charged = crate::FeeCharged {
+        stream_id: id,
+        token: f.token.clone(),
+        payer: f.sender.clone(),
+        amount: expected_fee,
+        fee_bps: 100,
+    };
+    assert_eq!(
+        f.env.events().all().filter_by_contract(&f.client.address),
+        [
+            topped_up.to_xdr(&f.env, &f.client.address),
+            fee_charged.to_xdr(&f.env, &f.client.address),
+        ],
     );
 }
 
@@ -3196,8 +3270,11 @@ fn run_fee_property(seed: u64, steps: usize) {
                     continue;
                 }
                 let amount = 1 + rng.below(10_000) as i128;
+                let top_up_fee = crate::treasury::fee_amount(amount, fee_bps).unwrap();
                 client.mock_all_auths().top_up(&((idx as u64) + 1), &amount);
                 streams[idx].deposit += amount;
+                streams[idx].fee += top_up_fee;
+                charged[streams[idx].token_idx] += top_up_fee;
             }
             5 => {
                 // reconfigure the fee rate

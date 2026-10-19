@@ -952,20 +952,32 @@ impl StreamingPayments {
         let stream_policy = policy::get_stream_policy(&env, Some(s.token.clone()));
         policy::validate_top_up_args(stream_policy.as_ref(), new_deposit, s.duration())?;
 
-        // Interaction: pull the added funds from the sender. A token-side
-        // failure maps to a distinct code; the effects below never run, and
-        // no partial state survives the `Err`.
+        // Protocol fee, computed on the added deposit boundary.
+        let fee_bps = treasury::current_fee_bps(&env);
+        let fee = treasury::fee_amount(amount, fee_bps)?;
+        let pull_amount = amount
+            .checked_add(fee)
+            .ok_or(StreamError::MathOverflow)?;
+
+        // Interaction: pull the added funds (plus fee, when configured) from
+        // the sender. A token-side failure maps to a distinct code; the effects
+        // below never run, and no partial state survives the `Err`.
         pull(
             &env,
             &s.token,
             &s.sender,
-            amount,
+            pull_amount,
             Branch::TopUpTransferFailed,
         )?;
 
         // Effects: record the new deposit and announce it.
         s.deposit = new_deposit;
         stream::put_stream(&env, &s);
+        if fee > 0 {
+            // Effects: accumulate the fee in the token's treasury and update
+            // the per-stream stored fee.
+            treasury::apply_fee(&env, &s.token, stream_id, fee)?;
+        }
 
         #[cfg(test)]
         cei_trace::record("event StreamToppedUp");
@@ -976,6 +988,17 @@ impl StreamingPayments {
             new_deposit,
         }
         .publish(&env);
+
+        if fee > 0 {
+            FeeCharged {
+                stream_id,
+                token: s.token.clone(),
+                payer: s.sender.clone(),
+                amount: fee,
+                fee_bps,
+            }
+            .publish(&env);
+        }
 
         Ok(())
     }

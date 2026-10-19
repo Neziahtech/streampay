@@ -262,11 +262,12 @@ async function main() {
     const feeCharged = await fetchEvents(topicSym("fee_charged"));
     const feeWithdrawn = await fetchEvents(topicSym("fee_withdrawn"));
 
-    // Every FeeCharged event must match the stored per-stream fee for the
-    // requested token (events for other tokens share the id space).
+    // Every stream's accumulated FeeCharged events must match the stored per-stream fee
+    // for the requested token (events for other tokens share the id space).
     let eventCharged = 0n;
     let chargedEventsForToken = 0;
     let mismatches = 0;
+    const eventFeesByStream = new Map<bigint, bigint>();
     for (const ev of feeCharged) {
       const data = scValToNative(ev.value) as Record<string, unknown>;
       if (String(data.token) !== args.token) continue;
@@ -274,13 +275,19 @@ async function main() {
       const streamId = BigInt(scValToNative(ev.topic[1]) as bigint);
       const amount = BigInt(data.amount as string | bigint | number);
       eventCharged += amount;
+      eventFeesByStream.set(
+        streamId,
+        (eventFeesByStream.get(streamId) ?? 0n) + amount
+      );
+    }
+    for (const [streamId, totalEventFee] of eventFeesByStream.entries()) {
       const stored = BigInt(
         scValToNative(await simulateRead("stream_fee", [scU64(streamId)])) as bigint
       );
-      if (stored !== amount) {
+      if (stored !== totalEventFee) {
         mismatches += 1;
         console.log(
-          `  [FAIL] FeeCharged stream ${streamId}: event ${amount} != stored ${stored}`
+          `  [FAIL] FeeCharged stream ${streamId}: total events ${totalEventFee} != stored ${stored}`
         );
       }
     }
