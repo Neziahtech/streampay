@@ -181,13 +181,30 @@ pub enum Branch {
     OraclePublishersNotConfigured,
     OracleReportTooOld,
     NotOraclePublisher,
+    // ---------------------------------------------- ownership transfer
+    /// `propose_ownership_transfer`: the caller is neither the sender nor the
+    /// recipient.
+    ProposeNotAuthorized,
+    /// `propose_ownership_transfer`: the target already holds that role.
+    ProposeInvalidTarget,
+    /// `propose_ownership_transfer`: an unexpired proposal already exists.
+    ProposeAlreadyPending,
+    /// `accept_ownership_transfer`: the caller is not the named target.
+    AcceptNotTarget,
+    /// `accept_ownership_transfer`: the proposal's acceptance window elapsed.
+    OwnershipProposalExpired,
+    /// `accept_ownership_transfer` / `cancel_ownership_transfer`: no proposal
+    /// is stored for the stream.
+    NoPendingOwnership,
+    /// `cancel_ownership_transfer`: the caller did not create the proposal.
+    CancelProposalNotProposer,
 }
 
 impl Branch {
     /// Every branch, in declaration order. The matrix test walks this list and
     /// the coverage test requires each [`StreamError`] variant to be produced by
     /// one of these (or retired).
-    pub const ALL: [Branch; 70] = [
+    pub const ALL: [Branch; 77] = [
         Branch::CreateDepositNonPositive,
         Branch::CreateStartTimeInPast,
         Branch::CreateInvalidTimeRange,
@@ -258,6 +275,13 @@ impl Branch {
         Branch::OraclePublishersNotConfigured,
         Branch::OracleReportTooOld,
         Branch::NotOraclePublisher,
+        Branch::ProposeNotAuthorized,
+        Branch::ProposeInvalidTarget,
+        Branch::ProposeAlreadyPending,
+        Branch::AcceptNotTarget,
+        Branch::OwnershipProposalExpired,
+        Branch::NoPendingOwnership,
+        Branch::CancelProposalNotProposer,
     ];
 
     /// The entrypoint(s) through which this branch can fire. Shared helpers
@@ -286,6 +310,8 @@ impl Branch {
                 "cancel_stream",
                 "top_up",
                 "sponsored_withdraw",
+                "propose_ownership_transfer",
+                "accept_ownership_transfer",
             ],
             Branch::StreamNotActive => &[
                 "withdraw",
@@ -293,6 +319,8 @@ impl Branch {
                 "cancel_stream",
                 "top_up",
                 "sponsored_withdraw",
+                "propose_ownership_transfer",
+                "accept_ownership_transfer",
             ],
             Branch::CapacityOverflow => &["create_stream", "top_up"],
             Branch::RateProductOverflow => &[
@@ -375,6 +403,9 @@ impl Branch {
                 "withdraw_max",
                 "cancel_stream",
                 "top_up",
+                "propose_ownership_transfer",
+                "accept_ownership_transfer",
+                "cancel_ownership_transfer",
             ],
             Branch::MigrationNotFrozen | Branch::AlreadyMigrated => &["migrate_storage"],
             Branch::ExecuteUpgradeNoPending | Branch::TimelockNotExpired => &["execute_upgrade"],
@@ -390,6 +421,16 @@ impl Branch {
             Branch::OraclePublishersNotConfigured
             | Branch::OracleReportTooOld
             | Branch::NotOraclePublisher => &["submit_oracle_time"],
+            Branch::ProposeNotAuthorized
+            | Branch::ProposeInvalidTarget
+            | Branch::ProposeAlreadyPending => &["propose_ownership_transfer"],
+            Branch::AcceptNotTarget | Branch::OwnershipProposalExpired => {
+                &["accept_ownership_transfer"]
+            }
+            Branch::NoPendingOwnership => {
+                &["accept_ownership_transfer", "cancel_ownership_transfer"]
+            }
+            Branch::CancelProposalNotProposer => &["cancel_ownership_transfer"],
         }
     }
 
@@ -470,6 +511,13 @@ impl Branch {
             Branch::OraclePublishersNotConfigured => StreamError::OraclePublishersNotConfigured,
             Branch::OracleReportTooOld => StreamError::OracleReportTooOld,
             Branch::NotOraclePublisher => StreamError::NotOraclePublisher,
+            Branch::ProposeNotAuthorized
+            | Branch::AcceptNotTarget
+            | Branch::CancelProposalNotProposer => StreamError::NotAuthorized,
+            Branch::ProposeInvalidTarget => StreamError::InvalidTransferTarget,
+            Branch::ProposeAlreadyPending => StreamError::OwnershipProposalPending,
+            Branch::OwnershipProposalExpired => StreamError::OwnershipProposalExpired,
+            Branch::NoPendingOwnership => StreamError::NoPendingOwnership,
         }
     }
 
@@ -602,6 +650,21 @@ impl Branch {
             Branch::OraclePublishersNotConfigured => "oracle publishers are not configured",
             Branch::OracleReportTooOld => "oracle report timestamp is too far in the past or future",
             Branch::NotOraclePublisher => "the caller is not an authorized oracle publisher",
+            Branch::ProposeNotAuthorized => {
+                "the caller is neither the current sender nor the current recipient"
+            }
+            Branch::ProposeInvalidTarget => "the proposed target already holds that role",
+            Branch::ProposeAlreadyPending => {
+                "an unexpired ownership proposal already exists for the stream"
+            }
+            Branch::AcceptNotTarget => "the caller is not the proposal's named new owner",
+            Branch::OwnershipProposalExpired => {
+                "the proposal's acceptance window has elapsed"
+            }
+            Branch::NoPendingOwnership => "no ownership proposal is stored for the stream",
+            Branch::CancelProposalNotProposer => {
+                "the caller did not create the pending ownership proposal"
+            }
         }
     }
 

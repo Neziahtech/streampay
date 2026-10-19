@@ -75,8 +75,12 @@ Metrics, alerting stack, and operational diagnosis: [`docs/RUNBOOK.md`](./docs/R
 | `withdraw_max(stream_id) → i128` | recipient | pays out all accrued, atomically | `Withdrawn` |
 | `cancel_stream(caller, stream_id)` | sender; recipient iff `cancelable` | pro-rata split, atomic | `StreamCancelled` |
 | `top_up(stream_id, amount)` | sender | pulls added funds | `StreamToppedUp` |
+| `propose_ownership_transfer(caller, stream_id, new_owner)` | sender or recipient | — (records a pending target) | `OwnershipProposed` |
+| `accept_ownership_transfer(caller, stream_id)` | named `new_owner` only | — (moves the role) | `OwnershipAccepted` |
+| `cancel_ownership_transfer(caller, stream_id)` | proposer only | — (clears the pending target) | — |
 | `get_stream(stream_id) → Stream` | — (read-only) | — | — |
 | `available(stream_id) → i128` | — (read-only) | — | — |
+| `pending_ownership_transfer(stream_id) → Option<PendingOwnership>` | — (read-only) | — | — |
 | `recipient_streams(address, offset, limit) → Vec<u64>` | — (read-only) | — | — |
 | `sender_streams(address, offset, limit) → Vec<u64>` | — (read-only) | — | — |
 | `schedule_stream(sender, recipient, token, deposit, start, end, cancelable, interval, occurrences, fee_budget, execute_after, expires_at) → u64` | anyone (sender auth required) | pulls `(deposit+fee)×occurrences` in | `StreamScheduled` |
@@ -116,7 +120,28 @@ limits bound the practical maximum batch size.
 `recipient_streams` / `sender_streams` are on-chain discovery indexes:
 append-only, creation-ordered stream-id lists per address, paginated
 (`limit` clamped to `MAX_PAGE_SIZE = 50`). Terminal streams keep their ids —
-read each stream's `status` for lifecycle state.
+read each stream's `status` for lifecycle state. Ownership transfers follow
+the same append-only rule: the new holder's index gains the id on acceptance
+and the previous holder keeps its historical entry, so readers must check the
+current `sender` / `recipient` fields on `get_stream` before acting on an
+indexed id.
+
+### Two-step ownership transfer
+
+Either party can hand their role to a new address without moving funds:
+
+1. The current sender (payer) or recipient (claimant) calls
+   `propose_ownership_transfer`, which records the target and a 7-day
+   acceptance window. The stream is unchanged.
+2. The named target calls `accept_ownership_transfer`; only then does the role
+   move. The proposer can cancel a pending proposal at any time.
+
+Deposit, withdrawn amount, and the time window are untouched, so accrual and
+the `0 ≤ withdrawn ≤ streamed ≤ deposit` invariant are identical before and
+after a transfer — only the destination of future claims (recipient) or future
+top-ups/cancellation refunds (sender) changes. See
+[`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) §17 for the full invariant
+proof sketch.
 
 Any SEP-41-compatible asset can fund a stream: an issued asset via its
 Stellar Asset Contract id (e.g. USDC on testnet) or **native XLM** via its
