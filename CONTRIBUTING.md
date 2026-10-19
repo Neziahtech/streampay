@@ -84,10 +84,12 @@ lint/typecheck/build when frontend files are touched) are the minimum gate.
   compare typed XDR, not strings.
 - Storage: per-stream state under `DataKey::Stream(id)` with TTL extension on
   mutation and read (see `stream.rs`). Discovery uses the append-only address
-  indexes (`DataKey::RecipientStreams` / `SenderStreams`): they are written
-  **only** by `create_stream`, are advisory (never trust them for auth — the
-  `Stream` entry is the source of truth), and reads paginate with `offset` /
-  `limit` clamped to `MAX_PAGE_SIZE`. Do not add unbounded full-set scans.
+  indexes (`DataKey::RecipientStreams` / `SenderStreams`): they are written by
+  `create_stream` and by an accepted ownership transfer (the new holder's list
+  gains the id; the old holder keeps its historical entry), are advisory
+  (never trust them for auth — the `Stream` entry is the source of truth), and
+  reads paginate with `offset` / `limit` clamped to `MAX_PAGE_SIZE`. Do not add
+  unbounded full-set scans.
 - `#![no_std]` — no allocations where an array or `soroban_sdk::Vec` works.
 - Run `cargo fmt` before committing; CI enforces `--check`.
 

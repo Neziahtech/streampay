@@ -17,14 +17,18 @@
 //! - [`StreamingPayments::cancel_stream`] — sender (or recipient, if the
 //!   stream is `cancelable`) closes the stream with a pro-rata split
 //! - [`StreamingPayments::top_up`] — add funds to a running stream
+//! - [`StreamingPayments::propose_ownership_transfer`] /
+//!   [`StreamingPayments::accept_ownership_transfer`] /
+//!   [`StreamingPayments::cancel_ownership_transfer`] — two-step handoff of
+//!   the sender (payer) or recipient (claimant) role
 //! - [`StreamingPayments::sponsored_withdraw`] — an operator relays a
 //!   recipient's claim and a sponsor absorbs the gas, guarded by a budget
 //!   ledger and nonce replay protection (see the `sponsor` module docs)
 //! - [`StreamingPayments::register_sponsor`] /
 //!   [`StreamingPayments::enroll_beneficiary`] /
 //!   [`StreamingPayments::rotate_operator_key`] — sponsorship setup
-//! - [`StreamingPayments::get_stream`] / [`StreamingPayments::available`] —
-//!   read-only views
+//! - [`StreamingPayments::get_stream`] / [`StreamingPayments::available`] /
+//!   [`StreamingPayments::pending_ownership_transfer`] — read-only views
 //! - [`StreamingPayments::recipient_streams`] /
 //!   [`StreamingPayments::sender_streams`] — paginated on-chain discovery
 //!   indexes per address
@@ -92,11 +96,12 @@ pub use errors::StreamError;
 pub use events::{
     BeneficiaryEnrolled, ContractFrozenStateChanged, ContractUpgraded, FeeCharged, FeeWithdrawn,
     OperatorKeyRotated, OracleConfigUpdated, OracleStaleFallback, OracleTimeReported,
-    PolicyAssetExecuted, PolicyAssetQueued, PolicyHandoffAccepted, PolicyHandoffCancelled,
-    PolicyHandoffProposed, PolicyInitialized, ScheduledIntentCancelled, ScheduledIntentExpired,
-    ScheduledStreamExecuted, SponsorActiveSet, SponsorClaim, SponsorRegistered, StorageMigrated,
-    StreamCancelled, StreamCreated, StreamPolicySet, StreamScheduled, StreamToppedUp,
-    StreamsCreated, UpgradeCancelled, UpgradeProposed, Withdrawn,
+    OwnershipAccepted, OwnershipProposed, PolicyAssetExecuted, PolicyAssetQueued,
+    PolicyHandoffAccepted, PolicyHandoffCancelled, PolicyHandoffProposed, PolicyInitialized,
+    ScheduledIntentCancelled, ScheduledIntentExpired, ScheduledStreamExecuted, SponsorActiveSet,
+    SponsorClaim, SponsorRegistered, StorageMigrated, StreamCancelled, StreamCreated,
+    StreamPolicySet, StreamScheduled, StreamToppedUp, StreamsCreated, UpgradeCancelled,
+    UpgradeProposed, Withdrawn,
 };
 pub use oracle::{OracleConfig, OracleReport, ResolvedTime, DEFAULT_MAX_STALE_SECONDS};
 pub use policy::{validate_stream_args, validate_top_up_args, QueuedAssetChange, StreamPolicy};
@@ -105,9 +110,10 @@ pub use sponsor::{PeriodSpend, SponsorConfig};
 // `streamed_at` is re-exported for the fuzz target and downstream rate
 // calculators: it is a pure function requiring no `Env`.
 pub use stream::{
-    streamed_at, BatchEntry, MigrationStatus, PendingUpgrade, Stream, StreamStatus,
-    INITIAL_SCHEMA_VERSION, MAX_BATCH, MAX_DURATION_SECONDS, MAX_MIGRATION_BATCH_SIZE,
-    MAX_PAGE_SIZE, MIN_BATCH, MIN_UPGRADE_DELAY_SECONDS, TARGET_SCHEMA_VERSION,
+    streamed_at, BatchEntry, MigrationStatus, OwnershipRole, PendingOwnership, PendingUpgrade,
+    Stream, StreamStatus, INITIAL_SCHEMA_VERSION, MAX_BATCH, MAX_DURATION_SECONDS,
+    MAX_MIGRATION_BATCH_SIZE, MAX_PAGE_SIZE, MIN_BATCH, MIN_UPGRADE_DELAY_SECONDS,
+    OWNERSHIP_PROPOSAL_TTL_SECONDS, TARGET_SCHEMA_VERSION,
 };
 pub use treasury::{fee_amount, FeeScan, Treasury, TreasuryStatus, BPS_DENOMINATOR, MAX_FEE_BPS};
 
@@ -995,6 +1001,190 @@ impl StreamingPayments {
         .publish(&env);
 
         Ok(())
+    }
+
+    /// Proposes handing the caller's stream role (sender or recipient) to
+    /// `new_owner`. The role does not move until `new_owner` calls
+    /// [`StreamingPayments::accept_ownership_transfer`].
+    ///
+    /// * Only the current sender or recipient may propose; their authorization
+    ///   is required. A stranger is rejected with [`StreamError::NotAuthorized`].
+    /// * The stream must be `Active`: ownership of a cancelled or depleted
+    ///   stream has no future claims and cannot be transferred.
+    /// * Proposing to the current holder of the same role is rejected with
+    ///   [`StreamError::InvalidTransferTarget`].
+    /// * At most one unexpired proposal exists per stream. Proposing again
+    ///   while one is pending reverts with
+    ///   [`StreamError::OwnershipProposalPending`]; an expired proposal is
+    ///   removed and replaced.
+    ///
+    /// No tokens move and no accounting field changes at proposal time. The
+    /// target is recorded under its own storage key with a seven-day
+    /// acceptance window ([`OWNERSHIP_PROPOSAL_TTL_SECONDS`]).
+    pub fn propose_ownership_transfer(
+        env: Env,
+        caller: Address,
+        stream_id: u64,
+        new_owner: Address,
+    ) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
+        caller.require_auth();
+
+        let s = stream::get_stream(&env, stream_id)?;
+        if s.status != StreamStatus::Active {
+            return Err(surface::reject(Branch::StreamNotActive));
+        }
+        let role = Self::role_of(&s, &caller)?;
+        let current_owner = match role {
+            OwnershipRole::Sender => &s.sender,
+            OwnershipRole::Recipient => &s.recipient,
+        };
+        if new_owner == *current_owner {
+            return Err(surface::reject(Branch::ProposeInvalidTarget));
+        }
+
+        let now = env.ledger().timestamp();
+        if let Some(existing) = stream::get_pending_ownership(&env, stream_id) {
+            if now < existing.expires_at {
+                return Err(surface::reject(Branch::ProposeAlreadyPending));
+            }
+            // Stale proposals are cleared lazily so a fresh target can be
+            // proposed without a separate cleanup transaction.
+            stream::remove_pending_ownership(&env, stream_id);
+        }
+
+        let pending = PendingOwnership {
+            stream_id,
+            proposed_by: caller.clone(),
+            new_owner: new_owner.clone(),
+            role,
+            expires_at: now.saturating_add(OWNERSHIP_PROPOSAL_TTL_SECONDS),
+        };
+        stream::put_pending_ownership(&env, &pending);
+
+        OwnershipProposed {
+            stream_id,
+            current_owner: caller,
+            new_owner,
+            role,
+            expires_at: pending.expires_at,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Accepts a pending ownership proposal. Only the proposal's `new_owner`
+    /// may call this, and their authorization is required.
+    ///
+    /// On success the sender or recipient role moves to the caller. The
+    /// stream's accounting fields (`deposit`, `withdrawn`, `start_time`,
+    /// `end_time`, `token`, `status`, `use_oracle`) are untouched, so accrual
+    /// and the `0 <= withdrawn <= streamed <= deposit` invariant are unchanged:
+    /// what moves is the right to future payouts (recipient) or future top-ups
+    /// / cancellation refunds (sender). The stream id is appended to the new
+    /// holder's discovery index; the previous holder's append-only index keeps
+    /// its historical entry.
+    ///
+    /// Expired proposals cannot be accepted: the call reverts with
+    /// [`StreamError::OwnershipProposalExpired`]. Reverts roll back storage
+    /// writes, so the stale entry stays stored but is ignored forever after
+    /// its window; a later proposal replaces it (see
+    /// [`StreamingPayments::propose_ownership_transfer`]).
+    pub fn accept_ownership_transfer(
+        env: Env,
+        caller: Address,
+        stream_id: u64,
+    ) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
+        caller.require_auth();
+
+        let pending = stream::get_pending_ownership(&env, stream_id)
+            .ok_or_else(|| surface::reject(Branch::NoPendingOwnership))?;
+        if caller != pending.new_owner {
+            return Err(surface::reject(Branch::AcceptNotTarget));
+        }
+        if env.ledger().timestamp() >= pending.expires_at {
+            return Err(surface::reject(Branch::OwnershipProposalExpired));
+        }
+
+        let mut s = stream::get_stream(&env, stream_id)?;
+        if s.status != StreamStatus::Active {
+            return Err(surface::reject(Branch::StreamNotActive));
+        }
+
+        // The proposal could only have been created by the address currently
+        // holding `role`, and role transfers always clear the pending key, so
+        // `proposed_by` is the previous owner by construction.
+        let previous_owner = match pending.role {
+            OwnershipRole::Sender => {
+                s.sender = caller.clone();
+                pending.proposed_by.clone()
+            }
+            OwnershipRole::Recipient => {
+                s.recipient = caller.clone();
+                pending.proposed_by.clone()
+            }
+        };
+
+        stream::put_stream(&env, &s);
+        match pending.role {
+            OwnershipRole::Sender => stream::index_sender(&env, &caller, stream_id),
+            OwnershipRole::Recipient => stream::index_recipient(&env, &caller, stream_id),
+        }
+        stream::remove_pending_ownership(&env, stream_id);
+
+        OwnershipAccepted {
+            stream_id,
+            previous_owner,
+            new_owner: caller,
+            role: pending.role,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Cancels a pending ownership proposal. Only the current role holder that
+    /// created the proposal may cancel it; their authorization is required.
+    ///
+    /// Cancelling is allowed after the proposal's acceptance window has
+    /// elapsed (it simply clears the stale entry). It emits no event: the
+    /// proposal never changed the stream, and `OwnershipProposed` remains the
+    /// permanent record that a proposal once existed.
+    pub fn cancel_ownership_transfer(
+        env: Env,
+        caller: Address,
+        stream_id: u64,
+    ) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
+        caller.require_auth();
+
+        let pending = stream::get_pending_ownership(&env, stream_id)
+            .ok_or_else(|| surface::reject(Branch::NoPendingOwnership))?;
+        if caller != pending.proposed_by {
+            return Err(surface::reject(Branch::CancelProposalNotProposer));
+        }
+        stream::remove_pending_ownership(&env, stream_id);
+        Ok(())
+    }
+
+    /// Read-only view of a stream's pending ownership proposal, if any.
+    /// Reading extends the proposal's storage TTL; unknown streams simply
+    /// return `None`.
+    pub fn pending_ownership_transfer(env: Env, stream_id: u64) -> Option<PendingOwnership> {
+        stream::get_pending_ownership(&env, stream_id)
+    }
+
+    /// Resolves which role `caller` currently holds on `s`.
+    fn role_of(s: &Stream, caller: &Address) -> Result<OwnershipRole, StreamError> {
+        if caller == &s.sender {
+            Ok(OwnershipRole::Sender)
+        } else if caller == &s.recipient {
+            Ok(OwnershipRole::Recipient)
+        } else {
+            Err(surface::reject(Branch::ProposeNotAuthorized))
+        }
     }
 
     /// Read-only view of a stream's full state.

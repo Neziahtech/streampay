@@ -10,6 +10,19 @@ interface: they are only ever appended to, never renumbered or reused.
 ## [Unreleased]
 
 ### Added
+- Two-step stream ownership transfer: `propose_ownership_transfer`,
+  `accept_ownership_transfer`, `cancel_ownership_transfer`, and the
+  `pending_ownership_transfer` read view. Either the sender (payer) or the
+  recipient (claimant) can hand their role to a new address; the target must
+  accept within a seven-day window. Accounting fields and token balances are
+  untouched — only future claim/refund destinations move.
+- `PendingOwnership` storage key (`DataKey::PendingOwnership(id)`, appended),
+  one proposal per stream, with dedicated TTL maintenance.
+- Append-only `OwnershipProposed` / `OwnershipAccepted` events
+  (`stream_id` topic).
+- New `StreamError` variants (appended): `NoPendingOwnership` (60),
+  `OwnershipProposalExpired` (61), `InvalidTransferTarget` (62), and
+  `OwnershipProposalPending` (63).
 - Frontend (opt-in) **fee-aware claim scheduling**: a recipient can queue a
   signed `withdraw_max` intent and have the client submit it when the Soroban
   inclusion-fee percentile drops under a budget, with a deadline fallback so a
