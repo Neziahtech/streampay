@@ -272,6 +272,9 @@ pub fn next_intent_id(env: &Env) -> u64 {
     let key = DataKey::NextIntentId;
     let id: u64 = env.storage().persistent().get(&key).unwrap_or(1);
     env.storage().persistent().set(&key, &id.saturating_add(1));
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
     id
 }
 
@@ -279,10 +282,16 @@ pub fn next_intent_id(env: &Env) -> u64 {
 pub fn get_intent(env: &Env, id: u64) -> Result<ScheduledIntent, StreamError> {
     #[cfg(test)]
     crate::cei_trace::record(&std::format!("read persistent Intent({id})"));
+    let key = DataKey::Intent(id);
+    let intent: ScheduledIntent = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .ok_or_else(|| reject(Branch::IntentNotFound))?;
     env.storage()
         .persistent()
-        .get(&DataKey::Intent(id))
-        .ok_or_else(|| reject(Branch::IntentNotFound))
+        .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+    Ok(intent)
 }
 
 /// Persists an intent and extends its storage TTL.

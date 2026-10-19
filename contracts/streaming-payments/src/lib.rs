@@ -1130,12 +1130,13 @@ impl StreamingPayments {
         // Interaction: pull the whole escrow (deposit + fee budget, for every
         // occurrence) into the contract. Reentrant token code cannot observe an
         // unregistered schedule or execute against an intent without state.
-        TokenClient::new(&env, &token).transfer_from(
+        let pull_res = TokenClient::new(&env, &token).try_transfer_from(
             &env.current_contract_address(),
             &sender,
             &env.current_contract_address(),
             &total_escrow,
         );
+        token_result(pull_res, Branch::CreateDepositTransferFailed)?;
 
         Ok(id)
     }
@@ -1209,11 +1210,12 @@ impl StreamingPayments {
         if fee_paid > 0 {
             #[cfg(test)]
             cei_trace::record("transfer keeper fee");
-            TokenClient::new(&env, &intent.token).transfer(
+            let fee_res = TokenClient::new(&env, &intent.token).try_transfer(
                 &env.current_contract_address(),
                 stream::muxed(&keeper),
                 &fee_paid,
             );
+            token_result(fee_res, Branch::RecipientPayoutFailed)?;
         }
 
         #[cfg(test)]
@@ -1268,11 +1270,12 @@ impl StreamingPayments {
         if refund > 0 {
             #[cfg(test)]
             cei_trace::record("transfer scheduled refund");
-            TokenClient::new(&env, &intent.token).transfer(
+            let refund_res = TokenClient::new(&env, &intent.token).try_transfer(
                 &env.current_contract_address(),
                 stream::muxed(&intent.sender),
                 &refund,
             );
+            token_result(refund_res, Branch::SenderRefundFailed)?;
         }
 
         #[cfg(test)]
@@ -1315,11 +1318,12 @@ impl StreamingPayments {
         if refund > 0 {
             #[cfg(test)]
             cei_trace::record("transfer scheduled refund");
-            TokenClient::new(&env, &intent.token).transfer(
+            let refund_res = TokenClient::new(&env, &intent.token).try_transfer(
                 &env.current_contract_address(),
                 stream::muxed(&intent.sender),
                 &refund,
             );
+            token_result(refund_res, Branch::SenderRefundFailed)?;
         }
 
         #[cfg(test)]
