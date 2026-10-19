@@ -33,6 +33,8 @@ pub enum RegistryKey {
     Credential(Address),
     /// Used challenge nonce (value is `true` when present).
     UsedChallenge(BytesN<32>),
+    /// Last seen WebAuthn signature counter (`signCount`) for an owner address.
+    SignCount(Address),
 }
 
 /// Stores a credential and extends its TTL.
@@ -42,6 +44,9 @@ pub fn put_credential(env: &Env, owner: &Address, cred: &Credential) {
     env.storage()
         .persistent()
         .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND);
+    env.storage()
+        .persistent()
+        .remove(&RegistryKey::SignCount(owner.clone()));
 }
 
 /// Loads a credential, returning `CredentialNotFound` if absent.
@@ -65,7 +70,32 @@ pub fn remove_credential(env: &Env, owner: &Address) -> Result<(), PasskeyError>
         return Err(PasskeyError::CredentialNotFound);
     }
     env.storage().persistent().remove(&key);
+    env.storage()
+        .persistent()
+        .remove(&RegistryKey::SignCount(owner.clone()));
     Ok(())
+}
+
+/// Loads the last recorded WebAuthn `signCount` for `owner` (`0` if unset).
+pub fn get_sign_count(env: &Env, owner: &Address) -> u32 {
+    let key = RegistryKey::SignCount(owner.clone());
+    if let Some(count) = env.storage().persistent().get::<RegistryKey, u32>(&key) {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND);
+        count
+    } else {
+        0
+    }
+}
+
+/// Updates the last recorded WebAuthn `signCount` for `owner` and extends its TTL.
+pub fn set_sign_count(env: &Env, owner: &Address, count: u32) {
+    let key = RegistryKey::SignCount(owner.clone());
+    env.storage().persistent().set(&key, &count);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND);
 }
 
 /// Records a challenge as used. Returns `ChallengeAlreadyUsed` if it was
@@ -73,6 +103,9 @@ pub fn remove_credential(env: &Env, owner: &Address) -> Result<(), PasskeyError>
 pub fn record_challenge(env: &Env, challenge: &BytesN<32>) -> Result<(), PasskeyError> {
     let key = RegistryKey::UsedChallenge(challenge.clone());
     if env.storage().persistent().has(&key) {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND);
         return Err(PasskeyError::ChallengeAlreadyUsed);
     }
     // Store `true`; presence is what matters.
@@ -85,7 +118,12 @@ pub fn record_challenge(env: &Env, challenge: &BytesN<32>) -> Result<(), Passkey
 
 /// Returns `true` if the challenge has already been consumed.
 pub fn is_challenge_used(env: &Env, challenge: &BytesN<32>) -> bool {
-    env.storage()
-        .persistent()
-        .has(&RegistryKey::UsedChallenge(challenge.clone()))
+    let key = RegistryKey::UsedChallenge(challenge.clone());
+    let used = env.storage().persistent().has(&key);
+    if used {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND);
+    }
+    used
 }

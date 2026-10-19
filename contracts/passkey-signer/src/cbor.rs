@@ -104,6 +104,42 @@ fn find_json_string_value(json: &[u8], key: &[u8]) -> Option<(usize, usize)> {
     None
 }
 
+/// Returns `true` if `json` contains `"<key>": true` (ignoring whitespace).
+fn has_json_bool_true(json: &[u8], key: &[u8]) -> bool {
+    let mut i = 0usize;
+    while i + key.len() + 6 <= json.len() {
+        if json[i] != b'"' {
+            i += 1;
+            continue;
+        }
+        let key_end = i + 1 + key.len();
+        if key_end >= json.len() || &json[i + 1..key_end] != key || json[key_end] != b'"' {
+            i += 1;
+            continue;
+        }
+        let mut j = key_end + 1;
+        while j < json.len() && matches!(json[j], b' ' | b'\t' | b'\n' | b'\r') {
+            j += 1;
+        }
+        if j >= json.len() || json[j] != b':' {
+            i += 1;
+            continue;
+        }
+        j += 1;
+        while j < json.len() && matches!(json[j], b' ' | b'\t' | b'\n' | b'\r') {
+            j += 1;
+        }
+        if j + 4 <= json.len() && &json[j..j + 4] == b"true" {
+            let after = j + 4;
+            if after == json.len() || matches!(json[after], b',' | b'}' | b' ' | b'\t' | b'\n' | b'\r') {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
 // ── Public entry point ────────────────────────────────────────────────────────
 
 /// Maximum `clientDataJSON` length accepted (2 KiB).
@@ -113,6 +149,7 @@ const MAX_CDJ_LEN: usize = 2048;
 ///
 /// 1. `type == "webauthn.get"`
 /// 2. `challenge == base64url(challenge_bytes)` (no padding)
+/// 3. `crossOrigin != true` (W3C WebAuthn Level 3 §7.2 Step 14)
 pub fn verify_client_data_json(
     _env: &Env,
     client_data_json: &Bytes,
@@ -137,7 +174,12 @@ pub fn verify_client_data_json(
         return Err(PasskeyError::ClientDataTypeMismatch);
     }
 
-    // 2. Verify `challenge` field.
+    // 2. Reject cross-origin iframe assertions (`"crossOrigin": true`).
+    if has_json_bool_true(json, b"crossOrigin") {
+        return Err(PasskeyError::ClientDataJsonInvalid);
+    }
+
+    // 3. Verify `challenge` field.
     let (cs, ce) =
         find_json_string_value(json, b"challenge").ok_or(PasskeyError::ChallengeMismatch)?;
     let challenge_val = &json[cs..ce];

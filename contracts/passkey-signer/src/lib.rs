@@ -202,8 +202,13 @@ impl PasskeySigner {
         // Step 1: load credential.
         let cred = registry::get_credential(&env, &owner)?;
 
-        // Step 2–4: verify authData.
+        // Step 2–4: verify authData and extract signCount.
         crypto::verify_auth_data(&env, &auth_data, &cred.rp_id_hash, cred.flags)?;
+        let sign_count = crypto::extract_sign_count(&auth_data)?;
+        let last_count = registry::get_sign_count(&env, &owner);
+        if (sign_count > 0 || last_count > 0) && sign_count <= last_count {
+            return Err(PasskeyError::ChallengeAlreadyUsed);
+        }
 
         // Step 5: verify clientDataJSON fields.
         cbor::verify_client_data_json(&env, &client_data_json, &challenge)?;
@@ -219,8 +224,11 @@ impl PasskeySigner {
             &sig_s,
         )?;
 
-        // Step 8: record nonce to prevent replay.
+        // Step 8: record nonce and updated signCount to prevent replay.
         registry::record_challenge(&env, &challenge)?;
+        if sign_count > 0 {
+            registry::set_sign_count(&env, &owner, sign_count);
+        }
 
         Ok(())
     }

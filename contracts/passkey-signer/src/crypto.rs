@@ -71,6 +71,18 @@ pub fn verify_auth_data(
     Ok(())
 }
 
+/// Extracts the 4-byte big-endian WebAuthn `signCount` at `authData[33..37]`.
+pub fn extract_sign_count(auth_data: &Bytes) -> Result<u32, PasskeyError> {
+    if auth_data.len() < AUTH_DATA_MIN_LEN {
+        return Err(PasskeyError::AuthDataTooShort);
+    }
+    let b0 = auth_data.get(33).ok_or(PasskeyError::AuthDataTooShort)?;
+    let b1 = auth_data.get(34).ok_or(PasskeyError::AuthDataTooShort)?;
+    let b2 = auth_data.get(35).ok_or(PasskeyError::AuthDataTooShort)?;
+    let b3 = auth_data.get(36).ok_or(PasskeyError::AuthDataTooShort)?;
+    Ok(u32::from_be_bytes([b0, b1, b2, b3]))
+}
+
 /// Verifies the P-256 ECDSA assertion signature.
 ///
 /// Computes `digest = sha256(authData ‖ sha256(clientDataJSON))` and calls
