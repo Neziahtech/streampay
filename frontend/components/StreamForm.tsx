@@ -11,6 +11,7 @@ import {
 import { readStreamPolicyAction } from "@/app/actions";
 import type { StreamPolicyView } from "@/lib/stream-types";
 import { formatAmount } from "@/lib/format";
+import { fetchMultisigInfo, type MultisigInfo } from "@/lib/multisig";
 
 /** Asset choices on the create form: native XLM, or a token contract id. */
 type AssetChoice = "native" | "contract";
@@ -32,6 +33,12 @@ export default function StreamForm({
   const [busy, setBusy] = useState(false);
   const [policy, setPolicy] = useState<StreamPolicyView | null>(null);
   const [policyError, setPolicyError] = useState<string | null>(null);
+
+  // Multisig detection states
+  const [recipientMultisig, setRecipientMultisig] = useState<MultisigInfo | null>(null);
+  const [senderMultisigInput, setSenderMultisigInput] = useState<string>("");
+  const [senderMultisig, setSenderMultisig] = useState<MultisigInfo | null>(null);
+  const [showSenderMultisig, setShowSenderMultisig] = useState<boolean>(false);
 
   // Derived asset metadata: native XLM is always known; contract assets update asynchronously
   const assetMeta: AssetMeta =
@@ -73,6 +80,44 @@ export default function StreamForm({
     };
   }, [asset, args.token]);
 
+  // Detect multisig recipient
+  useEffect(() => {
+    let active = true;
+    const recipient = args.recipient.trim();
+    if (!recipient) {
+      setRecipientMultisig(null);
+      return;
+    }
+    const timer = setTimeout(() => {
+      fetchMultisigInfo(recipient).then((info) => {
+        if (active) setRecipientMultisig(info);
+      });
+    }, 250);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [args.recipient]);
+
+  // Detect multisig sender
+  useEffect(() => {
+    let active = true;
+    const sender = senderMultisigInput.trim();
+    if (!sender) {
+      setSenderMultisig(null);
+      return;
+    }
+    const timer = setTimeout(() => {
+      fetchMultisigInfo(sender).then((info) => {
+        if (active) setSenderMultisig(info);
+      });
+    }, 250);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [senderMultisigInput]);
+
   // Stable IDs for ARIA associations (WCAG 1.3.1 / 4.1.2)
   const formId = useId();
   const assetId = `${formId}-asset`;
@@ -80,6 +125,7 @@ export default function StreamForm({
   const tokenHintId = `${formId}-token-hint`;
   const recipientId = `${formId}-recipient`;
   const recipientHintId = `${formId}-recipient-hint`;
+  const senderMultisigId = `${formId}-sender-multisig`;
   const depositId = `${formId}-deposit`;
   const depositHintId = `${formId}-deposit-hint`;
   const daysId = `${formId}-days`;
@@ -210,16 +256,162 @@ export default function StreamForm({
             id={recipientId}
             type="text"
             required
-            placeholder="G…"
+            placeholder="G… or C… (contract/multisig)"
             value={args.recipient}
             onChange={set("recipient")}
             aria-describedby={recipientHintId}
             autoComplete="off"
           />
           <span id={recipientHintId} className="sr-only">
-            Enter the Stellar public key (G… address) of the stream recipient.
+            Enter the Stellar public key (G…) or Soroban contract address (C…) of the stream recipient.
           </span>
         </div>
+      </div>
+
+      {recipientMultisig && (
+        <div
+          role="status"
+          aria-live="polite"
+          style={{
+            background: "rgba(56, 189, 248, 0.08)",
+            border: "1px solid rgba(56, 189, 248, 0.3)",
+            borderRadius: "8px",
+            padding: "12px 16px",
+            marginTop: "12px",
+            marginBottom: "12px",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px" }}>
+            <strong style={{ color: "var(--accent2)", fontSize: "0.9rem" }}>
+              Multisig Recipient Detected
+            </strong>
+            <span
+              style={{
+                fontSize: "0.75rem",
+                background: "var(--accent2)",
+                color: "#0b0f19",
+                padding: "2px 8px",
+                borderRadius: "12px",
+                fontWeight: 600,
+              }}
+            >
+              {recipientMultisig.threshold}-of-{recipientMultisig.signers.length} Threshold
+            </span>
+          </div>
+          <p style={{ margin: "4px 0", fontSize: "0.85rem", color: "var(--foreground)" }}>
+            This recipient is a Soroban multisig contract. Any stream management actions (such as withdrawal or cancellation) will require approval from at least <strong>{recipientMultisig.threshold}</strong> out of <strong>{recipientMultisig.signers.length}</strong> authorized signers.
+          </p>
+          <div style={{ marginTop: "8px", fontSize: "0.8rem", color: "var(--muted)" }}>
+            <strong>Signers ({recipientMultisig.signers.length}):</strong>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "4px" }}>
+              {recipientMultisig.signers.map((s, idx) => (
+                <code
+                  key={idx}
+                  style={{
+                    background: "rgba(0, 0, 0, 0.25)",
+                    padding: "2px 6px",
+                    borderRadius: "4px",
+                    fontSize: "0.75rem",
+                  }}
+                >
+                  {s.slice(0, 6)}…{s.slice(-6)}
+                </code>
+              ))}
+            </div>
+          </div>
+          <p style={{ margin: "8px 0 0 0", fontSize: "0.75rem", color: "var(--muted)" }}>
+            Fee note: Each signer submits and funds their own approval transaction.
+          </p>
+        </div>
+      )}
+
+      <div style={{ marginTop: "10px", marginBottom: "14px" }}>
+        <button
+          type="button"
+          style={{
+            fontSize: "0.8rem",
+            padding: "4px 10px",
+            background: "transparent",
+            border: "1px dashed var(--line)",
+            color: "var(--accent2)",
+            borderRadius: "4px",
+            cursor: "pointer",
+          }}
+          onClick={() => setShowSenderMultisig(!showSenderMultisig)}
+        >
+          {showSenderMultisig ? "− Hide Multisig Sender Options" : "+ Creating from a Multisig Sender?"}
+        </button>
+
+        {showSenderMultisig && (
+          <div style={{ marginTop: "10px" }}>
+            <label htmlFor={senderMultisigId}>
+              Multisig Sender Contract Address (C…)
+            </label>
+            <input
+              id={senderMultisigId}
+              type="text"
+              placeholder="C… (Multisig contract address)"
+              value={senderMultisigInput}
+              onChange={(e) => setSenderMultisigInput(e.target.value)}
+              autoComplete="off"
+            />
+            {senderMultisig && (
+              <div
+                role="status"
+                aria-live="polite"
+                style={{
+                  background: "rgba(168, 85, 247, 0.08)",
+                  border: "1px solid rgba(168, 85, 247, 0.3)",
+                  borderRadius: "8px",
+                  padding: "12px 16px",
+                  marginTop: "10px",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px" }}>
+                  <strong style={{ color: "#c084fc", fontSize: "0.9rem" }}>
+                    Multisig Sender Detected
+                  </strong>
+                  <span
+                    style={{
+                      fontSize: "0.75rem",
+                      background: "#c084fc",
+                      color: "#0b0f19",
+                      padding: "2px 8px",
+                      borderRadius: "12px",
+                      fontWeight: 600,
+                    }}
+                  >
+                    {senderMultisig.threshold}-of-{senderMultisig.signers.length} Threshold
+                  </span>
+                </div>
+                <p style={{ margin: "4px 0", fontSize: "0.85rem", color: "var(--foreground)" }}>
+                  Stream creation will be routed as a proposal through this multisig contract. It will require approvals from at least <strong>{senderMultisig.threshold}</strong> authorized signers before execution.
+                </p>
+                <div style={{ marginTop: "8px", fontSize: "0.8rem", color: "var(--muted)" }}>
+                  <strong>Authorized Signers ({senderMultisig.signers.length}):</strong>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "4px" }}>
+                    {senderMultisig.signers.map((s, idx) => (
+                      <code
+                        key={idx}
+                        style={{
+                          background: "rgba(0, 0, 0, 0.25)",
+                          padding: "2px 6px",
+                          borderRadius: "4px",
+                          fontSize: "0.75rem",
+                        }}
+                      >
+                        {s.slice(0, 6)}…{s.slice(-6)}
+                      </code>
+                    ))}
+                  </div>
+                </div>
+                <p style={{ margin: "8px 0 0 0", fontSize: "0.75rem", color: "var(--muted)" }}>
+                  Fee implications: Each member signs an independent approval transaction incurring separate network fees.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {asset === "native" && (

@@ -2609,6 +2609,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "streampay-multisig"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+ "streampay-contract",
+]
+
+[[package]]
 name = "streampay-passkey"
 version = "0.1.0"
 dependencies = [
