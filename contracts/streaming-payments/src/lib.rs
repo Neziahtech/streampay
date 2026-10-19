@@ -1517,12 +1517,16 @@ impl StreamingPayments {
     /// Number of streams ever created (ids are `1..=total_streams()`).
     /// Public convenience for verifiers to know the scan range.
     pub fn total_streams(env: Env) -> u64 {
-        let next: u64 = env
-            .storage()
-            .persistent()
-            .get(&stream::DataKey::NextStreamId)
-            .unwrap_or(1);
-        next.saturating_sub(1)
+        let key = stream::DataKey::NextStreamId;
+        let next_opt: Option<u64> = env.storage().persistent().get(&key);
+        if next_opt.is_some() {
+            env.storage().persistent().extend_ttl(
+                &key,
+                stream::TTL_THRESHOLD_LEDGERS,
+                stream::TTL_EXTEND_LEDGERS,
+            );
+        }
+        next_opt.unwrap_or(1).saturating_sub(1)
     }
 
     // ------------------------------------------------------- sponsorship ------
@@ -1902,10 +1906,42 @@ impl StreamingPayments {
         let effective_start = effective_start.clamp(1, total);
         let end_id = (effective_start.saturating_add(batch_size).saturating_sub(1)).min(total);
 
-        // Migrate each stream in the batch: read, verify, touch TTL, re-store.
+        // Migrate each stream in the batch: read, verify, touch TTL, re-store, and refresh related persistent keys.
         for id in effective_start..=end_id {
             if let Ok(s) = stream::get_stream(&env, id) {
                 stream::put_stream(&env, &s);
+                let sender_key = stream::DataKey::SenderStreams(s.sender.clone());
+                if env.storage().persistent().has(&sender_key) {
+                    env.storage().persistent().extend_ttl(
+                        &sender_key,
+                        stream::TTL_THRESHOLD_LEDGERS,
+                        stream::TTL_EXTEND_LEDGERS,
+                    );
+                }
+                let recipient_key = stream::DataKey::RecipientStreams(s.recipient.clone());
+                if env.storage().persistent().has(&recipient_key) {
+                    env.storage().persistent().extend_ttl(
+                        &recipient_key,
+                        stream::TTL_THRESHOLD_LEDGERS,
+                        stream::TTL_EXTEND_LEDGERS,
+                    );
+                }
+                let fee_key = stream::DataKey::StreamFee(id);
+                if env.storage().persistent().has(&fee_key) {
+                    env.storage().persistent().extend_ttl(
+                        &fee_key,
+                        stream::TTL_THRESHOLD_LEDGERS,
+                        stream::TTL_EXTEND_LEDGERS,
+                    );
+                }
+                let treasury_key = stream::DataKey::Treasury(s.token.clone());
+                if env.storage().persistent().has(&treasury_key) {
+                    env.storage().persistent().extend_ttl(
+                        &treasury_key,
+                        stream::TTL_THRESHOLD_LEDGERS,
+                        stream::TTL_EXTEND_LEDGERS,
+                    );
+                }
             }
         }
 

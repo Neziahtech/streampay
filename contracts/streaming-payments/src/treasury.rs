@@ -166,13 +166,17 @@ pub fn require_governor(env: &Env, caller: &Address) -> Result<(), StreamError> 
 pub fn get_treasury(env: &Env, token: &Address) -> Treasury {
     #[cfg(test)]
     crate::cei_trace::record("read persistent Treasury(token)");
-    env.storage()
-        .persistent()
-        .get(&DataKey::Treasury(token.clone()))
-        .unwrap_or(Treasury {
-            charged_total: 0,
-            withdrawn_total: 0,
-        })
+    let key = DataKey::Treasury(token.clone());
+    let stored: Option<Treasury> = env.storage().persistent().get(&key);
+    if stored.is_some() {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+    }
+    stored.unwrap_or(Treasury {
+        charged_total: 0,
+        withdrawn_total: 0,
+    })
 }
 
 /// Persists treasury accounting for `token` and extends its TTL, so a
@@ -224,10 +228,13 @@ pub fn apply_fee(
 /// floored to zero). Callers that expose this publicly should first check
 /// the stream exists.
 pub fn stream_fee(env: &Env, stream_id: u64) -> i128 {
-    let record: Option<StreamFeeRecord> = env
-        .storage()
-        .persistent()
-        .get(&DataKey::StreamFee(stream_id));
+    let key = DataKey::StreamFee(stream_id);
+    let record: Option<StreamFeeRecord> = env.storage().persistent().get(&key);
+    if record.is_some() {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+    }
     record.map_or(0, |r| r.amount)
 }
 
@@ -283,12 +290,21 @@ pub struct FeeScan {
 /// archives), and reports where to continue. Deliberately bounded per call
 /// (`count` clamped to [`MAX_PAGE_SIZE`]) — no unbounded scans.
 pub fn scan_fees(env: &Env, token: &Address, start_id: u64, count: u32) -> FeeScan {
+    let treasury_key = DataKey::Treasury(token.clone());
+    if env.storage().persistent().has(&treasury_key) {
+        env.storage()
+            .persistent()
+            .extend_ttl(&treasury_key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+    }
     // Next id to hand out; streams occupy ids 1..=next_id-1.
-    let next_id: u64 = env
-        .storage()
-        .persistent()
-        .get(&DataKey::NextStreamId)
-        .unwrap_or(1);
+    let next_key = DataKey::NextStreamId;
+    let next_opt: Option<u64> = env.storage().persistent().get(&next_key);
+    if next_opt.is_some() {
+        env.storage()
+            .persistent()
+            .extend_ttl(&next_key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+    }
+    let next_id: u64 = next_opt.unwrap_or(1);
     let start = start_id.max(1);
     let end = start
         .saturating_add((count.min(MAX_PAGE_SIZE)) as u64)
