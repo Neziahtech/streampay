@@ -1651,6 +1651,7 @@ impl StreamingPayments {
         asset: Address,
         allowed: bool,
     ) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
         policy::propose_asset(&env, asset, allowed)
     }
 
@@ -1660,22 +1661,26 @@ impl StreamingPayments {
     /// public timelock delay has expired, execution is permissionless so it
     /// cannot be stalled or held hostage by an absent admin.
     pub fn policy_execute_asset(env: Env, asset: Address) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
         policy::execute_asset(&env, asset)
     }
 
     /// Proposes a new admin for the two-step handoff (admin-only).
     pub fn policy_propose_handoff(env: Env, new_admin: Address) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
         policy::propose_handoff(&env, new_admin)
     }
 
     /// Accepts the pending admin handoff. Callable only by the proposed new
     /// admin, consuming their authorization and clearing the proposal.
     pub fn policy_accept_handoff(env: Env) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
         policy::accept_handoff(&env)
     }
 
     /// Cancels a pending admin handoff (admin-only).
     pub fn policy_cancel_handoff(env: Env) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
         policy::cancel_handoff(&env)
     }
 
@@ -1696,6 +1701,7 @@ impl StreamingPayments {
 
     /// Sets the timelock delay in seconds (admin-only).
     pub fn policy_set_timelock_delay(env: Env, delay: u64) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
         policy::set_timelock_delay(&env, delay)
     }
 

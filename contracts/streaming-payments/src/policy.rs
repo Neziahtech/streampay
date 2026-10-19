@@ -41,6 +41,8 @@ use crate::surface::{self, Branch};
 
 /// Default timelock delay: 2 days (172,800 seconds).
 pub const DEFAULT_TIMELOCK_DELAY: u64 = 172_800;
+/// Maximum timelock delay: 30 days (2,592,000 seconds) so queued changes cannot outlive persistent TTL.
+pub const MAX_TIMELOCK_DELAY: u64 = 2_592_000;
 
 /// Storage keys for the policy module.
 ///
@@ -132,6 +134,11 @@ pub fn is_asset_allowed(env: &Env, asset: &Address) -> bool {
     }
     let key = PolicyDataKey::Asset(asset.clone());
     let allowed: Option<bool> = env.storage().persistent().get(&key);
+    if allowed.is_some() {
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+    }
     allowed.unwrap_or(true)
 }
 
@@ -173,6 +180,9 @@ pub fn init(env: &Env, initial_admin: &Address) {
 /// Sets a new timelock delay (admin-only).
 pub fn set_timelock_delay(env: &Env, delay: u64) -> Result<(), StreamError> {
     require_admin(env)?;
+    if delay > MAX_TIMELOCK_DELAY {
+        return Err(StreamError::InvalidDuration);
+    }
     env.storage()
         .instance()
         .set(&PolicyDataKey::TimelockDelay, &delay);
@@ -187,7 +197,7 @@ pub fn propose_asset(env: &Env, asset: Address, allowed: bool) -> Result<(), Str
     require_admin(env)?;
     let now = env.ledger().timestamp();
     let delay = timelock_delay(env);
-    let executable_after = now.saturating_add(delay);
+    let executable_after = now.checked_add(delay).ok_or(StreamError::MathOverflow)?;
 
     let queued = QueuedAssetChange {
         allowed,
