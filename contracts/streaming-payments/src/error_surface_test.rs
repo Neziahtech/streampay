@@ -9,7 +9,7 @@
 //!
 //! The mapping is never hand-maintained: it lives in `surface.rs`, the probe
 //! dispatch below is exhaustive over `Branch` (so a new branch is a compile
-//! error until it has a probe), and `docs/ERRORS.md` is generated from the same
+//! error until it has a probe), and `docs/ERROR_SURFACE.md` is generated from the same
 //! table.
 
 #![cfg(test)]
@@ -995,7 +995,7 @@ fn defensive_branches_are_exactly_documented() {
             Branch::CancelSplitOverflow,
             Branch::PayoutOverflow,
         ],
-        "the defensive set changed; update the matrix test and docs/ERRORS.md"
+        "the defensive set changed; update the matrix test and docs/ERROR_SURFACE.md"
     );
 }
 

@@ -331,7 +331,7 @@ reserved role checks that no entrypoint ever produced, so they are kept (never
 renumbered or reused) but marked unreachable.
 
 The authoritative, machine-generated view of this surface lives in
-[`docs/ERRORS.md`](./ERRORS.md): a per-branch table mapping every
+[`docs/ERROR_SURFACE.md`](./ERROR_SURFACE.md): a per-branch table mapping every
 `(entrypoint, condition)` decision to its code, emitted from the contract's own
 instrumentation (`src/surface.rs`) by `cargo run -p streampay-contract --example
 error_surface_doc`, with a CI step that regenerates it and fails on drift. Each
@@ -425,7 +425,7 @@ griefing) is in [`SCHEDULED_INTENTS.md`](./SCHEDULED_INTENTS.md).
 - **Error surface** (`error_surface_test.rs`): the branch registry in
   `surface.rs` is walked by generated tests — one probe per branch asserts the
   exact branch fires its declared code — plus coverage tests proving no code is
-  dead and no branch uncoded. `docs/ERRORS.md` is generated from the same table
+  dead and no branch uncoded. `docs/ERROR_SURFACE.md` is generated from the same table
   and diffed in CI.
 - **`withdraw_max`** shares the `withdraw` payout tail (`pay_out`) so both
   paths inherit the same CEI ordering and reentrancy proof; index pagination
@@ -770,7 +770,7 @@ which surface and how each one may evolve.
   `StreamError::ALL`, an exhaustive-match test forces new variants into that
   list in the same change, the `surface.rs` branch registry ties each variant
   to reachable `(entrypoint, condition)` branches, and CI diffs the generated
-  `docs/ERRORS.md` for drift (§7).
+  `docs/ERROR_SURFACE.md` for drift (§7).
 
 ### 13.2 Storage keys
 

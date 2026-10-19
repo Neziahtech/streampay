@@ -40,7 +40,15 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Format check
-        run: cargo fmt --all -- --check
+        # rustfmt emits LF: a file committed with CRLF fails here as a diff of
+        # every line, which reads like a formatting complaint about the whole
+        # file when the real problem is carriage returns in the commit. Point at
+        # the one-command fix instead of leaving contributors to guess.
+        run: |
+          if ! cargo fmt --all -- --check; then
+            echo "::error::Unformatted Rust. Fix locally with 'npm run lint:fix' (cargo fmt --all) and commit. If the diff is every line of a file, that file was committed with CRLF: run 'bash scripts/check_line_endings.sh' (one command, exact fix)."
+            exit 1
+          fi
 
       - name: Clippy (deny warnings)
         run: cargo clippy --all-targets -- -D warnings
@@ -58,10 +66,10 @@ jobs:
       # instrumentation. Regenerate it and fail if the committed artifact has
       # drifted — this also fails on any error code with zero coverage or any
       # branch with no code (enforced by the error-surface tests above).
+      # Same script contributors run locally (`npm run generated:check`), so a
+      # green local run means a green gate here.
       - name: Error-surface table is up to date
-        run: |
-          cargo run -p streampay-contract --example error_surface_doc
-          git diff --exit-code docs/ERRORS.md
+        run: bash scripts/check_generated.sh surface
 
       - name: Coverage
         uses: taiki-e/install-action@cargo-llvm-cov
@@ -143,8 +151,16 @@ jobs:
         # XDR + digest, shared with the Rust suite) on Node's type-stripping
         # test runner — the pattern ttl-sentinel compiles first to avoid.
         run: npm test
-      - name: Regenerate differential vectors
-        run: node ../scripts/generate-vectors.mjs
+
+      # The differential vector corpus is generated from the Rust reference
+      # model's published spec file. Regenerating without diffing (the previous
+      # shape of this step) let a stale committed corpus through while the
+      # tests silently passed against the freshly generated one — the two
+      # clients were no longer proven against the same vectors. The shared
+      # script regenerates *and* fails on any drift, and is the same command
+      # contributors run locally.
+      - name: Differential vectors are up to date
+        run: bash ../scripts/check_generated.sh vectors
 
       - name: Differential tests (against shared vector corpus)
         run: node --experimental-strip-types --test lib/oracle.test.ts
@@ -293,6 +309,16 @@ jobs:
       - name: Check internal markdown links
         run: node scripts/check_docs_links.mjs
 
+      # Line endings are checked as committed *content*, not as a checkout
+      # detail: CRLF in a blob makes rustfmt flag every line of the file, and it
+      # shifts the bytes behind any content-derived hash (the error catalog's
+      # schema fingerprint has already been broken by exactly this on a Windows
+      # checkout — see `a3af379`). Catching it here names the files and the
+      # one-command fix, instead of leaving a whole-file diff to decode.
+      # Binary fixtures are reported by git as `-text` and are not flagged.
+      - name: Tracked files are stored with LF
+        run: bash scripts/check_line_endings.sh
+
   devcontainer-verify:
     name: Devcontainer — wasm build smoke test
     runs-on: ubuntu-latest
@@ -363,8 +389,12 @@ jobs:
       - name: Lint runbook command freshness
         run: ./scripts/lint_runbook_commands.sh
 
-      - name: Error catalog regeneration diff check
-        run: |
-          node tooling/generate-error-catalog.mjs
-          git diff --exit-code docs/errors.md docs/errors/ frontend/lib/errors.ts
+      # The human-facing error catalog (docs/errors.md, one page per code, and
+      # frontend/lib/errors.ts) is generated from the contract's error surface.
+      # Delegated to the shared script so this gate, the contract-job gate and
+      # `npm run generated:check` cannot drift apart, and so a *newly added*
+      # code whose page was never committed also fails (plain `git diff`
+      # cannot see untracked files).
+      - name: Error catalog is up to date
+        run: bash scripts/check_generated.sh catalog
 
