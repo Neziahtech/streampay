@@ -1,20 +1,9 @@
 # Solution for Issue #292
 
 ## Summary
-### 1. Опис виправлення
-
-У точках входу релаєра для виведення та клірингу (settlement routines) впроваджено сувору перевірку стану circuit-breaker (`ensure_not_paused`), яка гарантує негайний `revert` у разі паузи системи або деактивації спонсора перед виконанням трансферів. Крім того, виправлено логіку диспетчеризації розрахунків шляхом обов'язкової публікації подій телеметрії (`SettlementTelemetryEvent`) навіть за умов паралельної ротації ключів оператора (`rotate_operator_key`) чи зміни стану
+At the relayer entrypoints for withdrawal and settlement routines, a strict circuit-breaker pause check (`ensure_not_paused`) has been introduced to enforce immediate contract reverts whenever the system is paused or the sponsor is inactive prior to executing token transfers. Furthermore, settlement dispatch telemetry has been stabilized by ensuring `SettlementTelemetryEvent` emission occurs reliably across concurrent operator key rotations (`rotate_operator_key`) or sponsor state mutations (`set_sponsor_active`).
 
 ## Implementation / Patch
-```
-### 1. Опис виправлення
-
-У точках входу релаєра для виведення та клірингу (settlement routines) впроваджено сувору перевірку стану circuit-breaker (`ensure_not_paused`), яка гарантує негайний `revert` у разі паузи системи або деактивації спонсора перед виконанням трансферів. Крім того, виправлено логіку диспетчеризації розрахунків шляхом обов'язкової публікації подій телеметрії (`SettlementTelemetryEvent`) навіть за умов паралельної ротації ключів оператора (`rotate_operator_key`) чи зміни стану спонсора (`set_sponsor_active`).
-
----
-
-### 2. Код патчу
-
 ```diff
 --- a/contracts/streaming-payments/src/lib.rs
 +++ b/contracts/streaming-payments/src/lib.rs
@@ -60,7 +49,7 @@
          sponsor.require_auth();
 +        Self::ensure_not_paused(&env)?;
 +
-         Self::set_operator_key(&env, &sponsor, &new_operator);
++        Self::set_operator_key(&env, &sponsor, &new_operator);
 +        
 +        env.events().publish(
 +            (symbol_short!("op_rotate"), sponsor),
@@ -68,7 +57,6 @@
 +        );
          Ok(())
      }
-```
 ```
 
 ## Payout Address (Solana)
