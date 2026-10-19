@@ -630,6 +630,11 @@ impl StreamingPayments {
             entry.start_time,
             entry.end_time,
         )?;
+        policy::check_asset_allowed(env, &entry.token)?;
+
+        let stream_policy = policy::get_stream_policy(env, Some(entry.token.clone()));
+        let duration = entry.end_time - entry.start_time;
+        policy::validate_stream_args(stream_policy.as_ref(), entry.deposit, duration)?;
 
         let fee_bps = treasury::current_fee_bps(env);
         let fee = treasury::fee_amount(entry.deposit, fee_bps)?;

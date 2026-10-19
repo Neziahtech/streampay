@@ -5986,3 +5986,36 @@ fn oracle_mode_accrual_property_bounded_by_staleness() {
         );
     }
 }
+
+#[test]
+fn create_streams_batch_enforces_policy_asset_allowlist() {
+    let f = Fixture::setup();
+    let admin = Address::generate(&f.env);
+    f.client.mock_all_auths().policy_init(&admin);
+    f.client
+        .mock_all_auths()
+        .policy_propose_asset(&f.token, &false);
+    let delay = f.client.policy_timelock_delay();
+    f.env.ledger().with_mut(|li| li.timestamp += delay + 1);
+    f.client.mock_all_auths().policy_execute_asset(&f.token);
+    assert!(!f.client.policy_is_asset_allowed(&f.token));
+
+    let now = f.env.ledger().timestamp();
+    let mut entries = soroban_sdk::Vec::new(&f.env);
+    entries.push_back(crate::stream::BatchEntry {
+        sender: f.sender.clone(),
+        recipient: f.recipient.clone(),
+        token: f.token.clone(),
+        deposit: 1_000_000,
+        start_time: now + DAY,
+        end_time: now + 10 * DAY,
+        cancelable: true,
+    });
+
+    let results = f.client.mock_all_auths().create_streams_batch(&entries);
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results.get(0).unwrap().unwrap_err(),
+        StreamError::PolicyAssetNotAllowed
+    );
+}
