@@ -178,15 +178,72 @@ pub struct FeeWithdrawn {
     pub withdrawn_total: i128,
 }
 
-/// Emitted exactly once when a stream is swept, removing its storage entries
-/// and reclaiming its storage rent. Fired on successful `sweep` invocation.
+/// Emitted when a sponsor registers (or reconfigures) a gas-sponsorship
+/// budget. Keyed by the sponsor address; the `registered` symbol lets indexers
+/// separate budget setup from sponsored claims.
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Swept {
+pub struct SponsorRegistered {
+    #[topic]
+    pub sponsor: Address,
+    #[topic]
+    pub kind: soroban_sdk::Symbol,
+    pub token: Address,
+    pub per_period_limit: i128,
+    pub per_beneficiary_limit: i128,
+    pub window_seconds: u64,
+}
+
+/// Emitted when a sponsor pauses or resumes its budget.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SponsorActiveSet {
+    #[topic]
+    pub sponsor: Address,
+    #[topic]
+    pub kind: soroban_sdk::Symbol,
+    pub active: bool,
+}
+
+/// Emitted when a beneficiary binds an ed25519 consent key, and again whenever
+/// they rotate it. Keyed by the beneficiary address.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BeneficiaryEnrolled {
+    #[topic]
+    pub beneficiary: Address,
+    #[topic]
+    pub kind: soroban_sdk::Symbol,
+    pub public_key: BytesN<32>,
+}
+
+/// Emitted when a sponsor rotates its authorized operator (relayer) key. The
+/// previous operator key stops validating relay signatures immediately.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OperatorKeyRotated {
+    #[topic]
+    pub sponsor: Address,
+    #[topic]
+    pub kind: soroban_sdk::Symbol,
+    pub new_operator_key: BytesN<32>,
+}
+
+/// Emitted when a claim is sponsored and paid out: the operator relayed the
+/// beneficiary's withdrawal and the sponsor's budget absorbed the gas. The
+/// payout still flows from the stream, exactly as in an unsponsored withdraw.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SponsorClaim {
+    #[topic]
+    pub sponsor: Address,
+    #[topic]
+    pub kind: soroban_sdk::Symbol,
     #[topic]
     pub stream_id: u64,
-    pub sender: Address,
-    pub recipient: Address,
+    pub beneficiary: Address,
+    pub amount: i128,
+    pub nonce: u64,
 }
 
 /// Emitted when the policy module is initialized with its initial admin.
@@ -297,4 +354,32 @@ pub struct StreamPolicySet {
     pub token: Option<Address>,
     pub old_policy: Option<crate::policy::StreamPolicy>,
     pub new_policy: crate::policy::StreamPolicy,
+}
+
+/// Emitted when the oracle configuration is updated by governance.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OracleConfigUpdated {
+    pub threshold: u32,
+    pub max_stale_seconds: u64,
+}
+
+/// Emitted when an authorized oracle publisher reports a reference timestamp.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OracleTimeReported {
+    #[topic]
+    pub publisher: Address,
+    pub reported_time: u64,
+    pub ledger_time: u64,
+}
+
+/// Emitted when oracle time resolution falls back to native ledger time due to
+/// stale feed, insufficient reports, or unconfigured registry.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OracleStaleFallback {
+    #[topic]
+    pub stream_id: u64,
+    pub ledger_time: u64,
 }

@@ -9,7 +9,7 @@
 //!
 //! The mapping is never hand-maintained: it lives in `surface.rs`, the probe
 //! dispatch below is exhaustive over `Branch` (so a new branch is a compile
-//! error until it has a probe), and `docs/ERRORS.md` is generated from the same
+//! error until it has a probe), and `docs/ERROR_SURFACE.md` is generated from the same
 //! table.
 
 #![cfg(test)]
@@ -17,7 +17,9 @@
 use std::vec::Vec;
 
 use soroban_sdk::testutils::Address as _;
+use soroban_sdk::{Address, BytesN};
 
+use crate::sponsor;
 use crate::stream::{streamed_at, DataKey};
 use crate::surface::{trace, Branch, Reachability, RETIRED_CODES};
 use crate::test::{Fixture, RefusingFixture};
@@ -51,6 +53,58 @@ macro_rules! rejected {
             .expect_err("expected the contract to reject the call")
             .unwrap()
     };
+}
+
+// ------------------------------------------- sponsorship probe scaffolding ---
+//
+// The rejectable sponsorship branches all fire *before* signature verification
+// (see `sponsor.rs`), so these helpers need only arrange budget/stream state —
+// dummy signatures never reach verification. A valid-signature happy path is
+// exercised separately in `test.rs`.
+
+/// Registers an active sponsor against `f.token` with generous caps.
+fn register_sponsor(f: &Fixture, sponsor: &Address, period: i128, beneficiary: i128) {
+    let op_key = BytesN::from_array(&f.env, &[1u8; 32]);
+    f.client.mock_all_auths().register_sponsor(
+        sponsor,
+        &f.token,
+        &period,
+        &beneficiary,
+        &DAY,
+        &op_key,
+    );
+}
+
+/// Enrolls `b` as a beneficiary with a dummy consent key.
+fn enroll(f: &Fixture, b: &Address) {
+    let key = BytesN::from_array(&f.env, &[2u8; 32]);
+    f.client.mock_all_auths().enroll_beneficiary(b, &key);
+}
+
+/// Builds a claim relayed against `sponsor`/`f.recipient` on `id`.
+///
+/// Returns the generated client's nested result verbatim: `Ok(...)` when the
+/// call succeeded, `Err(Ok(StreamError))` when the contract rejected it.
+fn sponsored_claim(
+    f: &Fixture,
+    sponsor: &Address,
+    id: u64,
+    amount: i128,
+    nonce: u64,
+    deadline: u64,
+) -> Result<Result<(), soroban_sdk::ConversionError>, Result<StreamError, soroban_sdk::InvokeError>>
+{
+    let sig = BytesN::from_array(&f.env, &[0u8; 64]);
+    f.client.mock_all_auths().try_sponsored_withdraw(
+        sponsor,
+        &f.recipient,
+        &id,
+        &amount,
+        &nonce,
+        &deadline,
+        &sig,
+        &sig,
+    )
 }
 
 /// Triggers `branch` and returns the error the contract produced, or `None` for
@@ -245,6 +299,114 @@ fn probe(branch: Branch) -> Option<StreamError> {
                 &f.recipient,
                 &1,
             )))
+        }
+        // ------------------------------------------------------- sponsorship
+        Branch::RegisterLimitNonPositive => {
+            let f = Fixture::setup_quiet();
+            let sponsor = Address::generate(&f.env);
+            let op_key = BytesN::from_array(&f.env, &[1u8; 32]);
+            Some(rejected!(f.client.mock_all_auths().try_register_sponsor(
+                &sponsor, &f.token, &0, &100, &DAY, &op_key,
+            )))
+        }
+        Branch::SponsoredWithdrawAmountNonPositive => {
+            let f = Fixture::setup_quiet();
+            let sponsor = Address::generate(&f.env);
+            register_sponsor(&f, &sponsor, 10_000, 10_000);
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            Some(rejected!(sponsored_claim(&f, &sponsor, id, 0, 1, {
+                f.env.ledger().timestamp() + DAY
+            })))
+        }
+        Branch::SponsoredWithdrawAmountExceedsAvailable => {
+            let f = Fixture::setup_quiet();
+            let sponsor = Address::generate(&f.env);
+            register_sponsor(&f, &sponsor, 10_000, 10_000);
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            // Stream has not started, so nothing is accrued: any positive
+            // amount exceeds the (zero) available balance.
+            Some(rejected!(sponsored_claim(&f, &sponsor, id, 1, 1, {
+                f.env.ledger().timestamp() + DAY
+            })))
+        }
+        Branch::SponsorNotFound => {
+            let f = Fixture::setup_quiet();
+            let sponsor = Address::generate(&f.env);
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            Some(rejected!(sponsored_claim(&f, &sponsor, id, 1, 1, {
+                f.env.ledger().timestamp() + DAY
+            })))
+        }
+        Branch::SponsorInactive => {
+            let f = Fixture::setup_quiet();
+            let sponsor = Address::generate(&f.env);
+            register_sponsor(&f, &sponsor, 10_000, 10_000);
+            f.client
+                .mock_all_auths()
+                .set_sponsor_active(&sponsor, &false);
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            Some(rejected!(sponsored_claim(&f, &sponsor, id, 1, 1, {
+                f.env.ledger().timestamp() + DAY
+            })))
+        }
+        Branch::BeneficiaryNotEnrolled => {
+            let f = Fixture::setup_quiet();
+            let sponsor = Address::generate(&f.env);
+            register_sponsor(&f, &sponsor, 10_000, 10_000);
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            f.advance_time(2 * DAY); // accrue so the amount checks pass
+                                     // Deliberately skip `enroll_beneficiary`.
+            Some(rejected!(sponsored_claim(&f, &sponsor, id, 1, 1, {
+                f.env.ledger().timestamp() + DAY
+            })))
+        }
+        Branch::ClaimExpired => {
+            let f = Fixture::setup_quiet();
+            let sponsor = Address::generate(&f.env);
+            register_sponsor(&f, &sponsor, 10_000, 10_000);
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            f.advance_time(2 * DAY);
+            enroll(&f, &f.recipient);
+            // deadline is far in the past relative to the advanced clock.
+            Some(rejected!(sponsored_claim(&f, &sponsor, id, 1, 1, 0)))
+        }
+        Branch::ClaimNonceReplay => {
+            let f = Fixture::setup_quiet();
+            let sponsor = Address::generate(&f.env);
+            register_sponsor(&f, &sponsor, 10_000, 10_000);
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            f.advance_time(2 * DAY);
+            enroll(&f, &f.recipient);
+            // Seed the nonce directly (a real spend would need valid sigs),
+            // then the replay check fires before signature verification.
+            f.env.as_contract(&f.client.address, || {
+                sponsor::mark_nonce(&f.env, &sponsor, &f.recipient, 5);
+            });
+            Some(rejected!(sponsored_claim(&f, &sponsor, id, 1, 5, {
+                f.env.ledger().timestamp() + DAY
+            })))
+        }
+        Branch::SponsorBudgetPeriodExceeded => {
+            let f = Fixture::setup_quiet();
+            let sponsor = Address::generate(&f.env);
+            register_sponsor(&f, &sponsor, 1, 1_000_000);
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            f.advance_time(2 * DAY);
+            enroll(&f, &f.recipient);
+            Some(rejected!(sponsored_claim(&f, &sponsor, id, 100, 1, {
+                f.env.ledger().timestamp() + DAY
+            })))
+        }
+        Branch::SponsorBudgetBeneficiaryExceeded => {
+            let f = Fixture::setup_quiet();
+            let sponsor = Address::generate(&f.env);
+            register_sponsor(&f, &sponsor, 1_000_000, 1);
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            f.advance_time(2 * DAY);
+            enroll(&f, &f.recipient);
+            Some(rejected!(sponsored_claim(&f, &sponsor, id, 100, 1, {
+                f.env.ledger().timestamp() + DAY
+            })))
         }
         // ------------------------------------------------ scheduled intents
         Branch::IntentNotFound => {
@@ -459,38 +621,34 @@ fn probe(branch: Branch) -> Option<StreamError> {
                 .mock_all_auths()
                 .try_policy_accept_handoff()))
         }
-        // ----------------------------------------------------- dust protection
-        Branch::StreamTooSmall => {
+        // ------------------------------------------------ create_streams_batch
+        Branch::CreateBatchEmpty => {
+            let f = Fixture::setup_quiet();
+            let entries = soroban_sdk::Vec::new(&f.env);
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_create_streams_batch(&entries)))
+        }
+        Branch::CreateBatchTooLarge => {
             let f = Fixture::setup_quiet();
             let now = f.env.ledger().timestamp();
-            Some(rejected!(f.client.mock_all_auths().try_create_stream(
-                &f.sender,
-                &f.recipient,
-                &f.token,
-                &1_000, // below MIN_STREAM_AMOUNT (5_000)
-                &(now + DAY),
-                &(now + 2 * DAY),
-                &false,
-            )))
-        }
-        Branch::ClaimAmountTooSmall => {
-            let f = Fixture::setup_quiet();
-            let id = f.create_stream(5_000, DAY, 10 * DAY, false);
-            f.advance_time(DAY); // accrues some but under MIN_CLAIM_AMOUNT
-            Some(rejected!(f.client.mock_all_auths().try_withdraw(&id, &500)))
-        }
-        Branch::StreamNotDepleted => {
-            let f = Fixture::setup_quiet();
-            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
-            // Stream is Active, not Depleted.
-            Some(rejected!(f.client.mock_all_auths().try_sweep(&id)))
-        }
-        Branch::StreamNotExpired => {
-            let f = Fixture::setup_quiet();
-            let id = f.create_stream(DEPOSIT, DAY, 2 * DAY, false);
-            f.client.mock_all_auths().withdraw_max(&id);
-            f.advance_time(DAY); // not yet at end_time
-            Some(rejected!(f.client.mock_all_auths().try_sweep(&id)))
+            let mut entries = soroban_sdk::Vec::new(&f.env);
+            for _ in 0..=(crate::stream::MAX_BATCH) {
+                entries.push_back(crate::stream::BatchEntry {
+                    sender: f.sender.clone(),
+                    recipient: f.recipient.clone(),
+                    token: f.token.clone(),
+                    deposit: DEPOSIT,
+                    start_time: now + DAY,
+                    end_time: now + 2 * DAY,
+                    cancelable: false,
+                });
+            }
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_create_streams_batch(&entries)))
         }
         Branch::ContractFrozen => {
             let f = Fixture::setup_quiet();
@@ -682,6 +840,57 @@ fn probe(branch: Branch) -> Option<StreamError> {
                 &false,
             )))
         }
+        Branch::InvalidOracleThreshold => {
+            let f = Fixture::setup_quiet();
+            let pub1 = soroban_sdk::Address::generate(&f.env);
+            let mut pubs = soroban_sdk::Vec::new(&f.env);
+            pubs.push_back(pub1);
+            Some(rejected!(f.client.mock_all_auths().try_set_oracle_config(
+                &f.governor,
+                &pubs,
+                &2, // threshold 2 > 1 publisher
+                &3600,
+            )))
+        }
+        Branch::OraclePublishersNotConfigured => {
+            let f = Fixture::setup_quiet();
+            let pub1 = soroban_sdk::Address::generate(&f.env);
+            let now = f.env.ledger().timestamp();
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_submit_oracle_time(&pub1, &now)))
+        }
+        Branch::NotOraclePublisher => {
+            let f = Fixture::setup_quiet();
+            let pub1 = soroban_sdk::Address::generate(&f.env);
+            let unauthorized = soroban_sdk::Address::generate(&f.env);
+            let mut pubs = soroban_sdk::Vec::new(&f.env);
+            pubs.push_back(pub1);
+            f.client
+                .mock_all_auths()
+                .set_oracle_config(&f.governor, &pubs, &1, &3600);
+            let now = f.env.ledger().timestamp();
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_submit_oracle_time(&unauthorized, &now)))
+        }
+        Branch::OracleReportTooOld => {
+            let f = Fixture::setup_quiet();
+            let pub1 = soroban_sdk::Address::generate(&f.env);
+            let mut pubs = soroban_sdk::Vec::new(&f.env);
+            pubs.push_back(pub1.clone());
+            f.client
+                .mock_all_auths()
+                .set_oracle_config(&f.governor, &pubs, &1, &3600);
+            let now = f.env.ledger().timestamp();
+            // Future timestamp exceeding now + max_stale_seconds triggers OracleReportTooOld
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_submit_oracle_time(&pub1, &(now + 4000))))
+        }
         // Invariant-protected: a stored stream always satisfies
         // `0 <= withdrawn <= streamed <= deposit <= i128::MAX`, so these
         // checked subtractions/addition can never cross an i128 boundary —
@@ -786,7 +995,7 @@ fn defensive_branches_are_exactly_documented() {
             Branch::CancelSplitOverflow,
             Branch::PayoutOverflow,
         ],
-        "the defensive set changed; update the matrix test and docs/ERRORS.md"
+        "the defensive set changed; update the matrix test and docs/ERROR_SURFACE.md"
     );
 }
 
@@ -814,6 +1023,13 @@ fn stream_error_variant_list_is_exhaustive() {
             | StreamError::NotGovernor
             | StreamError::NoPendingGovernor
             | StreamError::InsufficientTreasuryBalance
+            | StreamError::SponsorNotFound
+            | StreamError::SponsorInactive
+            | StreamError::BeneficiaryNotEnrolled
+            | StreamError::ClaimExpired
+            | StreamError::ClaimNonceReplay
+            | StreamError::SponsorBudgetExceeded
+            | StreamError::BeneficiaryBudgetExceeded
             | StreamError::IntentNotFound
             | StreamError::IntentNotPending
             | StreamError::IntentNotYetExecutable
@@ -832,11 +1048,9 @@ fn stream_error_variant_list_is_exhaustive() {
             | StreamError::PolicyNoQueuedChange
             | StreamError::PolicyNotInitialized
             | StreamError::PolicyNoPendingHandoff
-            | StreamError::StreamTooSmall
-            | StreamError::ClaimAmountTooSmall
-            | StreamError::StreamNotDepleted
-            | StreamError::StreamNotExpired
-            | StreamError::ContractFrozen
+            | StreamError::BatchEmpty
+            | StreamError::BatchTooLarge => StreamError::ALL.contains(&e),
+            StreamError::ContractFrozen
             | StreamError::ContractNotFrozen
             | StreamError::NoPendingUpgrade
             | StreamError::TimelockNotExpired
@@ -846,7 +1060,11 @@ fn stream_error_variant_list_is_exhaustive() {
             | StreamError::PolicyRateAboveCeiling
             | StreamError::PolicyDurationBelowFloor
             | StreamError::PolicyDurationAboveCeiling
-            | StreamError::PolicyDepositBelowFloor => StreamError::ALL.contains(&e),
+            | StreamError::PolicyDepositBelowFloor
+            | StreamError::InvalidOracleThreshold
+            | StreamError::OraclePublishersNotConfigured
+            | StreamError::OracleReportTooOld
+            | StreamError::NotOraclePublisher => StreamError::ALL.contains(&e),
         }
     }
 
