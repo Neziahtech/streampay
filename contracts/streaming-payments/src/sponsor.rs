@@ -524,7 +524,7 @@ pub fn sponsored_withdraw(
     crate::cei_trace::record("transfer recipient payout");
     let res = TokenClient::new(&env, &cfg.token).try_transfer(
         &env.current_contract_address(),
-        &stream::muxed(&s.recipient),
+        stream::muxed(&s.recipient),
         &amount,
     );
     match res {
