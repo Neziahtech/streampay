@@ -480,6 +480,7 @@ describe("outbox: reorg retraction", () => {
         [
           {
             id: "ev-create-1",
+            contractId: "CCONTRACT",
             name: "stream_created",
             streamId: "1",
             ledger: 100,
@@ -497,6 +498,7 @@ describe("outbox: reorg retraction", () => {
           },
           {
             id: "ev-cancel-1",
+            contractId: "CCONTRACT",
             name: "stream_cancelled",
             streamId: "1",
             ledger: 105,
@@ -510,6 +512,7 @@ describe("outbox: reorg retraction", () => {
           },
           {
             id: "ev-create-2",
+            contractId: "CCONTRACT",
             name: "stream_created",
             streamId: "2",
             ledger: 106,
