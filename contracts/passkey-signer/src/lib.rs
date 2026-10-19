@@ -144,7 +144,7 @@ impl PasskeySigner {
                 y,
                 flags,
             },
-        );
+        )?;
         Ok(())
     }
 
@@ -219,8 +219,8 @@ impl PasskeySigner {
             &sig_s,
         )?;
 
-        // Step 8: record nonce to prevent replay.
-        registry::record_challenge(&env, &challenge)?;
+        // Step 8: record nonce scoped to `owner` to prevent replay and cross-account poisoning.
+        registry::record_challenge_for_owner(&env, &owner, &challenge)?;
 
         Ok(())
     }

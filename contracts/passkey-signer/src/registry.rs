@@ -31,17 +31,24 @@ pub struct Credential {
 pub enum RegistryKey {
     /// Stored credential for an owner address.
     Credential(Address),
+    /// Used challenge nonce scoped to an owner address.
+    UsedChallengeByOwner(Address, BytesN<32>),
     /// Used challenge nonce (value is `true` when present).
     UsedChallenge(BytesN<32>),
 }
 
-/// Stores a credential and extends its TTL.
-pub fn put_credential(env: &Env, owner: &Address, cred: &Credential) {
+/// Stores a credential and extends its TTL. Returns `CredentialAlreadyRegistered`
+/// if a credential is already bound to `owner`.
+pub fn put_credential(env: &Env, owner: &Address, cred: &Credential) -> Result<(), PasskeyError> {
     let key = RegistryKey::Credential(owner.clone());
+    if env.storage().persistent().has(&key) {
+        return Err(PasskeyError::CredentialAlreadyRegistered);
+    }
     env.storage().persistent().set(&key, cred);
     env.storage()
         .persistent()
         .extend_ttl(&key, TTL_THRESHOLD, TTL_EXTEND);
+    Ok(())
 }
 
 /// Loads a credential, returning `CredentialNotFound` if absent.
@@ -66,6 +73,40 @@ pub fn remove_credential(env: &Env, owner: &Address) -> Result<(), PasskeyError>
     }
     env.storage().persistent().remove(&key);
     Ok(())
+}
+
+/// Records a challenge as used for `owner`. Returns `ChallengeAlreadyUsed` if it
+/// was already recorded for `owner` (per-owner replay prevention).
+pub fn record_challenge_for_owner(
+    env: &Env,
+    owner: &Address,
+    challenge: &BytesN<32>,
+) -> Result<(), PasskeyError> {
+    let owner_key = RegistryKey::UsedChallengeByOwner(owner.clone(), challenge.clone());
+    if env.storage().persistent().has(&owner_key) {
+        return Err(PasskeyError::ChallengeAlreadyUsed);
+    }
+    env.storage().persistent().set(&owner_key, &true);
+    env.storage()
+        .persistent()
+        .extend_ttl(&owner_key, TTL_THRESHOLD, TTL_EXTEND);
+
+    let global_key = RegistryKey::UsedChallenge(challenge.clone());
+    env.storage().persistent().set(&global_key, &true);
+    env.storage()
+        .persistent()
+        .extend_ttl(&global_key, TTL_THRESHOLD, TTL_EXTEND);
+    Ok(())
+}
+
+/// Returns `true` if the challenge has already been consumed for `owner`.
+pub fn is_challenge_used_for_owner(env: &Env, owner: &Address, challenge: &BytesN<32>) -> bool {
+    env.storage()
+        .persistent()
+        .has(&RegistryKey::UsedChallengeByOwner(
+            owner.clone(),
+            challenge.clone(),
+        ))
 }
 
 /// Records a challenge as used. Returns `ChallengeAlreadyUsed` if it was

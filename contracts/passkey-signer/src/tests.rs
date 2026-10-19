@@ -454,3 +454,88 @@ fn expired_challenge_nonce_rejected() {
     });
     assert_eq!(result, Err(PasskeyError::ChallengeAlreadyUsed));
 }
+
+#[test]
+fn duplicate_registration_returns_credential_already_registered() {
+    let env = new_env();
+    let (_, client) = deploy(&env);
+    let owner = Address::generate(&env);
+    let rp_id_hash = [0x11u8; 32];
+    let (x, y) = fake_pub_key();
+
+    client.register(
+        &owner,
+        &to_bytes32(&env, &rp_id_hash),
+        &to_bytes32(&env, &x),
+        &to_bytes32(&env, &y),
+        &0u32,
+    );
+
+    let dup = client.try_register(
+        &owner,
+        &to_bytes32(&env, &rp_id_hash),
+        &to_bytes32(&env, &[0x99u8; 32]),
+        &to_bytes32(&env, &[0x88u8; 32]),
+        &0u32,
+    );
+    assert_eq!(dup, Err(Ok(PasskeyError::CredentialAlreadyRegistered)));
+}
+
+#[test]
+fn cross_account_challenge_poisoning_prevented() {
+    let env = new_env();
+    let (contract_id, _) = deploy(&env);
+    let attacker = Address::generate(&env);
+    let victim = Address::generate(&env);
+    let challenge = to_bytes32(&env, &[0xDDu8; 32]);
+
+    env.as_contract(&contract_id, || {
+        crate::registry::record_challenge_for_owner(&env, &attacker, &challenge)
+            .expect("attacker records challenge for own address");
+        // Same attacker replaying the same challenge is rejected:
+        assert_eq!(
+            crate::registry::record_challenge_for_owner(&env, &attacker, &challenge),
+            Err(PasskeyError::ChallengeAlreadyUsed)
+        );
+        // Victim recording the same challenge for their own address succeeds:
+        assert_eq!(
+            crate::registry::record_challenge_for_owner(&env, &victim, &challenge),
+            Ok(())
+        );
+    });
+}
+
+#[test]
+fn injected_key_inside_json_string_value_rejected() {
+    let env = new_env();
+    let (_, client) = deploy(&env);
+    let owner = Address::generate(&env);
+    let rp_id_hash = [0x55u8; 32];
+    let (x, y) = fake_pub_key();
+    client.register(
+        &owner,
+        &to_bytes32(&env, &rp_id_hash),
+        &to_bytes32(&env, &x),
+        &to_bytes32(&env, &y),
+        &0u32,
+    );
+
+    let challenge = [0x02u8; 32];
+    // Attacker embeds `"type":"webauthn.get"` inside an earlier string value while actual top-level type is `webauthn.create`.
+    let injected_cdj = std::format!(
+        r#"{{"origin":"https://evil.example/\"type\":\"webauthn.get\"","type":"webauthn.create","challenge":"{}"}}"#,
+        base64url(&challenge)
+    );
+    let auth_data_bytes = make_auth_data(&rp_id_hash, 0x01);
+
+    let result = client.try_verify_and_record(
+        &owner,
+        &to_bytes(&env, &auth_data_bytes),
+        &to_bytes(&env, injected_cdj.as_bytes()),
+        &to_bytes32(&env, &challenge),
+        &to_bytes32(&env, &[0u8; 32]),
+        &to_bytes32(&env, &[0u8; 32]),
+    );
+    assert_eq!(result, Err(Ok(PasskeyError::ClientDataTypeMismatch)));
+}
+
