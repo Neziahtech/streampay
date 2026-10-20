@@ -186,6 +186,26 @@ pub enum StreamError {
     /// An unexpired ownership proposal already exists for this stream; cancel
     /// or accept it before proposing another.
     OwnershipProposalPending = 63,
+    /// No session-key (agent) authorization exists for this (agent, stream)
+    /// pair; the recipient must call `authorize_agent` first.
+    AgentNotAuthorized = 64,
+    /// The session key's authorization has expired (`expires_at` has passed).
+    AgentExpired = 65,
+    /// The session key was revoked by the recipient; it can no longer sign
+    /// delegated withdrawals for this stream.
+    AgentRevoked = 66,
+    /// The delegated withdrawal would exceed the agent's per-period cap for
+    /// this stream within the current cap window.
+    AgentPeriodCapExceeded = 67,
+    /// The delegated withdrawal would exceed the agent's lifetime cap for
+    /// this stream (max total across all windows).
+    AgentStreamCapExceeded = 68,
+    /// The provided agent signature did not verify against the authorized
+    /// session key for this (agent, stream) pair.
+    AgentSignatureInvalid = 69,
+    /// The delegated withdrawal's nonce was already consumed — a replay of a
+    /// previously executed delegated withdrawal.
+    AgentNonceReplay = 70,
 }
 
 impl StreamError {
@@ -256,6 +276,13 @@ impl StreamError {
         StreamError::OwnershipProposalExpired,
         StreamError::InvalidTransferTarget,
         StreamError::OwnershipProposalPending,
+        StreamError::AgentNotAuthorized,
+        StreamError::AgentExpired,
+        StreamError::AgentRevoked,
+        StreamError::AgentPeriodCapExceeded,
+        StreamError::AgentStreamCapExceeded,
+        StreamError::AgentSignatureInvalid,
+        StreamError::AgentNonceReplay,
     ];
 
     /// The stable numeric value carried across the contract boundary

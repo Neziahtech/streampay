@@ -73,6 +73,8 @@ mod policy;
 mod schedule;
 #[cfg(test)]
 mod schedule_test;
+#[cfg(test)]
+mod session_key_test;
 pub(crate) mod sponsor;
 #[cfg(test)]
 mod sponsor_test;
@@ -84,6 +86,7 @@ mod test;
 pub mod test_client;
 mod treasury;
 pub mod verification;
+pub(crate) mod session_key;
 
 use soroban_sdk::{
     contract, contractimpl, contracttype, token::TokenClient, Address, BytesN, ConversionError,
@@ -99,6 +102,7 @@ pub use events::{
     OwnershipAccepted, OwnershipProposed, PolicyAssetExecuted, PolicyAssetQueued,
     PolicyHandoffAccepted, PolicyHandoffCancelled, PolicyHandoffProposed, PolicyInitialized,
     ScheduledIntentCancelled, ScheduledIntentExpired, ScheduledStreamExecuted, SponsorActiveSet,
+    AgentAuthorized, AgentRevoked, DelegatedWithdrawn,
     SponsorClaim, SponsorRegistered, StorageMigrated, StreamCancelled, StreamCreated,
     StreamPolicySet, StreamScheduled, StreamToppedUp, StreamsCreated, UpgradeCancelled,
     UpgradeProposed, Withdrawn,
@@ -107,6 +111,7 @@ pub use oracle::{OracleConfig, OracleReport, ResolvedTime, DEFAULT_MAX_STALE_SEC
 pub use policy::{validate_stream_args, validate_top_up_args, QueuedAssetChange, StreamPolicy};
 pub use schedule::{IntentStatus, ScheduledIntent, MAX_OCCURRENCES};
 pub use sponsor::{PeriodSpend, SponsorConfig};
+pub use session_key::{AgentSession, AgentSessionKey, SessionWindow, MAX_SESSION_DURATION_SECONDS};
 // `streamed_at` is re-exported for the fuzz target and downstream rate
 // calculators: it is a pure function requiring no `Env`.
 pub use stream::{
@@ -1837,6 +1842,275 @@ impl StreamingPayments {
             &env,
             &sponsor::SponsorKey::BeneficiarySpend(sponsor, beneficiary),
         )
+    }
+
+    // ------------------------------------------------------ session keys ----
+    //
+    // Recipient-authorized, capped delegated withdrawals. A recipient binds an
+    // agent (hot wallet / automation bot) to a single stream with a per-window
+    // cap, a total cap, and an expiry. The agent then calls
+    // `withdraw_delegated` with an ed25519 signature over the withdrawal
+    // parameters; the contract — not the signer — enforces the caps and
+    // expiry. See `session_key.rs` for the storage layout and the rationale
+    // for a fixed-window ledger.
+
+    /// Authorizes `agent_key` (an ed25519 public key) to withdraw from
+    /// `stream_id` on the recipient's behalf, under strict caps.
+    ///
+    /// Only the stream's current recipient may call this (their
+    /// authorization is required). The stream must be `Active`.
+    ///
+    /// * `per_period_cap` — maximum total delegated withdrawal per fixed
+    ///   window (`window_seconds` long, aligned to the authorization time).
+    /// * `total_cap` — maximum total delegated withdrawal over the whole
+    ///   session, across all windows.
+    /// * `expires_at` — absolute ledger timestamp after which the session is
+    ///   dead. Must be strictly in the future and at most
+    ///   [`MAX_SESSION_DURATION_SECONDS`] away.
+    ///
+    /// Re-authorizing the same `(recipient, stream, agent_key)` triple resets
+    /// the session: caps and window restart from the new authorization. This
+    /// is the intended rotation path for a compromised agent key (the
+    /// recipient simply re-authorizes with a fresh key, or calls
+    /// [`StreamingPayments::revoke_agent`]).
+    pub fn authorize_agent(
+        env: Env,
+        recipient: Address,
+        stream_id: u64,
+        agent_key: BytesN<32>,
+        per_period_cap: i128,
+        total_cap: i128,
+        window_seconds: u64,
+        expires_at: u64,
+    ) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
+        recipient.require_auth();
+
+        let s = stream::get_stream(&env, stream_id)?;
+        if s.recipient != recipient {
+            return Err(surface::reject(Branch::SessionNotRecipient));
+        }
+        if s.status != StreamStatus::Active {
+            return Err(surface::reject(Branch::StreamNotActive));
+        }
+
+        session_key::authorize_agent(
+            &env,
+            &recipient,
+            stream_id,
+            &agent_key,
+            per_period_cap,
+            total_cap,
+            window_seconds,
+            expires_at,
+        )?;
+
+        AgentAuthorized {
+            stream_id,
+            recipient,
+            agent_key,
+            per_period_cap,
+            total_cap,
+            window_seconds,
+            expires_at,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Revokes a previously authorized agent session. Only the stream's
+    /// current recipient may call this (their authorization is required).
+    ///
+    /// Revocation is immediate and on-chain: the session entry is removed in
+    /// the same invocation, so any `withdraw_delegated` submitted afterwards
+    /// (even in the same ledger, if it executes later) reverts with
+    /// [`StreamError::AgentNotAuthorized`]. Revoking an already-revoked or
+    /// never-authorized session is a no-op that still succeeds, so incident
+    /// responders can call it defensively.
+    ///
+    /// # Incident procedure (compromised agent key)
+    ///
+    /// 1. Recipient calls `revoke_agent(recipient, stream_id, agent_key)`.
+    ///    Revocation latency is bounded by ledger close time (~5s on
+    ///    Stellar): once the transaction lands, no further delegated
+    ///    withdrawal can succeed.
+    /// 2. Any in-flight `withdraw_delegated` that lands *before* the
+    ///    revocation is still bounded by the session caps, so the maximum
+    ///    loss is `min(total_cap, per_period_cap)` per window up to the
+    ///    revocation ledger. Choose caps accordingly.
+    /// 3. Optionally re-authorize a fresh agent key with
+    ///    `authorize_agent` (which resets the window and caps).
+    pub fn revoke_agent(
+        env: Env,
+        recipient: Address,
+        stream_id: u64,
+        agent_key: BytesN<32>,
+    ) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
+        recipient.require_auth();
+
+        let s = stream::get_stream(&env, stream_id)?;
+        if s.recipient != recipient {
+            return Err(surface::reject(Branch::SessionNotRecipient));
+        }
+
+        session_key::revoke_agent(&env, &recipient, stream_id, &agent_key);
+
+        AgentRevoked {
+            stream_id,
+            recipient,
+            agent_key,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Withdraws `amount` from `stream_id` on behalf of the recipient, using a
+    /// session key previously authorized via
+    /// [`StreamingPayments::authorize_agent`].
+    ///
+    /// The agent does not need a Stellar account: authorization is an
+    /// ed25519 signature over the canonical message
+    /// `(stream_id, amount, nonce, deadline)` bound to the contract id and
+    /// the agent's public key (see `session_key::message`). The contract
+    /// verifies the signature with the host's ed25519 verifier and then
+    /// enforces, in order:
+    ///
+    /// 1. the session exists and has not expired (`now < expires_at`);
+    /// 2. `deadline >= now` (per-call freshness, so a captured signature
+    ///    cannot be replayed after a bounded window);
+    /// 3. `nonce` is strictly greater than the last consumed nonce for this
+    ///    session (monotonic replay protection);
+    /// 4. `amount <= available(stream)` (the stream's own accrual cap);
+    /// 5. `amount <= per_period_cap - spent_in_current_window`;
+    /// 6. `amount <= total_cap - spent_total`.
+    ///
+    /// On success, the nonce and spend counters are advanced *before* the
+    /// payout (CEI), and the payout reuses the same `pay_out` tail as the
+    /// recipient's own `withdraw`, so the stream's `withdrawn` accounting and
+    /// the `Withdrawn` event are identical to a direct withdrawal. A
+    /// `DelegatedWithdrawn` event records the agent and the post-call cap
+    /// state for off-chain monitoring.
+    ///
+    /// # Signature scheme
+    ///
+    /// Soroban exposes `env.crypto().ed25519_verify(public_key, message,
+    /// signature)`, which is the cheapest on-chain verifier and matches the
+    /// key format used by Stellar accounts. We deliberately do **not** use
+    /// `require_auth` on the agent key: that would require the agent to be a
+    /// funded Stellar account and would not let us bind the caps into the
+    /// signed payload. secp256k1 (`secp256k1_recover`) is available but
+    /// costs more CPU instructions and offers no benefit here; ed25519 is
+    /// the standard for Stellar hot keys and hardware signers.
+    #[allow(clippy::too_many_arguments)] // the delegated surface is intentionally explicit
+    pub fn withdraw_delegated(
+        env: Env,
+        agent_key: BytesN<32>,
+        stream_id: u64,
+        amount: i128,
+        nonce: u64,
+        deadline: u64,
+        agent_sig: BytesN<64>,
+    ) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
+        if amount <= 0 {
+            return Err(surface::reject(Branch::WithdrawAmountNonPositive));
+        }
+
+        let mut s = stream::get_stream(&env, stream_id)?;
+        if s.status != StreamStatus::Active {
+            return Err(surface::reject(Branch::StreamNotActive));
+        }
+
+        let now = env.ledger().timestamp();
+        let mut session = session_key::load_session(&env, &s.recipient, stream_id, &agent_key)?;
+
+        // Verify the agent's signature over the canonical message before
+        // touching any cap state. A bad signature is indistinguishable from
+        // an unauthorized agent to the caller.
+        let message = session_key::message(&env, stream_id, amount, nonce, deadline);
+        env.crypto()
+            .ed25519_verify(&agent_key, &message, &agent_sig);
+
+        // Enforce session-level constraints. Order matters: expiry and
+        // deadline first (cheap, and a stale session should never consume a
+        // nonce), then replay, then caps.
+        if now >= session.expires_at {
+            return Err(surface::reject(Branch::SessionExpired));
+        }
+        if deadline < now {
+            return Err(surface::reject(Branch::SessionDeadlinePassed));
+        }
+        if nonce <= session.last_nonce {
+            return Err(surface::reject(Branch::SessionNonceReused));
+        }
+
+        let resolved = oracle::resolve_stream_time(&env, stream_id, s.use_oracle);
+        let available = stream::available_amount_at(&s, resolved.timestamp)?;
+        if amount > available {
+            return Err(surface::reject(Branch::WithdrawAmountExceedsAvailable));
+        }
+
+        // Roll the fixed window forward if the current one has elapsed. The
+        // window is anchored at authorization time so the recipient can
+        // reason about it deterministically.
+        session_key::roll_window(&mut session, now)?;
+        let period_remaining = session
+            .per_period_cap
+            .checked_sub(session.spent_in_window)
+            .ok_or(StreamError::MathOverflow)?;
+        if amount > period_remaining {
+            return Err(surface::reject(Branch::SessionPeriodCapExceeded));
+        }
+        let total_remaining = session
+            .total_cap
+            .checked_sub(session.spent_total)
+            .ok_or(StreamError::MathOverflow)?;
+        if amount > total_remaining {
+            return Err(surface::reject(Branch::SessionTotalCapExceeded));
+        }
+
+        // Effects (CEI): advance nonce and spend counters, then persist the
+        // session before the payout. A failed payout rolls all of this back
+        // atomically with the token transfer.
+        session.last_nonce = nonce;
+        session.spent_in_window = session
+            .spent_in_window
+            .checked_add(amount)
+            .ok_or(StreamError::MathOverflow)?;
+        session.spent_total = session
+            .spent_total
+            .checked_add(amount)
+            .ok_or(StreamError::MathOverflow)?;
+        session_key::store_session(&env, &session);
+
+        Self::pay_out(&env, &mut s, amount)?;
+
+        DelegatedWithdrawn {
+            stream_id,
+            recipient: s.recipient.clone(),
+            agent_key,
+            amount,
+            nonce,
+            spent_in_window: session.spent_in_window,
+            spent_total: session.spent_total,
+            window_start: session.window_start,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Read-only view of an agent session, if authorized.
+    pub fn get_agent_session(
+        env: Env,
+        recipient: Address,
+        stream_id: u64,
+        agent_key: BytesN<32>,
+    ) -> Option<AgentSession> {
+        session_key::get_session(&env, &recipient, stream_id, &agent_key)
     }
     // ------------------------------------------------------------- policy --
     //
