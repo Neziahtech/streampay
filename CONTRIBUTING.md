@@ -73,7 +73,9 @@ lint/typecheck/build when frontend files are touched) are the minimum gate.
   overflow, return `StreamError::MathOverflow` — don't wrap, don't panic.
 - **Errors are append-only.** Add new `StreamError` variants at the bottom with
   the next free code; never renumber or reuse codes (they are part of the
-  client-facing API).
+  client-facing API). The next free code is counted from the code *main* has
+  reached, not from your branch — if `npm run codes:check` says your branch is
+  behind, bring main into it before you pick a number.
 - **Checks-Effects-Interactions.** All storage writes and event emissions
   happen before any token transfer. New entrypoints must preserve this — add a
   test that proves it if you add a new payout path.
@@ -178,6 +180,7 @@ npm run eol:check         # committed CRLF: the usual cause of a whole-file fmt 
 cargo clippy --all-targets -- -D warnings
 npm run generated:check
 npm run links:check       # every internal link and #anchor in the docs resolves
+npm run json:check        # no key declared twice in any tracked JSON file
 cd frontend && npm run lint && npx tsc --noEmit && npm test && npm run build
 ```
 
@@ -190,11 +193,14 @@ renumbered, reused, or deleted, and an unreachable variant is *retired* in place
 rather than removed. The two mistakes this causes are appending a code another
 merged PR already took (`E0081: discriminant value assigned to multiple variants`)
 and deleting a variant, which silently invalidates existing clients.
-`npm run codes:check` reads the enum and prints the highest code in use plus the
-next free one, so you never have to guess; CI runs it as the *first* step of the
+`npm run codes:check` reads your tree's enum *and* the base branch's, and prints
+the next free code above whichever is higher — labelled with where the number
+came from — so you never have to guess; CI runs it as the *first* step of the
 Contract job, before the toolchain even installs, so a collision is a
 file/line annotation within seconds instead of a compile error four minutes
-later in two jobs at once.
+later in two jobs at once. A branch that is behind main gets a warning instead
+of advice, because "the highest code I can see plus one" is exactly how two PRs
+pick the same number.
 
 The same script then checks the registry in `contracts/streaming-payments/src/surface.rs`,
 which maps every rejection branch to the code it returns: a code no branch
@@ -211,6 +217,28 @@ anchor that does not resolve, and every failure is emitted as a CI annotation
 with the file, the line, and the closest existing paths — because the usual
 cause is a document that was renamed on `main`. (If your branch predates the
 rename, `docs/ERRORS.md` is now `docs/ERROR_SURFACE.md`.)
+
+**Duplicate JSON keys.** `npm run json:check` walks every tracked `.json` file and
+fails when one object declares the same key twice. This needs a gate because the
+file stays *valid*: `JSON.parse` and npm keep the last occurrence and drop the
+earlier one without a word, so the first line is dead and nothing ever errors.
+It is a merge shape, not a typo — two branches that append a key at the same spot
+both keep their line when they merge. `frontend/package.json` carried `"test"`
+that way, which is why 23 scheduler and fee-series specs stopped running in every
+CI job while the step named after them stayed green. (The same event once left
+duplicate *dependency* keys in the file, which npm rejects outright — at least
+that failed loudly.) The scanner is annotated with both line numbers and the key
+path, tolerates `tsconfig.json` comments and npm's trailing commas, and reports a
+key repeated in two sibling objects as what it is: legitimate JSON.
+
+`frontend` tests are collected by two runners that cannot see each other's files
+— `node --test` discovers `*.test.ts`, while `vitest run` (scoped by
+`frontend/vitest.config.mts`) discovers `lib/**/*.spec.ts` — so `npm test` chains
+both, and CI additionally runs a dedicated `npm run test:scheduler` step. The
+separate step exists because `scripts.test` is an ordinary string that any merge
+can rewrite: the suite needs an owner whose check fails when a runner stops being
+collected, rather than coverage that depends on one aggregate script staying
+correct.
 
 If `cargo fmt --all -- --check` fails with a diff covering **every line** of a
 file, that file was committed with CRLF (Windows editors and `core.autocrlf=true`

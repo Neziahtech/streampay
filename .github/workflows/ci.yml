@@ -177,9 +177,13 @@ jobs:
         run: npm run typecheck
 
       - name: Unit tests
-        # Includes the sponsorship wire-parity vectors (frozen relay message
-        # XDR + digest, shared with the Rust suite) on Node's type-stripping
-        # test runner — the pattern ttl-sentinel compiles first to avoid.
+        # Both runners: `node --test` collects the *.test.ts suites (including the
+        # sponsorship wire-parity vectors — frozen relay message XDR + digest,
+        # shared with the Rust suite — on Node's type-stripping runner, the
+        # pattern ttl-sentinel compiles first to avoid), and `vitest run` collects
+        # the *.spec.ts suites. They can never substitute for each other:
+        # vitest.config.mts includes only lib/**/*.spec.ts, and node --test only
+        # discovers *.test.ts.
         run: npm test
 
       # The differential vector corpus is generated from the Rust reference
@@ -218,8 +222,15 @@ jobs:
       - name: Accessibility audit (axe WCAG 2.1 AA gate)
         run: node --experimental-strip-types --test test/a11y.test.ts
 
-      - name: Test (node suites + scheduler / fee-series simulation)
-        run: npm test
+      # Dedicated vitest step, deliberately not folded into the `npm test` above.
+      # `scripts.test` is an ordinary JSON string that any merge can rewrite — and
+      # when a duplicate key did exactly that, the scheduler and fee-series specs
+      # stopped running in CI while a step *named* "scheduler / fee-series
+      # simulation" stayed green. This step runs a named script entrypoint, so the
+      # suite has an owner: if it ever stops being collected, the job says which
+      # runner went missing.
+      - name: Scheduler + fee-series simulation (vitest)
+        run: npm run test:scheduler
 
       - name: Build
         run: npm run build
@@ -357,6 +368,19 @@ jobs:
       # SECURITY.md, the runbooks, and the audit docs form intact.
       - name: Check internal markdown links
         run: node scripts/check_docs_links.mjs
+
+      # A JSON file with the same key twice is valid JSON: `JSON.parse` and npm
+      # keep the LAST occurrence and drop the earlier one without a word. Every
+      # merge that appended a key at the same spot as another branch produced
+      # this silently — including `frontend/package.json`, whose duplicate
+      # `"test"` removed the vitest half of the suite from every CI job while
+      # the step that claimed to run it stayed green. The scanner reports the
+      # object path and both line numbers, and tolerates the comments and
+      # trailing commas that `tsconfig.json` and npm legitimately accept.
+      # `--self-test` runs first: a scanner that silently stopped walking would
+      # otherwise report "clean" forever.
+      - name: No duplicate JSON keys
+        run: node scripts/check_duplicate_json_keys.mjs --self-test
 
       # Line endings are checked as committed *content*, not as a checkout
       # detail: CRLF in a blob makes rustfmt flag every line of the file, and it
