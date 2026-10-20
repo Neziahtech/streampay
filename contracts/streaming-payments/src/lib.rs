@@ -75,6 +75,10 @@ mod schedule;
 mod schedule_test;
 pub(crate) mod sponsor;
 #[cfg(test)]
+mod signing_conformance_test;
+#[cfg(test)]
+mod negative_auth_test;
+#[cfg(test)]
 mod sponsor_test;
 mod stream;
 pub mod surface;
