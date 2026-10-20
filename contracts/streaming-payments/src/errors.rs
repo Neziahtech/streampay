@@ -186,6 +186,10 @@ pub enum StreamError {
     /// An unexpired ownership proposal already exists for this stream; cancel
     /// or accept it before proposing another.
     OwnershipProposalPending = 63,
+    /// `pause_stream` was called on a stream that is already paused.
+    StreamAlreadyPaused = 64,
+    /// `resume_stream` was called on a stream that is not paused.
+    StreamNotPaused = 65,
 }
 
 impl StreamError {
@@ -256,6 +260,8 @@ impl StreamError {
         StreamError::OwnershipProposalExpired,
         StreamError::InvalidTransferTarget,
         StreamError::OwnershipProposalPending,
+        StreamError::StreamAlreadyPaused,
+        StreamError::StreamNotPaused,
     ];
 
     /// The stable numeric value carried across the contract boundary

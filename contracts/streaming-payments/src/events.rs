@@ -1,7 +1,7 @@
 //! Events emitted by StreamPay.
-//!
-//! Per-stream events are keyed by `stream_id`; `StreamsCreated` is keyed by
-//! sender and carries the batch ids. Non-topic fields are event data.
+///
+/// Per-stream events are keyed by `stream_id`; `StreamsCreated` is keyed by
+/// sender and carries the batch ids. Non-topic fields are event data.
 
 use soroban_sdk::{contractevent, Address, BytesN, Vec};
 
@@ -67,6 +67,40 @@ pub struct StreamToppedUp {
     pub amount: i128,
     /// Stream deposit after the top-up.
     pub new_deposit: i128,
+}
+
+/// Emitted when a sender pauses a stream, freezing accrual at the current
+/// accrual point. Keyed by `stream_id`.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamPaused {
+    #[topic]
+    pub stream_id: u64,
+    /// The sender who paused the stream.
+    pub paused_by: Address,
+    /// Ledger timestamp at which accrual was frozen.
+    pub paused_at: u64,
+    /// Cumulative pause offset (in seconds) after this pause.
+    pub pause_offset: u64,
+    /// Amount accrued and withdrawable at the moment of pausing.
+    pub accrued_at_pause: i128,
+}
+
+/// Emitted when a sender resumes a paused stream, re-using accrual from the
+/// frozen point. Keyed by `stream_id`.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamResumed {
+    #[topic]
+    pub stream_id: u64,
+    /// The sender who resumed the stream.
+    pub resumed_by: Address,
+    /// Ledger timestamp at which accrual resumed.
+    pub resumed_at: u64,
+    /// Cumulative pause offset (in seconds) after this resume.
+    pub pause_offset: u64,
+    /// Duration of the pause just ended, in seconds.
+    pub paused_duration: u64,
 }
 
 /// Emitted when a sender pre-authorizes a future (optionally recurring)
@@ -304,7 +338,7 @@ pub struct PolicyHandoffCancelled {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UpgradeProposed {
     #[topic]
-    pub new_wasm_hash: BytesN<32>,
+    pub new_wasm_hash: BytesN32>,
     pub unlock_time: u64,
     pub proposer: Address,
 }
@@ -386,33 +420,35 @@ pub struct OracleStaleFallback {
     pub ledger_time: u64,
 }
 
-/// Emitted when a current sender or recipient proposes handing their role to a
-/// new address. The handoff takes effect only when the target accepts.
+/// Emitted when a current sender or recipient proposes handing their role to
+/// a new address. The handoff takes effect only when the target accepts.
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnershipProposed {
     #[topic]
     pub stream_id: u64,
-    /// The current role holder (must be the stream's sender or recipient).
-    pub current_owner: Address,
-    /// Address that must accept before the role moves.
-    pub new_owner: Address,
     pub role: OwnershipRole,
-    /// Ledger timestamp at or after which the proposal is stale.
-    pub expires_at: u64,
+    pub current: Address,
+    pub proposed: Address,
 }
 
-/// Emitted when a proposed ownership handoff is accepted by its target. The
-/// stream's accounting fields (`deposit`, `withdrawn`, time window) are
-/// unchanged; only the role address moves.
+/// Emitted when the proposed handoff target accepts the role.
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnershipAccepted {
     #[topic]
     pub stream_id: u64,
-    /// The role holder before the transfer.
-    pub previous_owner: Address,
-    /// The new role holder (the accepting address).
-    pub new_owner: Address,
     pub role: OwnershipRole,
+    pub previous: Address,
+    pub new: Address,
+}
+
+/// Emitted when a pending ownership handoff is cancelled.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OwnershipCancelled {
+    #[topic]
+    pub stream_id: u64,
+    pub role: OwnershipRole,
+    pub proposed: Address,
 }
