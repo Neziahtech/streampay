@@ -198,13 +198,26 @@ pub enum Branch {
     NoPendingOwnership,
     /// `cancel_ownership_transfer`: the caller did not create the proposal.
     CancelProposalNotProposer,
+    // ----------------------------------------------------------- split/merge
+    /// `split_stream`: caller is not authorized (neither recipient nor sender).
+    SplitNotAuthorized,
+    /// `split_stream`: child1_deposit is zero, negative, or exceeds parent deposit.
+    SplitDepositInvalid,
+    /// `split_stream`: child end time is not strictly after start_time or exceeds MAX_DURATION.
+    SplitInvalidTimeRange,
+    /// `split_stream` / `merge_streams`: value conservation check failed.
+    ValueConservationViolated,
+    /// `merge_streams`: caller is not authorized (neither recipient nor sender).
+    MergeNotAuthorized,
+    /// `merge_streams`: streams are incompatible (mismatched sender, recipient, token, status, or start_time).
+    MergeStreamsIncompatible,
 }
 
 impl Branch {
     /// Every branch, in declaration order. The matrix test walks this list and
     /// the coverage test requires each [`StreamError`] variant to be produced by
     /// one of these (or retired).
-    pub const ALL: [Branch; 77] = [
+    pub const ALL: [Branch; 83] = [
         Branch::CreateDepositNonPositive,
         Branch::CreateStartTimeInPast,
         Branch::CreateInvalidTimeRange,
@@ -282,6 +295,12 @@ impl Branch {
         Branch::OwnershipProposalExpired,
         Branch::NoPendingOwnership,
         Branch::CancelProposalNotProposer,
+        Branch::SplitNotAuthorized,
+        Branch::SplitDepositInvalid,
+        Branch::SplitInvalidTimeRange,
+        Branch::ValueConservationViolated,
+        Branch::MergeNotAuthorized,
+        Branch::MergeStreamsIncompatible,
     ];
 
     /// The entrypoint(s) through which this branch can fire. Shared helpers
@@ -312,6 +331,8 @@ impl Branch {
                 "sponsored_withdraw",
                 "propose_ownership_transfer",
                 "accept_ownership_transfer",
+                "split_stream",
+                "merge_streams",
             ],
             Branch::StreamNotActive => &[
                 "withdraw",
@@ -321,6 +342,8 @@ impl Branch {
                 "sponsored_withdraw",
                 "propose_ownership_transfer",
                 "accept_ownership_transfer",
+                "split_stream",
+                "merge_streams",
             ],
             Branch::CapacityOverflow => &["create_stream", "top_up"],
             Branch::RateProductOverflow => &[
@@ -406,6 +429,8 @@ impl Branch {
                 "propose_ownership_transfer",
                 "accept_ownership_transfer",
                 "cancel_ownership_transfer",
+                "split_stream",
+                "merge_streams",
             ],
             Branch::MigrationNotFrozen | Branch::AlreadyMigrated => &["migrate_storage"],
             Branch::ExecuteUpgradeNoPending | Branch::TimelockNotExpired => &["execute_upgrade"],
@@ -431,6 +456,11 @@ impl Branch {
                 &["accept_ownership_transfer", "cancel_ownership_transfer"]
             }
             Branch::CancelProposalNotProposer => &["cancel_ownership_transfer"],
+            Branch::SplitNotAuthorized
+            | Branch::SplitDepositInvalid
+            | Branch::SplitInvalidTimeRange => &["split_stream"],
+            Branch::MergeNotAuthorized | Branch::MergeStreamsIncompatible => &["merge_streams"],
+            Branch::ValueConservationViolated => &["split_stream", "merge_streams"],
         }
     }
 
@@ -513,11 +543,17 @@ impl Branch {
             Branch::NotOraclePublisher => StreamError::NotOraclePublisher,
             Branch::ProposeNotAuthorized
             | Branch::AcceptNotTarget
-            | Branch::CancelProposalNotProposer => StreamError::NotAuthorized,
+            | Branch::CancelProposalNotProposer
+            | Branch::SplitNotAuthorized
+            | Branch::MergeNotAuthorized => StreamError::NotAuthorized,
             Branch::ProposeInvalidTarget => StreamError::InvalidTransferTarget,
             Branch::ProposeAlreadyPending => StreamError::OwnershipProposalPending,
             Branch::OwnershipProposalExpired => StreamError::OwnershipProposalExpired,
             Branch::NoPendingOwnership => StreamError::NoPendingOwnership,
+            Branch::SplitDepositInvalid => StreamError::InvalidSplitParameters,
+            Branch::SplitInvalidTimeRange => StreamError::InvalidTimeRange,
+            Branch::ValueConservationViolated => StreamError::ValueConservationViolated,
+            Branch::MergeStreamsIncompatible => StreamError::MergeIncompatible,
         }
     }
 
@@ -664,6 +700,24 @@ impl Branch {
             Branch::NoPendingOwnership => "no ownership proposal is stored for the stream",
             Branch::CancelProposalNotProposer => {
                 "the caller did not create the pending ownership proposal"
+            }
+            Branch::SplitNotAuthorized => {
+                "the caller is neither the recipient nor the sender of the stream"
+            }
+            Branch::SplitDepositInvalid => {
+                "child1_deposit is zero, negative, or exceeds parent deposit"
+            }
+            Branch::SplitInvalidTimeRange => {
+                "a child end time is not strictly after start_time or exceeds MAX_DURATION"
+            }
+            Branch::ValueConservationViolated => {
+                "value conservation invariant failed between parent and children"
+            }
+            Branch::MergeNotAuthorized => {
+                "the caller is neither the recipient nor the sender of the streams"
+            }
+            Branch::MergeStreamsIncompatible => {
+                "streams to merge have mismatched sender, recipient, token, status, or start_time"
             }
         }
     }

@@ -92,6 +92,15 @@ pub struct PendingOwnership {
     pub expires_at: u64,
 }
 
+/// Lineage relationship of a stream created via split or merge.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamLineage {
+    pub parent_id_1: u64,
+    pub parent_id_2: u64,
+    pub is_split: bool,
+}
+
 /// Lifecycle state of a stream.
 #[contracttype]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -217,6 +226,8 @@ pub enum DataKey {
     /// The pending two-step ownership proposal for the given stream, if any.
     /// At most one proposal exists per stream at a time.
     PendingOwnership(u64),
+    /// Lineage information for a split or merged stream (persistent storage).
+    StreamLineage(u64),
 }
 
 /// Seconds elapsed of the stream window at the given timestamp `now`.
@@ -311,6 +322,62 @@ pub fn available_amount(env: &Env, stream: &Stream) -> Result<i128, StreamError>
     available_amount_at(stream, env.ledger().timestamp())
 }
 
+/// Unaccrued (refundable to sender) balance at reference timestamp `now`.
+/// Zero for terminal (cancelled or depleted) streams.
+pub fn refundable_amount_at(stream: &Stream, now: u64) -> Result<i128, StreamError> {
+    if stream.status == StreamStatus::Cancelled || stream.status == StreamStatus::Depleted {
+        return Ok(0);
+    }
+    let streamed = streamed_amount_at(stream, now)?;
+    stream
+        .deposit
+        .checked_sub(streamed)
+        .ok_or_else(|| surface::reject(Branch::CancelSplitOverflow))
+}
+
+/// Encapsulates the value partition of a stream or set of streams at reference timestamp `now`.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct ConservationState {
+    pub deposit: i128,
+    pub withdrawn: i128,
+    pub refundable: i128,
+    pub streamable: i128,
+}
+
+/// Proves that value conservation is strictly preserved across an operation:
+/// `deposit == withdrawn + refundable + streamable` holds before and after,
+/// and total value components are invariant.
+pub fn check_value_conservation(
+    before: &ConservationState,
+    after: &ConservationState,
+) -> Result<(), StreamError> {
+    let total_before = before
+        .withdrawn
+        .checked_add(before.refundable)
+        .and_then(|v| v.checked_add(before.streamable))
+        .ok_or(StreamError::MathOverflow)?;
+
+    if before.deposit != total_before {
+        return Err(surface::reject(Branch::ValueConservationViolated));
+    }
+
+    let total_after = after
+        .withdrawn
+        .checked_add(after.refundable)
+        .and_then(|v| v.checked_add(after.streamable))
+        .ok_or(StreamError::MathOverflow)?;
+
+    if after.deposit != total_after {
+        return Err(surface::reject(Branch::ValueConservationViolated));
+    }
+
+    if before != after {
+        return Err(surface::reject(Branch::ValueConservationViolated));
+    }
+
+    Ok(())
+}
+
 /// Payout split at cancellation at reference timestamp `now`: `(recipient_amount, sender_amount)`.
 pub fn cancel_amounts_at(stream: &Stream, now: u64) -> Result<(i128, i128), StreamError> {
     let streamed = streamed_amount_at(stream, now)?;
@@ -387,6 +454,25 @@ pub fn put_stream(env: &Env, stream: &Stream) {
 pub fn index_stream(env: &Env, stream: &Stream) {
     index_sender(env, &stream.sender, stream.id);
     index_recipient(env, &stream.recipient, stream.id);
+}
+
+/// Stores stream lineage metadata and extends its storage TTL.
+pub fn put_stream_lineage(env: &Env, stream_id: u64, lineage: &StreamLineage) {
+    let key = DataKey::StreamLineage(stream_id);
+    env.storage().persistent().set(&key, lineage);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+}
+
+/// Loads stream lineage metadata, if present, and extends its storage TTL.
+pub fn get_stream_lineage(env: &Env, stream_id: u64) -> Option<StreamLineage> {
+    let key = DataKey::StreamLineage(stream_id);
+    let lineage: StreamLineage = env.storage().persistent().get(&key)?;
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+    Some(lineage)
 }
 
 /// Appends `id` to the sender's discovery index. Called on creation and when

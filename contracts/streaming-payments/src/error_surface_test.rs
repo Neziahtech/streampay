@@ -969,6 +969,71 @@ fn probe(branch: Branch) -> Option<StreamError> {
                 .mock_all_auths()
                 .try_cancel_ownership_transfer(&f.recipient, &id)))
         }
+        Branch::SplitNotAuthorized => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            let stranger = soroban_sdk::Address::generate(&f.env);
+            Some(rejected!(f.client.mock_all_auths().try_split_stream(
+                &stranger,
+                &id,
+                &(DEPOSIT / 2),
+                &(10 * DAY),
+                &(10 * DAY)
+            )))
+        }
+        Branch::SplitDepositInvalid => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            Some(rejected!(f.client.mock_all_auths().try_split_stream(
+                &f.recipient,
+                &id,
+                &0,
+                &(10 * DAY),
+                &(10 * DAY)
+            )))
+        }
+        Branch::SplitInvalidTimeRange => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            Some(rejected!(f.client.mock_all_auths().try_split_stream(
+                &f.recipient,
+                &id,
+                &(DEPOSIT / 2),
+                &0,
+                &(10 * DAY)
+            )))
+        }
+        Branch::ValueConservationViolated => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            f.advance_time(5 * DAY);
+            Some(rejected!(f.client.mock_all_auths().try_split_stream(
+                &f.recipient,
+                &id,
+                &(DEPOSIT / 2),
+                &(6 * DAY),
+                &(10 * DAY)
+            )))
+        }
+        Branch::MergeNotAuthorized => {
+            let f = Fixture::setup_quiet();
+            let id1 = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            let id2 = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            let stranger = soroban_sdk::Address::generate(&f.env);
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_merge_streams(&stranger, &id1, &id2)))
+        }
+        Branch::MergeStreamsIncompatible => {
+            let f = Fixture::setup_quiet();
+            let id1 = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            Some(rejected!(f.client.mock_all_auths().try_merge_streams(
+                &f.recipient,
+                &id1,
+                &id1
+            )))
+        }
         // Invariant-protected: a stored stream always satisfies
         // `0 <= withdrawn <= streamed <= deposit <= i128::MAX`, so these
         // checked subtractions/addition can never cross an i128 boundary —
@@ -1146,7 +1211,10 @@ fn stream_error_variant_list_is_exhaustive() {
             | StreamError::NoPendingOwnership
             | StreamError::OwnershipProposalExpired
             | StreamError::InvalidTransferTarget
-            | StreamError::OwnershipProposalPending => StreamError::ALL.contains(&e),
+            | StreamError::OwnershipProposalPending
+            | StreamError::ValueConservationViolated
+            | StreamError::MergeIncompatible
+            | StreamError::InvalidSplitParameters => StreamError::ALL.contains(&e),
         }
     }
 

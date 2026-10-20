@@ -372,6 +372,41 @@ const ERROR_METADATA = {
     toastClass: 'error',
     retryable: false,
   },
+  60: {
+    remediation: 'No pending ownership transfer proposal exists for this stream.',
+    toastClass: 'error',
+    retryable: false,
+  },
+  61: {
+    remediation: 'The ownership transfer proposal has expired. Request a new proposal.',
+    toastClass: 'error',
+    retryable: false,
+  },
+  62: {
+    remediation: 'The proposed owner already holds that role on the stream.',
+    toastClass: 'error',
+    retryable: false,
+  },
+  63: {
+    remediation: 'An ownership transfer proposal is already pending for this stream. Accept or cancel it first.',
+    toastClass: 'error',
+    retryable: false,
+  },
+  64: {
+    remediation: 'Value conservation invariant violated: total deposit, accrued balance, or refundable balance must match across split/merge.',
+    toastClass: 'error',
+    retryable: false,
+  },
+  65: {
+    remediation: 'Streams cannot be merged because their parameters (sender, recipient, token, status, or start_time) do not match.',
+    toastClass: 'error',
+    retryable: false,
+  },
+  66: {
+    remediation: 'Invalid split parameters: child deposit must be positive and less than parent deposit, with valid durations.',
+    toastClass: 'error',
+    retryable: false,
+  },
 };
 
 // Ensure directories exist

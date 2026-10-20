@@ -416,3 +416,28 @@ pub struct OwnershipAccepted {
     pub new_owner: Address,
     pub role: OwnershipRole,
 }
+
+/// Emitted when a stream is split into two children.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SplitStream {
+    #[topic]
+    pub parent_stream_id: u64,
+    pub child_stream_id_1: u64,
+    pub child_stream_id_2: u64,
+    pub recipient: Address,
+    pub child1_deposit: i128,
+    pub child2_deposit: i128,
+}
+
+/// Emitted when two sibling streams are merged into one.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MergeStream {
+    #[topic]
+    pub merged_stream_id: u64,
+    pub parent_stream_id_1: u64,
+    pub parent_stream_id_2: u64,
+    pub recipient: Address,
+    pub merged_deposit: i128,
+}

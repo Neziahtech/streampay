@@ -95,13 +95,13 @@ use surface::Branch;
 pub use errors::StreamError;
 pub use events::{
     BeneficiaryEnrolled, ContractFrozenStateChanged, ContractUpgraded, FeeCharged, FeeWithdrawn,
-    OperatorKeyRotated, OracleConfigUpdated, OracleStaleFallback, OracleTimeReported,
+    MergeStream, OperatorKeyRotated, OracleConfigUpdated, OracleStaleFallback, OracleTimeReported,
     OwnershipAccepted, OwnershipProposed, PolicyAssetExecuted, PolicyAssetQueued,
     PolicyHandoffAccepted, PolicyHandoffCancelled, PolicyHandoffProposed, PolicyInitialized,
-    ScheduledIntentCancelled, ScheduledIntentExpired, ScheduledStreamExecuted, SponsorActiveSet,
-    SponsorClaim, SponsorRegistered, StorageMigrated, StreamCancelled, StreamCreated,
-    StreamPolicySet, StreamScheduled, StreamToppedUp, StreamsCreated, UpgradeCancelled,
-    UpgradeProposed, Withdrawn,
+    ScheduledIntentCancelled, ScheduledIntentExpired, ScheduledStreamExecuted, SplitStream,
+    SponsorActiveSet, SponsorClaim, SponsorRegistered, StorageMigrated, StreamCancelled,
+    StreamCreated, StreamPolicySet, StreamScheduled, StreamToppedUp, StreamsCreated,
+    UpgradeCancelled, UpgradeProposed, Withdrawn,
 };
 pub use oracle::{OracleConfig, OracleReport, ResolvedTime, DEFAULT_MAX_STALE_SECONDS};
 pub use policy::{validate_stream_args, validate_top_up_args, QueuedAssetChange, StreamPolicy};
@@ -111,7 +111,7 @@ pub use sponsor::{PeriodSpend, SponsorConfig};
 // calculators: it is a pure function requiring no `Env`.
 pub use stream::{
     streamed_at, BatchEntry, MigrationStatus, OwnershipRole, PendingOwnership, PendingUpgrade,
-    Stream, StreamStatus, INITIAL_SCHEMA_VERSION, MAX_BATCH, MAX_DURATION_SECONDS,
+    Stream, StreamLineage, StreamStatus, INITIAL_SCHEMA_VERSION, MAX_BATCH, MAX_DURATION_SECONDS,
     MAX_MIGRATION_BATCH_SIZE, MAX_PAGE_SIZE, MIN_BATCH, MIN_UPGRADE_DELAY_SECONDS,
     OWNERSHIP_PROPOSAL_TTL_SECONDS, TARGET_SCHEMA_VERSION,
 };
@@ -1001,6 +1001,330 @@ impl StreamingPayments {
         .publish(&env);
 
         Ok(())
+    }
+
+    /// Splits a running stream into two children without refunding and re-depositing.
+    ///
+    /// Preserves total remaining deposit, cumulative withdrawn balance, and original start_time.
+    /// Children inherit cancelability, oracle settings, and status transitions.
+    /// Invariant: `deposit == withdrawn + refundable + remaining_streamable` before and after.
+    pub fn split_stream(
+        env: Env,
+        caller: Address,
+        stream_id: u64,
+        child1_deposit: i128,
+        child1_end_time: u64,
+        child2_end_time: u64,
+    ) -> Result<(u64, u64), StreamError> {
+        Self::require_not_frozen(&env)?;
+        caller.require_auth();
+
+        let mut parent = stream::get_stream(&env, stream_id)?;
+        if parent.status != StreamStatus::Active {
+            return Err(surface::reject(Branch::StreamNotActive));
+        }
+
+        if caller != parent.recipient && caller != parent.sender {
+            return Err(surface::reject(Branch::SplitNotAuthorized));
+        }
+
+        if child1_deposit <= 0 || child1_deposit >= parent.deposit {
+            return Err(surface::reject(Branch::SplitDepositInvalid));
+        }
+        let child2_deposit = parent
+            .deposit
+            .checked_sub(child1_deposit)
+            .ok_or(StreamError::MathOverflow)?;
+
+        if child1_end_time <= parent.start_time || child2_end_time <= parent.start_time {
+            return Err(surface::reject(Branch::SplitInvalidTimeRange));
+        }
+        let child1_duration = child1_end_time - parent.start_time;
+        let child2_duration = child2_end_time - parent.start_time;
+
+        if child1_duration > MAX_DURATION_SECONDS || child2_duration > MAX_DURATION_SECONDS {
+            return Err(surface::reject(Branch::SplitInvalidTimeRange));
+        }
+
+        stream::validate_capacity(child1_deposit, child1_duration)?;
+        stream::validate_capacity(child2_deposit, child2_duration)?;
+
+        // Cumulative withdrawn preservation
+        let child1_withdrawn = if parent.deposit > 0 {
+            ((parent.withdrawn as u128)
+                .checked_mul(child1_deposit as u128)
+                .ok_or(StreamError::MathOverflow)?
+                / (parent.deposit as u128)) as i128
+        } else {
+            0
+        };
+        let child2_withdrawn = parent
+            .withdrawn
+            .checked_sub(child1_withdrawn)
+            .ok_or(StreamError::MathOverflow)?;
+
+        // Value conservation verification at current reference time
+        let now = env.ledger().timestamp();
+        let parent_streamable = stream::available_amount_at(&parent, now)?;
+        let parent_refundable = stream::refundable_amount_at(&parent, now)?;
+
+        let child1_elapsed = stream::elapsed_seconds_at(now, parent.start_time, child1_end_time);
+        let child1_streamed = streamed_at(child1_deposit, child1_duration, child1_elapsed)?;
+        let child1_streamable = child1_streamed.saturating_sub(child1_withdrawn);
+        let child1_refundable = child1_deposit.saturating_sub(child1_streamed);
+
+        let child2_elapsed = stream::elapsed_seconds_at(now, parent.start_time, child2_end_time);
+        let child2_streamed = streamed_at(child2_deposit, child2_duration, child2_elapsed)?;
+        let child2_streamable = child2_streamed.saturating_sub(child2_withdrawn);
+        let child2_refundable = child2_deposit.saturating_sub(child2_streamed);
+
+        let streamable_after = child1_streamable
+            .checked_add(child2_streamable)
+            .ok_or(StreamError::MathOverflow)?;
+        let refundable_after = child1_refundable
+            .checked_add(child2_refundable)
+            .ok_or(StreamError::MathOverflow)?;
+        let withdrawn_after = child1_withdrawn
+            .checked_add(child2_withdrawn)
+            .ok_or(StreamError::MathOverflow)?;
+        let deposit_after = child1_deposit
+            .checked_add(child2_deposit)
+            .ok_or(StreamError::MathOverflow)?;
+
+        let before_state = stream::ConservationState {
+            deposit: parent.deposit,
+            withdrawn: parent.withdrawn,
+            refundable: parent_refundable,
+            streamable: parent_streamable,
+        };
+        let after_state = stream::ConservationState {
+            deposit: deposit_after,
+            withdrawn: withdrawn_after,
+            refundable: refundable_after,
+            streamable: streamable_after,
+        };
+
+        stream::check_value_conservation(&before_state, &after_state)?;
+
+        // Effects (CEI): Deplete parent and persist children
+        parent.status = StreamStatus::Depleted;
+        stream::put_stream(&env, &parent);
+
+        let child1_id = stream::next_stream_id(&env);
+        let child2_id = stream::next_stream_id(&env);
+
+        let child1 = Stream {
+            id: child1_id,
+            sender: parent.sender.clone(),
+            recipient: parent.recipient.clone(),
+            token: parent.token.clone(),
+            deposit: child1_deposit,
+            withdrawn: child1_withdrawn,
+            start_time: parent.start_time,
+            end_time: child1_end_time,
+            cancelable: parent.cancelable,
+            status: StreamStatus::Active,
+            use_oracle: parent.use_oracle,
+        };
+        let child2 = Stream {
+            id: child2_id,
+            sender: parent.sender.clone(),
+            recipient: parent.recipient.clone(),
+            token: parent.token.clone(),
+            deposit: child2_deposit,
+            withdrawn: child2_withdrawn,
+            start_time: parent.start_time,
+            end_time: child2_end_time,
+            cancelable: parent.cancelable,
+            status: StreamStatus::Active,
+            use_oracle: parent.use_oracle,
+        };
+
+        stream::put_stream(&env, &child1);
+        stream::index_stream(&env, &child1);
+        stream::put_stream(&env, &child2);
+        stream::index_stream(&env, &child2);
+
+        stream::put_stream_lineage(
+            &env,
+            child1_id,
+            &StreamLineage {
+                parent_id_1: stream_id,
+                parent_id_2: child2_id,
+                is_split: true,
+            },
+        );
+        stream::put_stream_lineage(
+            &env,
+            child2_id,
+            &StreamLineage {
+                parent_id_1: stream_id,
+                parent_id_2: child1_id,
+                is_split: true,
+            },
+        );
+
+        SplitStream {
+            parent_stream_id: stream_id,
+            child_stream_id_1: child1_id,
+            child_stream_id_2: child2_id,
+            recipient: parent.recipient,
+            child1_deposit,
+            child2_deposit,
+        }
+        .publish(&env);
+
+        Ok((child1_id, child2_id))
+    }
+
+    /// Merges two sibling streams into one stream.
+    ///
+    /// Requires both streams to share sender, recipient, token, cancelability, and status (Active).
+    /// Merged rate is sum, and end_time is the earlier of the two with surplus re-allocated, never truncated.
+    /// Invariant: `deposit == withdrawn + refundable + remaining_streamable` before and after.
+    pub fn merge_streams(
+        env: Env,
+        caller: Address,
+        stream_id_1: u64,
+        stream_id_2: u64,
+    ) -> Result<u64, StreamError> {
+        Self::require_not_frozen(&env)?;
+        caller.require_auth();
+
+        if stream_id_1 == stream_id_2 {
+            return Err(surface::reject(Branch::MergeStreamsIncompatible));
+        }
+
+        let mut s1 = stream::get_stream(&env, stream_id_1)?;
+        let mut s2 = stream::get_stream(&env, stream_id_2)?;
+
+        if s1.status != StreamStatus::Active || s2.status != StreamStatus::Active {
+            return Err(surface::reject(Branch::StreamNotActive));
+        }
+
+        if s1.sender != s2.sender
+            || s1.recipient != s2.recipient
+            || s1.token != s2.token
+            || s1.start_time != s2.start_time
+            || s1.cancelable != s2.cancelable
+            || s1.use_oracle != s2.use_oracle
+        {
+            return Err(surface::reject(Branch::MergeStreamsIncompatible));
+        }
+
+        if caller != s1.recipient && caller != s1.sender {
+            return Err(surface::reject(Branch::MergeNotAuthorized));
+        }
+
+        let merged_deposit = s1
+            .deposit
+            .checked_add(s2.deposit)
+            .ok_or(StreamError::MathOverflow)?;
+        let merged_withdrawn = s1
+            .withdrawn
+            .checked_add(s2.withdrawn)
+            .ok_or(StreamError::MathOverflow)?;
+
+        let merged_start_time = s1.start_time;
+        let merged_end_time = s1.end_time.min(s2.end_time);
+        let merged_duration = merged_end_time - merged_start_time;
+
+        if merged_duration == 0 || merged_duration > MAX_DURATION_SECONDS {
+            return Err(surface::reject(Branch::MergeStreamsIncompatible));
+        }
+        stream::validate_capacity(merged_deposit, merged_duration)?;
+
+        // Value conservation verification at current reference time
+        let now = env.ledger().timestamp();
+        let s1_streamable = stream::available_amount_at(&s1, now)?;
+        let s1_refundable = stream::refundable_amount_at(&s1, now)?;
+        let s2_streamable = stream::available_amount_at(&s2, now)?;
+        let s2_refundable = stream::refundable_amount_at(&s2, now)?;
+
+        let deposit_before = s1
+            .deposit
+            .checked_add(s2.deposit)
+            .ok_or(StreamError::MathOverflow)?;
+        let withdrawn_before = s1
+            .withdrawn
+            .checked_add(s2.withdrawn)
+            .ok_or(StreamError::MathOverflow)?;
+        let refundable_before = s1_refundable
+            .checked_add(s2_refundable)
+            .ok_or(StreamError::MathOverflow)?;
+        let streamable_before = s1_streamable
+            .checked_add(s2_streamable)
+            .ok_or(StreamError::MathOverflow)?;
+
+        let merged_elapsed = stream::elapsed_seconds_at(now, merged_start_time, merged_end_time);
+        let merged_streamed = streamed_at(merged_deposit, merged_duration, merged_elapsed)?;
+        let merged_streamable = merged_streamed.saturating_sub(merged_withdrawn);
+        let merged_refundable = merged_deposit.saturating_sub(merged_streamed);
+
+        let before_state = stream::ConservationState {
+            deposit: deposit_before,
+            withdrawn: withdrawn_before,
+            refundable: refundable_before,
+            streamable: streamable_before,
+        };
+        let after_state = stream::ConservationState {
+            deposit: merged_deposit,
+            withdrawn: merged_withdrawn,
+            refundable: merged_refundable,
+            streamable: merged_streamable,
+        };
+
+        stream::check_value_conservation(&before_state, &after_state)?;
+
+        // Effects (CEI): Deplete parent streams and persist merged stream
+        s1.status = StreamStatus::Depleted;
+        s2.status = StreamStatus::Depleted;
+        stream::put_stream(&env, &s1);
+        stream::put_stream(&env, &s2);
+
+        let merged_id = stream::next_stream_id(&env);
+        let merged_stream = Stream {
+            id: merged_id,
+            sender: s1.sender.clone(),
+            recipient: s1.recipient.clone(),
+            token: s1.token.clone(),
+            deposit: merged_deposit,
+            withdrawn: merged_withdrawn,
+            start_time: merged_start_time,
+            end_time: merged_end_time,
+            cancelable: s1.cancelable,
+            status: StreamStatus::Active,
+            use_oracle: s1.use_oracle,
+        };
+
+        stream::put_stream(&env, &merged_stream);
+        stream::index_stream(&env, &merged_stream);
+
+        stream::put_stream_lineage(
+            &env,
+            merged_id,
+            &StreamLineage {
+                parent_id_1: stream_id_1,
+                parent_id_2: stream_id_2,
+                is_split: false,
+            },
+        );
+
+        MergeStream {
+            merged_stream_id: merged_id,
+            parent_stream_id_1: stream_id_1,
+            parent_stream_id_2: stream_id_2,
+            recipient: s1.recipient,
+            merged_deposit,
+        }
+        .publish(&env);
+
+        Ok(merged_id)
+    }
+
+    /// Returns the lineage record of a split or merged stream, if any.
+    pub fn get_stream_lineage(env: Env, stream_id: u64) -> Option<StreamLineage> {
+        stream::get_stream_lineage(&env, stream_id)
     }
 
     /// Proposes handing the caller's stream role (sender or recipient) to

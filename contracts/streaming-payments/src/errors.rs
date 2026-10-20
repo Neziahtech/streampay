@@ -186,6 +186,12 @@ pub enum StreamError {
     /// An unexpired ownership proposal already exists for this stream; cancel
     /// or accept it before proposing another.
     OwnershipProposalPending = 63,
+    /// The stream split or merge operation violated value conservation.
+    ValueConservationViolated = 64,
+    /// Streams cannot be merged because their parameters do not match.
+    MergeIncompatible = 65,
+    /// The split child parameters (deposit or time range) are invalid.
+    InvalidSplitParameters = 66,
 }
 
 impl StreamError {
@@ -256,6 +262,9 @@ impl StreamError {
         StreamError::OwnershipProposalExpired,
         StreamError::InvalidTransferTarget,
         StreamError::OwnershipProposalPending,
+        StreamError::ValueConservationViolated,
+        StreamError::MergeIncompatible,
+        StreamError::InvalidSplitParameters,
     ];
 
     /// The stable numeric value carried across the contract boundary

@@ -6519,3 +6519,247 @@ fn ownership_events_are_emitted_with_expected_payloads() {
         [accepted.to_xdr(&f.env, &f.client.address)],
     );
 }
+
+#[test]
+fn split_stream_preserves_remaining_deposit_withdrawn_and_start_time() {
+    let f = Fixture::setup_quiet();
+    let id = f.create_stream(10_000, 0, 1000, true);
+    let original = f.client.get_stream(&id);
+
+    // Split before withdrawal
+    let (c1_id, c2_id) = f.client.mock_all_auths().split_stream(
+        &f.recipient,
+        &id,
+        &4_000,
+        &(original.start_time + 1000),
+        &(original.start_time + 1000),
+    );
+
+    let parent_after = f.client.get_stream(&id);
+    assert_eq!(parent_after.status, StreamStatus::Depleted);
+
+    let c1 = f.client.get_stream(&c1_id);
+    let c2 = f.client.get_stream(&c2_id);
+
+    assert_eq!(c1.deposit, 4_000);
+    assert_eq!(c2.deposit, 6_000);
+    assert_eq!(c1.deposit + c2.deposit, original.deposit);
+    assert_eq!(c1.withdrawn + c2.withdrawn, original.withdrawn);
+    assert_eq!(c1.start_time, original.start_time);
+    assert_eq!(c2.start_time, original.start_time);
+    assert_eq!(c1.cancelable, original.cancelable);
+    assert_eq!(c2.cancelable, original.cancelable);
+    assert_eq!(c1.token, original.token);
+    assert_eq!(c2.token, original.token);
+
+    // Lineage check
+    let lineage1 = f.client.get_stream_lineage(&c1_id).unwrap();
+    let lineage2 = f.client.get_stream_lineage(&c2_id).unwrap();
+    assert_eq!(lineage1.parent_id_1, id);
+    assert_eq!(lineage1.parent_id_2, c2_id);
+    assert!(lineage1.is_split);
+    assert_eq!(lineage2.parent_id_1, id);
+    assert_eq!(lineage2.parent_id_2, c1_id);
+    assert!(lineage2.is_split);
+}
+
+#[test]
+fn split_stream_preserves_cumulative_withdrawn_post_accrual() {
+    let f = Fixture::setup_quiet();
+    let id = f.create_stream(10_000, 0, 1000, true);
+    let original = f.client.get_stream(&id);
+
+    f.advance_time(500);
+    f.client.mock_all_auths().withdraw(&id, &2_000);
+    let before_split = f.client.get_stream(&id);
+    assert_eq!(before_split.withdrawn, 2_000);
+
+    let (c1_id, c2_id) = f.client.mock_all_auths().split_stream(
+        &f.recipient,
+        &id,
+        &6_000,
+        &(original.start_time + 1000),
+        &(original.start_time + 1000),
+    );
+
+    let c1 = f.client.get_stream(&c1_id);
+    let c2 = f.client.get_stream(&c2_id);
+
+    assert_eq!(c1.withdrawn + c2.withdrawn, 2_000);
+    assert_eq!(c1.deposit + c2.deposit, 10_000);
+
+    // Invariant: sum of available amounts equals original available amount
+    let avail1 = f.client.available(&c1_id);
+    let avail2 = f.client.available(&c2_id);
+    assert_eq!(avail1 + avail2, 3_000); // 5000 accrued - 2000 withdrawn = 3000
+}
+
+#[test]
+fn merge_streams_combines_rates_and_earlier_end_time() {
+    let f = Fixture::setup_quiet();
+    let id1 = f.create_stream(4_000, 0, 1000, true);
+    let id2 = f.create_stream(6_000, 0, 1000, true);
+
+    let merged_id = f
+        .client
+        .mock_all_auths()
+        .merge_streams(&f.recipient, &id1, &id2);
+
+    let s1 = f.client.get_stream(&id1);
+    let s2 = f.client.get_stream(&id2);
+    let merged = f.client.get_stream(&merged_id);
+
+    assert_eq!(s1.status, StreamStatus::Depleted);
+    assert_eq!(s2.status, StreamStatus::Depleted);
+    assert_eq!(merged.deposit, 10_000);
+    assert_eq!(merged.withdrawn, 0);
+    assert_eq!(merged.status, StreamStatus::Active);
+
+    // Lineage check
+    let lineage = f.client.get_stream_lineage(&merged_id).unwrap();
+    assert_eq!(lineage.parent_id_1, id1);
+    assert_eq!(lineage.parent_id_2, id2);
+    assert!(!lineage.is_split);
+}
+
+#[test]
+fn split_and_merge_round_trip_conserves_all_value() {
+    let f = Fixture::setup_quiet();
+    let id = f.create_stream(20_000, 0, 1000, true);
+    let original = f.client.get_stream(&id);
+
+    let (c1_id, c2_id) = f.client.mock_all_auths().split_stream(
+        &f.recipient,
+        &id,
+        &7_500,
+        &(original.start_time + 1000),
+        &(original.start_time + 1000),
+    );
+
+    let merged_id = f
+        .client
+        .mock_all_auths()
+        .merge_streams(&f.recipient, &c1_id, &c2_id);
+    let merged = f.client.get_stream(&merged_id);
+
+    assert_eq!(merged.deposit, original.deposit);
+    assert_eq!(merged.withdrawn, original.withdrawn);
+    assert_eq!(merged.start_time, original.start_time);
+    assert_eq!(merged.end_time, original.end_time);
+    assert_eq!(merged.token, original.token);
+    assert_eq!(merged.sender, original.sender);
+    assert_eq!(merged.recipient, original.recipient);
+}
+
+#[test]
+fn split_stream_rejections() {
+    let f = Fixture::setup_quiet();
+    let id = f.create_stream(10_000, 0, 1000, true);
+    let original = f.client.get_stream(&id);
+
+    // Stranger unauthorized
+    let stranger = Address::generate(&f.env);
+    let res = f.client.mock_all_auths().try_split_stream(
+        &stranger,
+        &id,
+        &5_000,
+        &(original.start_time + 1000),
+        &(original.start_time + 1000),
+    );
+    assert_eq!(res.unwrap_err().unwrap(), StreamError::NotAuthorized);
+
+    // Invalid deposit: zero or >= parent deposit
+    let res = f.client.mock_all_auths().try_split_stream(
+        &f.recipient,
+        &id,
+        &0,
+        &(original.start_time + 1000),
+        &(original.start_time + 1000),
+    );
+    assert_eq!(
+        res.unwrap_err().unwrap(),
+        StreamError::InvalidSplitParameters
+    );
+
+    let res = f.client.mock_all_auths().try_split_stream(
+        &f.recipient,
+        &id,
+        &10_000,
+        &(original.start_time + 1000),
+        &(original.start_time + 1000),
+    );
+    assert_eq!(
+        res.unwrap_err().unwrap(),
+        StreamError::InvalidSplitParameters
+    );
+
+    // Invalid time range: end_time <= start_time
+    let res = f.client.mock_all_auths().try_split_stream(
+        &f.recipient,
+        &id,
+        &5_000,
+        &original.start_time,
+        &(original.start_time + 1000),
+    );
+    assert_eq!(res.unwrap_err().unwrap(), StreamError::InvalidTimeRange);
+}
+
+#[test]
+fn merge_streams_rejections() {
+    let f = Fixture::setup_quiet();
+    let id1 = f.create_stream(5_000, 0, 1000, true);
+    let id2 = f.create_stream(5_000, 0, 1000, true);
+
+    // Same id rejection
+    let res = f
+        .client
+        .mock_all_auths()
+        .try_merge_streams(&f.recipient, &id1, &id1);
+    assert_eq!(res.unwrap_err().unwrap(), StreamError::MergeIncompatible);
+
+    // Stranger unauthorized
+    let stranger = Address::generate(&f.env);
+    let res = f
+        .client
+        .mock_all_auths()
+        .try_merge_streams(&stranger, &id1, &id2);
+    assert_eq!(res.unwrap_err().unwrap(), StreamError::NotAuthorized);
+
+    // Incompatible streams (e.g. different start time)
+    let id3 = f.create_stream(5_000, 50, 1000, true);
+    let res = f
+        .client
+        .mock_all_auths()
+        .try_merge_streams(&f.recipient, &id1, &id3);
+    assert_eq!(res.unwrap_err().unwrap(), StreamError::MergeIncompatible);
+}
+
+#[test]
+fn proptest_split_merge_value_conservation() {
+    let f = Fixture::setup_quiet();
+    for split_pct in [10, 25, 50, 75, 90] {
+        let deposit = 100_000i128;
+        let id = f.create_stream(deposit, 0, 10_000, true);
+        let s = f.client.get_stream(&id);
+
+        let child1_deposit = deposit * split_pct / 100;
+        let (c1, c2) = f.client.mock_all_auths().split_stream(
+            &f.recipient,
+            &id,
+            &child1_deposit,
+            &(s.start_time + 10_000),
+            &(s.start_time + 10_000),
+        );
+
+        let merged_id = f
+            .client
+            .mock_all_auths()
+            .merge_streams(&f.recipient, &c1, &c2);
+        let merged = f.client.get_stream(&merged_id);
+
+        assert_eq!(merged.deposit, deposit);
+        assert_eq!(merged.withdrawn, 0);
+        assert_eq!(merged.start_time, s.start_time);
+        assert_eq!(merged.end_time, s.end_time);
+    }
+}
