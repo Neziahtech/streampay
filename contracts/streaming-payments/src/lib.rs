@@ -14,6 +14,8 @@
 //! - [`StreamingPayments::withdraw`] — recipient claims accrued funds
 //! - [`StreamingPayments::withdraw_max`] — recipient claims *all* accrued
 //!   funds in one atomic call
+//! - [`StreamingPayments::withdraw_all`] — recipient batch-claims accrued
+//!   funds across all streams with pagination and asset aggregation
 //! - [`StreamingPayments::cancel_stream`] — sender (or recipient, if the
 //!   stream is `cancelable`) closes the stream with a pro-rata split
 //! - [`StreamingPayments::top_up`] — add funds to a running stream
@@ -110,10 +112,10 @@ pub use sponsor::{PeriodSpend, SponsorConfig};
 // `streamed_at` is re-exported for the fuzz target and downstream rate
 // calculators: it is a pure function requiring no `Env`.
 pub use stream::{
-    streamed_at, BatchEntry, MigrationStatus, OwnershipRole, PendingOwnership, PendingUpgrade,
-    Stream, StreamStatus, INITIAL_SCHEMA_VERSION, MAX_BATCH, MAX_DURATION_SECONDS,
-    MAX_MIGRATION_BATCH_SIZE, MAX_PAGE_SIZE, MIN_BATCH, MIN_UPGRADE_DELAY_SECONDS,
-    OWNERSHIP_PROPOSAL_TTL_SECONDS, TARGET_SCHEMA_VERSION,
+    streamed_at, AssetTransfer, BatchEntry, ClaimFailure, MigrationStatus, PageBounds,
+    PendingClaim, PendingUpgrade, Stream, StreamStatus, WithdrawAllResult, INITIAL_SCHEMA_VERSION,
+    MAX_BATCH, MAX_DURATION_SECONDS, MAX_MIGRATION_BATCH_SIZE, MAX_PAGE_SIZE, MIN_BATCH,
+    MIN_UPGRADE_DELAY_SECONDS, TARGET_SCHEMA_VERSION,
 };
 pub use treasury::{fee_amount, FeeScan, Treasury, TreasuryStatus, BPS_DENOMINATOR, MAX_FEE_BPS};
 
@@ -792,6 +794,234 @@ impl StreamingPayments {
 
         Self::pay_out(&env, &mut s, amount)?;
         Ok(amount)
+    }
+
+    /// Withdraws from every stream a recipient has claimable in one transaction,
+    /// aggregating transfers per asset.
+    ///
+    /// Respects the index pagination (`MAX_PAGE_SIZE = 50`) via `page_bounds`:
+    /// returns `next_offset = Some(next)` if more streams remain in the index,
+    /// or `None` when the page reaches the end of the recipient's streams.
+    ///
+    /// Per-stream failures (unstarted, depleted, already-withdrawn, or token transfer error)
+    /// do not revert the entire batch. Successful withdrawals emit a `Withdrawn` event
+    /// per stream, update stream state, and aggregate payouts per token. Failed streams
+    /// are recorded in `failed_streams` in the return value.
+    pub fn withdraw_all(
+        env: Env,
+        recipient: Address,
+        page_bounds: Option<PageBounds>,
+    ) -> Result<WithdrawAllResult, StreamError> {
+        Self::require_not_frozen(&env)?;
+        recipient.require_auth();
+
+        let offset = page_bounds.map(|b| b.offset).unwrap_or(0);
+        let requested_limit = page_bounds
+            .map(|b| b.limit)
+            .unwrap_or(stream::MAX_PAGE_SIZE);
+        let limit = if requested_limit == 0 {
+            stream::MAX_PAGE_SIZE
+        } else {
+            requested_limit.min(stream::MAX_PAGE_SIZE)
+        };
+
+        let storage = env.storage().persistent();
+        let key = stream::DataKey::RecipientStreams(recipient.clone());
+        let total_count: u32 = match storage.get::<_, Vec<u64>>(&key) {
+            Some(ref ids) => {
+                storage.extend_ttl(
+                    &key,
+                    stream::TTL_THRESHOLD_LEDGERS,
+                    stream::TTL_EXTEND_LEDGERS,
+                );
+                ids.len()
+            }
+            None => 0,
+        };
+
+        let stream_ids = stream::page_stream_ids(&env, &key, offset, limit);
+        let processed_count = stream_ids.len();
+
+        let next_offset = if offset.saturating_add(processed_count) < total_count {
+            Some(offset.saturating_add(processed_count))
+        } else {
+            None
+        };
+
+        let mut failed_streams: Vec<ClaimFailure> = Vec::new(&env);
+        let mut successful_stream_ids: Vec<u64> = Vec::new(&env);
+        let mut transfers: Vec<AssetTransfer> = Vec::new(&env);
+
+        let mut unique_tokens: Vec<Address> = Vec::new(&env);
+        let mut token_totals: Vec<i128> = Vec::new(&env);
+        let mut pending_claims: Vec<PendingClaim> = Vec::new(&env);
+
+        for i in 0..stream_ids.len() {
+            let id = stream_ids.get(i).unwrap();
+            let s = match stream::get_stream(&env, id) {
+                Ok(s) => s,
+                Err(err) => {
+                    failed_streams.push_back(ClaimFailure {
+                        stream_id: id,
+                        error_code: err as u32,
+                    });
+                    continue;
+                }
+            };
+
+            if s.recipient != recipient {
+                failed_streams.push_back(ClaimFailure {
+                    stream_id: id,
+                    error_code: StreamError::NotAuthorized as u32,
+                });
+                continue;
+            }
+
+            if s.status != StreamStatus::Active {
+                failed_streams.push_back(ClaimFailure {
+                    stream_id: id,
+                    error_code: StreamError::StreamNotActive as u32,
+                });
+                continue;
+            }
+
+            let resolved = oracle::resolve_stream_time(&env, id, s.use_oracle);
+            let available = match stream::available_amount_at(&s, resolved.timestamp) {
+                Ok(avail) => avail,
+                Err(err) => {
+                    failed_streams.push_back(ClaimFailure {
+                        stream_id: id,
+                        error_code: err as u32,
+                    });
+                    continue;
+                }
+            };
+
+            if available <= 0 {
+                failed_streams.push_back(ClaimFailure {
+                    stream_id: id,
+                    error_code: StreamError::NothingToWithdraw as u32,
+                });
+                continue;
+            }
+
+            let mut token_idx = None;
+            for j in 0..unique_tokens.len() {
+                if unique_tokens.get(j).unwrap() == s.token {
+                    token_idx = Some(j);
+                    break;
+                }
+            }
+            match token_idx {
+                Some(idx) => {
+                    let cur = token_totals.get(idx).unwrap();
+                    let new_tot = match cur.checked_add(available) {
+                        Some(t) => t,
+                        None => {
+                            failed_streams.push_back(ClaimFailure {
+                                stream_id: id,
+                                error_code: StreamError::MathOverflow as u32,
+                            });
+                            continue;
+                        }
+                    };
+                    token_totals.set(idx, new_tot);
+                }
+                None => {
+                    unique_tokens.push_back(s.token.clone());
+                    token_totals.push_back(available);
+                }
+            }
+
+            pending_claims.push_back(PendingClaim {
+                stream_id: id,
+                token: s.token.clone(),
+                amount: available,
+                original_withdrawn: s.withdrawn,
+            });
+        }
+
+        // Process token transfers and update streams
+        for t_idx in 0..unique_tokens.len() {
+            let token = unique_tokens.get(t_idx).unwrap();
+            let total_amount = token_totals.get(t_idx).unwrap();
+
+            // Checks-effects: update stream state before calling push
+            for c_idx in 0..pending_claims.len() {
+                let claim = pending_claims.get(c_idx).unwrap();
+                if claim.token == token {
+                    if let Ok(mut s) = stream::get_stream(&env, claim.stream_id) {
+                        if let Some(new_withdrawn) = s.withdrawn.checked_add(claim.amount) {
+                            s.withdrawn = new_withdrawn;
+                            if s.withdrawn == s.deposit {
+                                s.status = StreamStatus::Depleted;
+                            }
+                            stream::put_stream(&env, &s);
+                        }
+                    }
+                }
+            }
+
+            // Interactions: push aggregated token amount to recipient
+            let push_res = push(
+                &env,
+                &token,
+                &stream::muxed(&recipient),
+                total_amount,
+                Branch::RecipientPayoutFailed,
+            );
+
+            match push_res {
+                Ok(()) => {
+                    // Success: emit event per stream and record in successful list
+                    for c_idx in 0..pending_claims.len() {
+                        let claim = pending_claims.get(c_idx).unwrap();
+                        if claim.token == token {
+                            if let Ok(s) = stream::get_stream(&env, claim.stream_id) {
+                                #[cfg(test)]
+                                cei_trace::record("event Withdrawn");
+                                Withdrawn {
+                                    stream_id: claim.stream_id,
+                                    recipient: recipient.clone(),
+                                    amount: claim.amount,
+                                    withdrawn_total: s.withdrawn,
+                                }
+                                .publish(&env);
+                                successful_stream_ids.push_back(claim.stream_id);
+                            }
+                        }
+                    }
+                    transfers.push_back(AssetTransfer {
+                        token: token.clone(),
+                        amount: total_amount,
+                    });
+                }
+                Err(_) => {
+                    // Payout failed for this asset: roll back stream storage and record per-stream failure
+                    for c_idx in 0..pending_claims.len() {
+                        let claim = pending_claims.get(c_idx).unwrap();
+                        if claim.token == token {
+                            if let Ok(mut s) = stream::get_stream(&env, claim.stream_id) {
+                                s.withdrawn = claim.original_withdrawn;
+                                s.status = StreamStatus::Active;
+                                stream::put_stream(&env, &s);
+                            }
+                            failed_streams.push_back(ClaimFailure {
+                                stream_id: claim.stream_id,
+                                error_code: StreamError::RecipientPayoutFailed as u32,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(WithdrawAllResult {
+            transfers,
+            successful_stream_ids,
+            failed_streams,
+            next_offset,
+        })
     }
 
     /// Shared preamble for both withdrawal paths: load the stream, require

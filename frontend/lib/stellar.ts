@@ -26,6 +26,7 @@ import {
 import { sanitizeAddress } from "./privacy.ts";
 import {
   buildCreateStreamOperationForDays,
+  buildWithdrawAllOperation,
   buildWithdrawOperation,
   i128,
   scAddr,
@@ -474,6 +475,78 @@ export async function withdrawMaxFromStream(
     { kind: "CLIENT" }
   );
 }
+
+export interface AssetTransfer {
+  token: string;
+  amount: bigint;
+}
+
+export interface ClaimFailure {
+  streamId: string;
+  errorCode: number;
+}
+
+export interface WithdrawAllResult {
+  transfers: AssetTransfer[];
+  successfulStreamIds: string[];
+  failedStreams: ClaimFailure[];
+  nextOffset: number | null;
+}
+
+export function decodeWithdrawAllResult(v: xdr.ScVal): WithdrawAllResult {
+  const native = scValToNative(v) as {
+    transfers?: Array<{ token: unknown; amount: unknown }>;
+    successful_stream_ids?: unknown[];
+    failed_streams?: Array<{ stream_id: unknown; error_code: unknown }>;
+    next_offset?: unknown;
+  };
+
+  const transfers: AssetTransfer[] = Array.isArray(native.transfers)
+    ? native.transfers.map((t) => ({
+        token: String(t.token),
+        amount: BigInt(t.amount as bigint | number | string),
+      }))
+    : [];
+
+  const successfulStreamIds: string[] = Array.isArray(native.successful_stream_ids)
+    ? native.successful_stream_ids.map((id) => String(id))
+    : [];
+
+  const failedStreams: ClaimFailure[] = Array.isArray(native.failed_streams)
+    ? native.failed_streams.map((f) => ({
+        streamId: String(f.stream_id),
+        errorCode: Number(f.error_code),
+      }))
+    : [];
+
+  const nextOffset =
+    native.next_offset !== undefined && native.next_offset !== null
+      ? Number(native.next_offset)
+      : null;
+
+  return {
+    transfers,
+    successfulStreamIds,
+    failedStreams,
+    nextOffset,
+  };
+}
+
+/**
+ * Claims all accrued funds across all streams for a recipient in a single batch,
+ * aggregating transfers per asset. Supports chunked continuation token pagination.
+ */
+export async function withdrawAllFromStreams(
+  recipient: string,
+  pageBounds?: { offset: number; limit: number }
+): Promise<WithdrawAllResult> {
+  return send(
+    recipient,
+    buildWithdrawAllOperation(CONTRACT_ID, recipient, pageBounds),
+    (v) => decodeWithdrawAllResult(v)
+  );
+}
+
 
 /**
  * A simulated, unsigned transaction ready to be signed and held. The claim

@@ -11,8 +11,9 @@
 use soroban_sdk::{contractclient, Address, BytesN, Env, Vec};
 
 use crate::{
-    BatchEntry, FeeScan, MigrationStatus, PendingOwnership, PendingUpgrade, PeriodSpend,
-    ScheduledIntent, SponsorConfig, Stream, StreamError, StreamInput, StreamPolicy, TreasuryStatus,
+    BatchEntry, FeeScan, MigrationStatus, PageBounds, PendingUpgrade, PeriodSpend, ScheduledIntent,
+    SponsorConfig, Stream, StreamError, StreamInput, StreamPolicy, TreasuryStatus,
+    WithdrawAllResult,
 };
 
 /// Interface of the StreamPay streaming-payments contract.
@@ -54,6 +55,11 @@ pub trait StreamingPaymentsApi {
 
     fn withdraw(env: Env, stream_id: u64, amount: i128) -> Result<(), StreamError>;
     fn withdraw_max(env: Env, stream_id: u64) -> Result<i128, StreamError>;
+    fn withdraw_all(
+        env: Env,
+        recipient: Address,
+        page_bounds: Option<PageBounds>,
+    ) -> Result<WithdrawAllResult, StreamError>;
     fn cancel_stream(env: Env, caller: Address, stream_id: u64) -> Result<(), StreamError>;
     fn top_up(env: Env, stream_id: u64, amount: i128) -> Result<(), StreamError>;
     fn propose_ownership_transfer(

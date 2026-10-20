@@ -11,6 +11,9 @@
     "lint":        "cargo fmt --all -- --check && cargo clippy --all-targets -- -D warnings",
     "lint:fix":    "cargo fmt --all",
 
+    "benchmark:measure": "node benchmarks/harness/run_benchmarks.mjs",
+    "benchmark:verify":  "node benchmarks/harness/verify_benchmarks.mjs",
+
     "build":       "npm run build:contract && npm run build:frontend",
     "build:contract": "cd contracts/streaming-payments && stellar contract build",
     "build:frontend": "cd frontend && npm run build",

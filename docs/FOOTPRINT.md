@@ -152,3 +152,23 @@ The harness measures:
      - `withdraw` <= 360,000 CPU
      - `cancel_stream` <= 540,000 CPU
      - `withdraw_max` <= 350,000 CPU
+
+---
+
+## 7. Batch Claim-All Iteration Footprint & Ledger-Limit Bounds
+
+With the introduction of `withdraw_all`, StreamPay provides its first multi-stream iteration path. Full architectural details and the partial-failure decision matrix are documented in [`docs/CLAIM_ALL.md`](CLAIM_ALL.md).
+
+### 7.1 Footprint Measurements (1 / 10 / 50 / 60 Streams)
+
+| Stream Count | Pagination Chunk | CPU Instructions | Memory (Bytes) | Ledger Entries Touched | Safe Under 64-Entry Limit? |
+|:---:|:---:|---:|---:|:---:|:---:|
+| **1 stream** | 1 of 1 | 683,989 | 269,514 | ~6 entries | **Yes (Safe)** |
+| **10 streams** | 10 of 10 | 2,324,978 | 708,874 | ~15 entries | **Yes (Safe)** |
+| **50 streams** | 50 (Page 1) | 10,960,486 | 2,906,988 | ~55 entries | **Yes (Safe, < 64 entries)** |
+| **60 streams** | Chunked: 50 + 10 (Page 2: 10) | 2,313,818 | 708,874 | ~15 entries | **Yes (Safe across 2 txs)** |
+| **60 streams** | Unpaginated (Hypothetical) | ~27,000,000 | ~5,800,000 | 65+ entries | **REJECTED (> 64 limit cliff)** |
+
+### 7.2 Ledger-Limit-Safe Page Bounds
+
+Soroban enforces a maximum of **64 ledger entries** (read/write) per transaction. Processing 50 streams touches ~55 ledger entries (1 instance storage entry + 1 recipient index entry + 50 stream entries + ~3 token entries). Processing 60 streams in a single transaction would breach the 64-entry cliff ($2 + 60 + 3 = 65$), causing transaction rejection. Hence, `MAX_PAGE_SIZE = 50` is strictly enforced with chunked continuation tokens (`next_offset`).

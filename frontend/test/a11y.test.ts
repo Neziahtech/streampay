@@ -664,3 +664,63 @@ describe("Network indicator", () => {
     assertNoViolations(violations, "Network indicator (no contract id)");
   });
 });
+
+// ===========================================================================
+// 10. Protocol Benchmark Dashboard
+// ===========================================================================
+describe("Protocol Benchmark Dashboard", () => {
+  test("passes WCAG 2.1 AA", async () => {
+    const html = withLayout(`
+<main class="wrap" style="max-width:1160px;">
+  <nav aria-label="Breadcrumb">
+    <a href="/" id="back-home-link" style="color:#39c5ff; text-decoration:none; font-size:0.875rem;">
+      ← Back to StreamPay App
+    </a>
+  </nav>
+  <header>
+    <h1>Protocol Streaming Benchmark</h1>
+    <p class="muted">Public, reproducible cross-chain measurement on storage footprint, execution costs, and rent economics.</p>
+  </header>
+  <section aria-labelledby="controls-heading">
+    <h2 id="controls-heading">Display &amp; Currency Mode</h2>
+    <div role="group" aria-label="Unit selection">
+      <button type="button" id="unit-mode-usd-btn" aria-pressed="true">USD Normalized</button>
+      <button type="button" id="unit-mode-native-btn" aria-pressed="false">Native Units</button>
+    </div>
+  </section>
+  <section aria-labelledby="storage-heading">
+    <h2 id="storage-heading">Axis 1: Storage Bytes per Stream</h2>
+    <table>
+      <caption>Storage comparison per stream</caption>
+      <thead>
+        <tr>
+          <th scope="col">Protocol</th>
+          <th scope="col">Total Footprint</th>
+          <th scope="col">State Model</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <th scope="row">StreamPay (Soroban)</th>
+          <td>484 B</td>
+          <td>Stellar Persistent Ledger Entry</td>
+        </tr>
+        <tr>
+          <th scope="row">Sablier V2 (EVM)</th>
+          <td>160 B</td>
+          <td>EVM Permanent Contract Storage</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+  <section aria-labelledby="methodology-heading">
+    <h2 id="methodology-heading">Cross-Chain Normalization &amp; Measurement Methodology</h2>
+    <p>Detailed inline technical methodology explaining EVM gas vs Soroban instructions vs Stellar State Archival rent.</p>
+  </section>
+</main>`);
+
+    const violations = await runAxe(html);
+    assertNoViolations(violations, "Protocol Benchmark Dashboard");
+  });
+});
+

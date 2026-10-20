@@ -1,0 +1,83 @@
+{
+  "protocol": "StreamPay",
+  "network": "Stellar / Soroban",
+  "version": "v0.4.0",
+  "measured_at": "2026-10-19",
+  "storage": {
+    "stream_struct_bytes": 444,
+    "stream_key_bytes": 40,
+    "total_persistent_entry_bytes": 484,
+    "index_key_bytes": 76,
+    "storage_keys_per_stream": 3,
+    "storage_keys_mutated_on_claim": 1,
+    "storage_keys_mutated_on_cancel": 1
+  },
+  "rent_economics": {
+    "rent_rate_stroops_per_byte_ledger": 0.0100,
+    "seconds_per_ledger": 5.0,
+    "rent_stroops_per_second": 0.9680,
+    "rent_xlm_per_second": 0.0000000968,
+    "rent_stroops_per_30d": 2509056.0,
+    "rent_xlm_per_30d": 0.250906,
+    "initial_prepaid_ledgers": 500000,
+    "initial_prepaid_xlm": 0.2420
+  },
+  "operations": {
+    "create_stream": {
+      "cpu_instructions": 541598,
+      "memory_bytes": 210434,
+      "event_bytes": 396,
+      "estimated_fee_stroops": 3500,
+      "estimated_fee_xlm": 0.000350
+    },
+    "withdraw": {
+      "cpu_instructions": 347082,
+      "memory_bytes": 138899,
+      "event_bytes": 236,
+      "estimated_fee_stroops": 2450,
+      "estimated_fee_xlm": 0.000245
+    },
+    "withdraw_max": {
+      "cpu_instructions": 338663,
+      "memory_bytes": 134329,
+      "event_bytes": 236,
+      "estimated_fee_stroops": 2410,
+      "estimated_fee_xlm": 0.000241
+    },
+    "cancel_stream": {
+      "cpu_instructions": 523563,
+      "memory_bytes": 171201,
+      "event_bytes": 248,
+      "estimated_fee_stroops": 3200,
+      "estimated_fee_xlm": 0.000320
+    },
+    "top_up": {
+      "cpu_instructions": 447290,
+      "memory_bytes": 167390,
+      "event_bytes": 76,
+      "estimated_fee_stroops": 2800,
+      "estimated_fee_xlm": 0.000280
+    },
+    "get_stream": {
+      "cpu_instructions": 66664,
+      "memory_bytes": 40243,
+      "event_bytes": 0,
+      "estimated_fee_stroops": 0,
+      "estimated_fee_xlm": 0.0
+    },
+    "available": {
+      "cpu_instructions": 58284,
+      "memory_bytes": 39461,
+      "event_bytes": 0,
+      "estimated_fee_stroops": 0,
+      "estimated_fee_xlm": 0.0
+    },
+    "sender_streams_page_5": {
+      "cpu_instructions": 52369,
+      "memory_bytes": 25006,
+      "event_bytes": 0,
+      "estimated_fee_stroops": 0,
+      "estimated_fee_xlm": 0.0
+    }
+  }
+}

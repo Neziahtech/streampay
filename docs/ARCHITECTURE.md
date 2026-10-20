@@ -12,7 +12,7 @@ reentrancy, TTL strategy, and the design decisions behind the v1 API. Read the
 │                                                                    │
 │  lib.rs      entrypoints: create_stream / create_streams /          │
 │              create_streams_batch / withdraw / withdraw_max /       │
-│              cancel_stream / top_up / get_stream / available /      │
+│              withdraw_all / cancel_stream / top_up / get_stream /   │
 │              recipient_streams / sender_streams / schedule_stream / │
 │              execute_scheduled / cancel_scheduled / reclaim_expired │
 │              set_fee_bps / nominate_governor / accept_governor /    │

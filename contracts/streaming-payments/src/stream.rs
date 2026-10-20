@@ -165,6 +165,54 @@ pub struct MigrationStatus {
     pub is_complete: bool,
 }
 
+/// Pagination bounds for batch index operations.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PageBounds {
+    pub offset: u32,
+    pub limit: u32,
+}
+
+/// Aggregated token transfer result for a single asset.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AssetTransfer {
+    pub token: Address,
+    pub amount: i128,
+}
+
+/// Reason for an individual stream claim failure within a batch withdrawal.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaimFailure {
+    pub stream_id: u64,
+    pub error_code: u32,
+}
+
+/// Internal record of a candidate stream claim.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingClaim {
+    pub stream_id: u64,
+    pub token: Address,
+    pub amount: i128,
+    pub original_withdrawn: i128,
+}
+
+/// Summary result of a batch withdrawal operation across streams.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WithdrawAllResult {
+    /// Aggregated payouts per asset.
+    pub transfers: Vec<AssetTransfer>,
+    /// Stream IDs that were successfully withdrawn.
+    pub successful_stream_ids: Vec<u64>,
+    /// Individual streams that could not be withdrawn, with their numeric error code.
+    pub failed_streams: Vec<ClaimFailure>,
+    /// Continuation offset if more streams remain in the index; None if exhausted.
+    pub next_offset: Option<u32>,
+}
+
 /// Storage keys for the contract.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
