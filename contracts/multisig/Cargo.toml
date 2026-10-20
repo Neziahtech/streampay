@@ -1,0 +1,19 @@
+[package]
+name = "streampay-multisig"
+version = "0.1.0"
+edition = "2021"
+description = "StreamPay Reference K-of-N Multisig: on-chain propose/approve/execute module for multisig senders and recipients"
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+testutils = ["soroban-sdk/testutils"]
+
+[dependencies]
+soroban-sdk.workspace = true
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }
+streampay-contract = { path = "../streaming-payments", features = ["testutils"] }

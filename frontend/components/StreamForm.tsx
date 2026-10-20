@@ -11,6 +11,7 @@ import {
 import { readStreamPolicyAction } from "@/app/actions";
 import type { StreamPolicyView } from "@/lib/stream-types";
 import { formatAmount } from "@/lib/format";
+import { detectMultisig, type MultisigDetection } from "@/lib/multisig";
 
 /** Asset choices on the create form: native XLM, or a token contract id. */
 type AssetChoice = "native" | "contract";
@@ -32,6 +33,29 @@ export default function StreamForm({
   const [busy, setBusy] = useState(false);
   const [policy, setPolicy] = useState<StreamPolicyView | null>(null);
   const [policyError, setPolicyError] = useState<string | null>(null);
+  const [multisigInfo, setMultisigInfo] = useState<MultisigDetection | null>(null);
+
+  // Detect multisig recipient and load signer requirements
+  useEffect(() => {
+    let active = true;
+    const recipient = args.recipient.trim();
+    if (recipient.length >= 56) {
+      detectMultisig(recipient)
+        .then((info) => {
+          if (active) {
+            setMultisigInfo(info.isMultisig ? info : null);
+          }
+        })
+        .catch(() => {
+          if (active) setMultisigInfo(null);
+        });
+    } else {
+      setMultisigInfo(null);
+    }
+    return () => {
+      active = false;
+    };
+  }, [args.recipient]);
 
   // Derived asset metadata: native XLM is always known; contract assets update asynchronously
   const assetMeta: AssetMeta =
@@ -219,6 +243,85 @@ export default function StreamForm({
           <span id={recipientHintId} className="sr-only">
             Enter the Stellar public key (G… address) of the stream recipient.
           </span>
+          {multisigInfo?.isMultisig && (
+            <div
+              role="status"
+              aria-live="polite"
+              style={{
+                marginTop: "0.5rem",
+                padding: "0.75rem 1rem",
+                borderRadius: "8px",
+                background: "rgba(59, 130, 246, 0.08)",
+                border: "1px solid rgba(59, 130, 246, 0.3)",
+                color: "#93c5fd",
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "0.5rem",
+                  marginBottom: "0.35rem",
+                }}
+              >
+                <span
+                  style={{
+                    display: "inline-block",
+                    padding: "0.15rem 0.5rem",
+                    borderRadius: "4px",
+                    fontSize: "0.75rem",
+                    fontWeight: "600",
+                    background: "#2563eb",
+                    color: "#ffffff",
+                    textTransform: "uppercase",
+                  }}
+                >
+                  Multisig Detected
+                </span>
+                <strong style={{ color: "#ffffff", fontSize: "0.85rem" }}>
+                  {multisigInfo.threshold}-of-{multisigInfo.totalSigners} Required
+                </strong>
+              </div>
+              <p
+                style={{
+                  margin: "0.25rem 0",
+                  fontSize: "0.825rem",
+                  lineHeight: "1.4",
+                }}
+              >
+                {multisigInfo.type === "contract"
+                  ? "Recipient is a Soroban reference multisig contract account. Withdrawals and stream management will require proposal approvals meeting the threshold before execution."
+                  : `Recipient is a Stellar multi-signature account requiring ${multisigInfo.threshold} threshold weight across its signers.`}
+                {multisigInfo.cancelThreshold !== undefined && (
+                  <>
+                    {" "}
+                    Emergency stream cancellation threshold:{" "}
+                    {multisigInfo.cancelThreshold}.
+                  </>
+                )}
+              </p>
+              {multisigInfo.signers && multisigInfo.signers.length > 0 && (
+                <details style={{ marginTop: "0.35rem", fontSize: "0.8rem" }}>
+                  <summary style={{ cursor: "pointer", color: "#60a5fa" }}>
+                    View Authorized Signers ({multisigInfo.signers.length})
+                  </summary>
+                  <ul
+                    style={{
+                      margin: "0.35rem 0 0 1rem",
+                      padding: 0,
+                      fontFamily: "monospace",
+                    }}
+                  >
+                    {multisigInfo.signers.map((s, idx) => (
+                      <li key={idx} style={{ wordBreak: "break-all" }}>
+                        {s}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
