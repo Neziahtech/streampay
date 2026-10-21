@@ -206,6 +206,46 @@ pub enum StreamError {
     /// The delegated withdrawal's nonce was already consumed — a replay of a
     /// previously executed delegated withdrawal.
     AgentNonceReplay = 70,
+    /// A governance entrypoint was called before the signer set was bootstrapped.
+    GovernanceNotInitialized = 71,
+    /// `governance_bootstrap` was called, but the signer set already exists.
+    /// Bootstrap is one-time; later sets arrive as an executed `SetSigners`
+    /// proposal, so no key can re-establish governance over an existing one.
+    GovernanceAlreadyInitialized = 72,
+    /// The caller is not a member of the governance signer set.
+    NotGovernanceSigner = 73,
+    /// The proposed signer set lists the same address twice. Refused rather than
+    /// deduplicated: two slots held by one key are one key.
+    GovernanceDuplicateSigner = 74,
+    /// The proposed signer set is empty.
+    GovernanceSignerSetEmpty = 75,
+    /// The proposed signer set exceeds `MAX_SIGNERS`.
+    GovernanceTooManySigners = 76,
+    /// The proposed signer set does not hold two distinct keys, so it could never
+    /// satisfy the two-signature rule.
+    GovernanceSignersNotDistinct = 77,
+    /// No proposal is stored under the supplied id.
+    GovernanceProposalNotFound = 78,
+    /// Execution was attempted while the veto window is still open.
+    GovernanceVetoWindowOpen = 79,
+    /// A veto was attempted after the window closed; the proposal is matured and
+    /// executable (execute-on-timeout), so the way to stop it now is to rotate
+    /// the keys it would act through, not to veto it.
+    GovernanceVetoWindowClosed = 80,
+    /// The requested veto window is shorter than `MIN_VETO_WINDOW_SECONDS`.
+    GovernanceVetoWindowTooShort = 81,
+    /// The proposal was vetoed and is therefore dead.
+    GovernanceAlreadyVetoed = 82,
+    /// The proposal has already been executed.
+    GovernanceAlreadyExecuted = 83,
+    /// This address has already signed the proposal. Execution needs two
+    /// *distinct* signatures, so a second one from the same key is refused.
+    GovernanceDuplicateSignature = 84,
+    /// Fewer than the required distinct, still-current signatures are recorded.
+    GovernanceSignaturesInsufficient = 85,
+    /// The action requires an executed governance proposal now that the signer
+    /// set is bootstrapped; the direct entry point is closed.
+    GovernanceTimelockRequired = 86,
 }
 
 impl StreamError {
@@ -283,6 +323,22 @@ impl StreamError {
         StreamError::AgentStreamCapExceeded,
         StreamError::AgentSignatureInvalid,
         StreamError::AgentNonceReplay,
+        StreamError::GovernanceNotInitialized,
+        StreamError::GovernanceAlreadyInitialized,
+        StreamError::NotGovernanceSigner,
+        StreamError::GovernanceDuplicateSigner,
+        StreamError::GovernanceSignerSetEmpty,
+        StreamError::GovernanceTooManySigners,
+        StreamError::GovernanceSignersNotDistinct,
+        StreamError::GovernanceProposalNotFound,
+        StreamError::GovernanceVetoWindowOpen,
+        StreamError::GovernanceVetoWindowClosed,
+        StreamError::GovernanceVetoWindowTooShort,
+        StreamError::GovernanceAlreadyVetoed,
+        StreamError::GovernanceAlreadyExecuted,
+        StreamError::GovernanceDuplicateSignature,
+        StreamError::GovernanceSignaturesInsufficient,
+        StreamError::GovernanceTimelockRequired,
     ];
 
     /// The stable numeric value carried across the contract boundary

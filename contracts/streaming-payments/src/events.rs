@@ -477,3 +477,70 @@ pub struct AgentRevoked {
     /// Amount withdrawn by the agent during the authorization's lifetime.
     pub total_withdrawn: i128,
 }
+
+// --------------------------------------------------------------- governance --
+//
+// The lifecycle of a timelocked admin action (issue #119). These events wrap the
+// action's own legacy event rather than replacing it: `FeeWithdrawn`,
+// `UpgradeProposed` and friends still fire from the same helper they always
+// fired from, so an indexer built before the timelock keeps reading the same
+// trail and simply gains the proposal id alongside it.
+
+/// Emitted when the signer set is established or rotated, and when the veto
+/// window changes. The set is emitted in full because "which keys govern this
+/// contract" is only auditable from the transcript, not from a delta.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GovernanceSignersSet {
+    #[topic]
+    pub set_by: Address,
+    pub signers: Vec<Address>,
+    pub veto_window: u64,
+}
+
+/// Emitted when a signer proposes an admin action. `executable_at` is the end of
+/// the veto window: from that timestamp the proposal is executable by anyone and
+/// is never voided by time.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GovernanceActionProposed {
+    #[topic]
+    pub proposal_id: u64,
+    pub proposed_by: Address,
+    pub executable_at: u64,
+    pub action: crate::governance::GovernanceAction,
+}
+
+/// Emitted for each distinct signature. A second signature from an address that
+/// already signed is refused before this event can fire, so `signature_count`
+/// here is always a count of distinct keys.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GovernanceActionSigned {
+    #[topic]
+    pub proposal_id: u64,
+    pub signer: Address,
+    pub signature_count: u32,
+}
+
+/// Emitted when a signer vetoes a proposal inside its veto window.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GovernanceActionVetoed {
+    #[topic]
+    pub proposal_id: u64,
+    pub vetoed_by: Address,
+}
+
+/// Emitted when a matured, multiply-signed proposal is applied. `executed_by` is
+/// whoever submitted the transaction — execution is permissionless — while
+/// `signers` names the keys that actually authorized it.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GovernanceActionExecuted {
+    #[topic]
+    pub proposal_id: u64,
+    pub action: crate::governance::GovernanceAction,
+    pub signers: Vec<Address>,
+    pub executed_by: Address,
+}
