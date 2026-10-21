@@ -349,7 +349,7 @@ CHANGELOG.md                    release history (Keep a Changelog)
   governor-gated withdrawals, open verification
   (`verify_treasury` + `scripts/verify-fees.ts`), ✅ incident response drills
   and runbook (testnet simulation)
-- **v1.0** — external audit, mainnet deployment guide
+- **v1.0** — external audit ([`docs/AUDIT_SCOPE.md`](./docs/AUDIT_SCOPE.md)), mainnet deployment guide
 
 Feature requests live in [`.github/ISSUE_TEMPLATE/`](./.github/ISSUE_TEMPLATE/) — good first issues are tagged [`good first issue`](https://github.com/Neziahtech/streampay/labels/good%20first%20issue) and documented in [`docs/GOOD_FIRST_ISSUES.md`](./docs/GOOD_FIRST_ISSUES.md).
 
