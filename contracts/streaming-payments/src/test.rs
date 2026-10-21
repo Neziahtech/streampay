@@ -2877,7 +2877,9 @@ fn run_state_machine_sequence(seed: u64, steps: &[(u8, u16, u16)]) -> Result<(),
                 let now = env.ledger().timestamp();
                 let start = now + (first as u64 % 4);
                 let duration = 1 + (second as u64 % 100);
-                let deposit = stream::MIN_STREAM_DEPOSIT + (first as i128 % 20_000) * 257 + second as i128 % 257;
+                let deposit = stream::MIN_STREAM_DEPOSIT
+                    + (first as i128 % 20_000) * 257
+                    + second as i128 % 257;
                 let cancelable = operation & 0x80 != 0;
                 let id = client.mock_all_auths().create_stream(
                     &sender,
@@ -2929,7 +2931,8 @@ fn run_state_machine_sequence(seed: u64, steps: &[(u8, u16, u16)]) -> Result<(),
                     let available =
                         streams[index].accrued(env.ledger().timestamp()) - streams[index].withdrawn;
                     if available >= stream::MIN_CLAIM_AMOUNT && second & 1 == 0 {
-                        let amount = stream::MIN_CLAIM_AMOUNT + second as i128 % (available - stream::MIN_CLAIM_AMOUNT + 1);
+                        let amount = stream::MIN_CLAIM_AMOUNT
+                            + second as i128 % (available - stream::MIN_CLAIM_AMOUNT + 1);
                         client.mock_all_auths().withdraw(&id, &amount);
                         streams[index].withdrawn += amount;
                     } else if available >= stream::MIN_CLAIM_AMOUNT {
@@ -3226,7 +3229,8 @@ fn run_fee_property(seed: u64, steps: usize) {
                         streams[idx].withdrawn += avail;
                     }
                     1 if avail >= stream::MIN_CLAIM_AMOUNT => {
-                        let amount = stream::MIN_CLAIM_AMOUNT + rng.below((avail - stream::MIN_CLAIM_AMOUNT + 1) as u64) as i128;
+                        let amount = stream::MIN_CLAIM_AMOUNT
+                            + rng.below((avail - stream::MIN_CLAIM_AMOUNT + 1) as u64) as i128;
                         client.mock_all_auths().withdraw(&id, &amount);
                         streams[idx].withdrawn += amount;
                     }
@@ -3528,7 +3532,8 @@ fn run_value_conservation_property(seed: u64, steps: usize) {
                     if stream.status == StreamStatus::Active {
                         let avail = client.available(&id);
                         if avail >= stream::MIN_CLAIM_AMOUNT {
-                            let withdraw_amt = stream::MIN_CLAIM_AMOUNT + rng.below((avail - stream::MIN_CLAIM_AMOUNT + 1) as u64) as i128;
+                            let withdraw_amt = stream::MIN_CLAIM_AMOUNT
+                                + rng.below((avail - stream::MIN_CLAIM_AMOUNT + 1) as u64) as i128;
                             client.mock_all_auths().withdraw(&id, &withdraw_amt);
                         }
                     }
@@ -6613,7 +6618,12 @@ fn sweep_depleted_stream_permissionless_and_refunds_rent() {
     assert_eq!(refund, crate::STREAM_RENT_REFUND);
 
     // Stream storage entry is purged
-    let err = f.client.mock_all_auths().try_get_stream(&id).unwrap_err().unwrap();
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_get_stream(&id)
+        .unwrap_err()
+        .unwrap();
     assert_eq!(err, StreamError::StreamNotFound);
 
     // Designated party received rent refund credit

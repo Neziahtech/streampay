@@ -248,10 +248,10 @@ fn probe(branch: Branch) -> Option<StreamError> {
             let f = Fixture::setup_quiet();
             let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
             f.advance_time(2 * DAY);
-            Some(rejected!(f.client.mock_all_auths().try_withdraw(
-                &id,
-                &(crate::stream::MIN_CLAIM_AMOUNT - 1)
-            )))
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_withdraw(&id, &(crate::stream::MIN_CLAIM_AMOUNT - 1))))
         }
         Branch::WithdrawAmountExceedsAvailable => {
             let f = Fixture::setup_quiet();
@@ -1437,7 +1437,7 @@ fn stream_error_variant_list_is_exhaustive() {
             | StreamError::GovernanceAlreadyExecuted
             | StreamError::GovernanceDuplicateSignature
             | StreamError::GovernanceSignaturesInsufficient
-            | StreamError::GovernanceTimelockRequired 
+            | StreamError::GovernanceTimelockRequired
             | StreamError::DepositBelowMinimum
             | StreamError::ClaimBelowMinimum
             | StreamError::StreamNotSweepable => StreamError::ALL.contains(&e),
