@@ -1,11 +1,13 @@
 "use client";
-
+import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { getAddress, isConnected } from "@stellar/freighter-api";
 import {
   cancelStream,
   describeError,
+  enrollBeneficiary,
+  isNativeXlm,
   readAvailable,
   readBeneficiaryKey,
   readSponsor,
@@ -34,11 +36,9 @@ import {
   type ClaimIntent,
 } from "@/lib/sponsor";
 import { useToast } from "@/components/toast";
-import StreamDetailView from "@/components/StreamDetailView";
-
-function fmtUnits(v: bigint): string {
-  return v.toString();
-}
+import { validateWithdrawal } from "@/lib/withdrawal";
+import { formatAmount } from "@/lib/format";
+import DiscoveryConsentModal from "@/components/DiscoveryConsentModal";
 
 export default function StreamDetail() {
   const toast = useToast();
@@ -137,8 +137,72 @@ export default function StreamDetail() {
     })();
   }, []);
 
-  const overWithdrawal =
-    available !== null && amount !== "" && BigInt(amount || "0") > available;
+  const loadSponsorship = useCallback(async (beneficiary: string) => {
+    if (!SPONSOR_ADDRESS) return;
+    try {
+      const [cfg, enrolled] = await Promise.all([
+        readSponsor(SPONSOR_ADDRESS),
+        readBeneficiaryKey(beneficiary),
+      ]);
+      setSponsor(cfg);
+      setEnrolledKey(enrolled);
+    } catch {
+      // Sponsorship is an optional path; the self-paid claim still works.
+      setSponsor(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    void (async () => {
+      // The consent keypair lives in localStorage — an external system,
+      // loaded once on mount like the wallet address above.
+      setConsentPub(consentPublicKeyHex(loadOrCreateConsentKey()));
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!address) return;
+    void (async () => {
+      await loadSponsorship(address);
+    })();
+  }, [address, loadSponsorship]);
+
+  // Fee-aware claim scheduling is scoped to the connected wallet; the hook is
+  // inert until an address is available.
+  const scheduler = useClaimScheduler(address);
+
+  if (loadError && !stream) {
+    return (
+      <main className="wrap">
+        <h1>Stream #{id}</h1>
+        <p className="err">{loadError}</p>
+        <Link href="/">← All streams</Link>
+      </main>
+    );
+  }
+  if (!stream) {
+    return (
+      <main className="wrap">
+        <h1>Stream #{id}</h1>
+        <p className="muted">Loading…</p>
+      </main>
+    );
+  }
+
+  const deposit = BigInt(stream.deposit);
+  const withdrawn = BigInt(stream.withdrawn);
+  const progress =
+    deposit > 0n ? Math.min(100, Number((withdrawn * 100n) / deposit)) : 0;
+  const isRecipient = address !== null && address === stream.recipient;
+  const isSender = address !== null && address === stream.sender;
+  const consentEnrolled =
+    consentPub !== "" && enrolledKey !== null && enrolledKey === consentPub;
+  const sponsorFundsThisToken =
+    sponsor !== null && sponsor.active && sponsor.token === stream.token;
+  const sponsorBudgetLeft = sponsor !== null && BigInt(sponsor.remaining) > 0n;
+
+  // Validation is executed strictly against on-chain available balance, NOT cosmetic interpolator
+  const validation = validateWithdrawal(amount, available);
 
   async function doWithdraw(max: boolean) {
     if (!address) return;
@@ -264,17 +328,311 @@ export default function StreamDetail() {
   };
 
   return (
-    <StreamDetailView
-      id={id}
-      stream={stream}
-      loadError={loadError}
-      available={available}
-      displayAvailable={displayAvailable}
-      address={address}
-      amount={amount}
-      onAmountChange={setAmount}
-      onWithdraw={doWithdraw}
-      onCancel={doCancel}
-    />
+    <main className="wrap">
+      <p className="kicker mono">STREAM #{stream.id}</p>
+      <h1>
+        {stream.status === "Active" ? "⚡ Streaming" : `⏹ ${stream.status}`}
+      </h1>
+      {error && (
+        <p className="err" role="alert">
+          {error}
+        </p>
+      )}
+      {status && (
+        <p className="muted" role="status">
+          {status}
+        </p>
+      )}
+
+      <section className="card">
+        <div className="row" style={{ alignItems: "center" }}>
+          <progress value={progress} max={100} style={{ flex: 1 }} />
+          <span className="mono">{progress}% withdrawn</span>
+        </div>
+        <table>
+          <tbody>
+            <tr>
+              <th>Sender</th>
+              <td className="mono">{stream.sender}</td>
+            </tr>
+            <tr>
+              <th>Recipient</th>
+              <td className="mono">{stream.recipient}</td>
+            </tr>
+            <tr>
+              <th>Token</th>
+              <td className="mono" style={{ wordBreak: "break-all" }}>
+                {isNativeXlm(stream.token)
+                  ? `Native XLM — ${stream.token}`
+                  : assetMeta
+                  ? `${assetMeta.code} — ${stream.token}`
+                  : stream.token}
+              </td>
+            </tr>
+            <tr>
+              <th>Deposit</th>
+              <td className="mono" title={`${stream.deposit} base units`}>
+                {assetMeta
+                  ? `${formatAmount(deposit, assetMeta.decimals)} ${assetMeta.code}`
+                  : stream.deposit}
+              </td>
+            </tr>
+            <tr>
+              <th>Withdrawn</th>
+              <td className="mono" title={`${stream.withdrawn} base units`}>
+                {assetMeta
+                  ? `${formatAmount(withdrawn, assetMeta.decimals)} ${assetMeta.code}`
+                  : stream.withdrawn}
+              </td>
+            </tr>
+            <tr>
+              <th>Available now</th>
+              <td className="mono">
+                {(() => {
+                  const availVal =
+                    snapshot?.status === "Active"
+                      ? (displayAvailable ?? available)
+                      : available;
+                  if (availVal === null) return "…";
+                  if (!assetMeta) return availVal.toString();
+                  return `${formatAmount(availVal, assetMeta.decimals)} ${assetMeta.code}`;
+                })()}
+                {stream.status === "Active" && (
+                  <button
+                    onClick={() => void reload()}
+                    disabled={refreshing}
+                    style={{
+                      marginLeft: "0.75rem",
+                      padding: "0.2rem 0.5rem",
+                      fontSize: "0.8rem",
+                    }}
+                    title="Refresh on-chain accrual balance"
+                  >
+                    {refreshing ? "↻ Fetching…" : "↻ Refresh"}
+                  </button>
+                )}
+              </td>
+            </tr>
+            <tr>
+              <th>Window</th>
+              <td className="mono">
+                {new Date(stream.startTime * 1000).toISOString()} →{" "}
+                {new Date(stream.endTime * 1000).toISOString()}
+              </td>
+            </tr>
+            <tr>
+              <th>Cancelable</th>
+              <td>{String(stream.cancelable)}</td>
+            </tr>
+            <tr>
+              <th>Status</th>
+              <td>{stream.status}</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      {isRecipient && stream.status === "Active" && (
+        <section className="card">
+          <h2>Withdraw accrued funds</h2>
+          <div className="row">
+            <input
+              type="number"
+              min="0"
+              placeholder="amount (defaults to available)"
+              value={amount}
+              onChange={(e) => {
+                setAmount(e.target.value);
+                setIsAmountDirty(true);
+              }}
+              disabled={submitting}
+            />
+            {amount && !isNaN(Number(amount)) && BigInt(amount || "0") > 0n && assetMeta && (
+              <span
+                className="mono muted"
+                style={{ fontSize: "0.85rem", alignSelf: "center", whiteSpace: "nowrap" }}
+              >
+                ≈ {formatAmount(BigInt(amount), assetMeta.decimals)} {assetMeta.code}
+              </span>
+            )}
+            {available !== null && available > 0n && (
+              <button
+                type="button"
+                onClick={handlePrefillMax}
+                disabled={submitting}
+                title="Prefill input with the exact current on-chain available balance"
+              >
+                Prefill Max
+              </button>
+            )}
+            <button
+              onClick={() => void doWithdraw(false)}
+              disabled={!validation.valid || submitting}
+            >
+              {submitting ? "Withdrawing…" : "Withdraw"}
+            </button>
+            <button
+              onClick={() => void doWithdraw(true)}
+              disabled={submitting || available === 0n}
+              title="withdraw_max: atomic claim of the full accrued balance"
+            >
+              Withdraw max
+            </button>
+          </div>
+          {!validation.valid && validation.error && (
+            <p className="err" role="alert">
+              {validation.error}
+            </p>
+          )}
+        </section>
+      )}
+
+      {isRecipient && stream.status === "Active" && SPONSOR_ADDRESS !== "" && (
+        <section className="card">
+          <h2>Claim for free</h2>
+          {sponsor === null && (
+            <p className="muted">
+              No sponsor is registered at{" "}
+              <span className="mono">{SPONSOR_ADDRESS}</span>, so claims pay
+              their own network fee.
+            </p>
+          )}
+          {sponsor !== null && !sponsorFundsThisToken && (
+            <p className="muted">
+              <span className="mono">{SPONSOR_ADDRESS}</span> does not fund this
+              stream&apos;s token (or is paused), so claims pay their own network fee.
+            </p>
+          )}
+          {sponsor !== null && sponsorFundsThisToken && !sponsorBudgetLeft && (
+            <p className="muted">
+              This sponsor has used its budget for the current window (
+              {sponsor.spend} of {sponsor.perPeriodLimit} units). It resets every{" "}
+              {sponsor.windowSeconds}s; until then claims pay their own fee.
+            </p>
+          )}
+          {sponsorFundsThisToken && sponsorBudgetLeft && (
+            <>
+              <p className="muted">
+                <strong>You pay nothing.</strong>{" "}
+                <span className="mono">{SPONSOR_ADDRESS}</span> is the sponsor:
+                its operator builds and submits the transaction and pays the
+                Soroban network fee out of this budget —{" "}
+                {sponsor?.remaining} of {sponsor?.perPeriodLimit} units still
+                available this window. You sign a single claim intent with your
+                consent key, bound to this stream, amount, a one-time nonce and
+                a {DEFAULT_INTENT_TTL_SECONDS}s expiry, so nobody else can spend
+                it or reuse it.
+              </p>
+              {!consentEnrolled && (
+                <>
+                  <button
+                    onClick={() => void doEnableSponsorship()}
+                    disabled={busy}
+                  >
+                    Enable sponsored claims
+                  </button>
+                  <p className="muted">
+                    One-time setup: registers your consent key on-chain. This
+                    setup call is signed and paid by you; the claims it unlocks
+                    are not.
+                  </p>
+                </>
+              )}
+              {consentEnrolled && RELAY_URL === "" && (
+                <p className="muted">
+                  Consent key is enrolled, but no sponsor relay is configured
+                  (NEXT_PUBLIC_SPONSOR_RELAY_URL), so there is no operator to
+                  submit the claim. Use the self-paid withdrawal above.
+                </p>
+              )}
+              {consentEnrolled && RELAY_URL !== "" && (
+                <button
+                  onClick={() => void doClaimForFree()}
+                  disabled={busy}
+                  title="sponsored_withdraw: the sponsor's operator pays the fee"
+                >
+                  {busy ? "Relaying…" : "Claim for free"}
+                </button>
+              )}
+            </>
+          )}
+        </section>
+      )}
+      {isRecipient && stream.status === "Active" && (
+        <ClaimSchedulerSettings stream={stream} scheduler={scheduler} />
+      )}
+
+      {(isSender || (isRecipient && stream.cancelable)) &&
+        stream.status === "Active" && (
+          <section className="card">
+            <h2>Cancel stream</h2>
+            <p className="muted">
+              Pays the recipient everything accrued and refunds the sender the
+              rest, atomically. This is irreversible.
+            </p>
+            <button onClick={() => void doCancel()} disabled={submitting}>
+              {submitting ? "Cancelling…" : "Cancel stream"}
+            </button>
+          </section>
+        )}
+
+      {(isSender || isRecipient) && (
+        <section className="card">
+          <h2>Anonymized Discovery Listing</h2>
+          <p className="muted">
+            Opt into publishing an anonymized, verifiable listing for this stream to the public directory.
+            Requires cryptographic consent from both parties. No addresses are shared by default.
+          </p>
+          <button
+            type="button"
+            onClick={() => setDiscoveryModalOpen(true)}
+          >
+            Manage Discovery Listing
+          </button>
+        </section>
+      )}
+
+      {discoveryModalOpen && address && stream && (
+        <DiscoveryConsentModal
+          stream={stream}
+          currentUserAddress={address}
+          isOpen={discoveryModalOpen}
+          onClose={() => setDiscoveryModalOpen(false)}
+        />
+      )}
+
+      <section className="card">
+        <h2>Shareable Payment Link</h2>
+        <p className="muted">
+          Generate a deterministic, privacy-blinded claim URL for this stream. The recipient can claim without logging in first.
+        </p>
+        <button
+          type="button"
+          onClick={async () => {
+            try {
+              const { encodePaymentLinkRef } = await import("@/lib/payment-link");
+              const ref = await encodePaymentLinkRef({
+                streamId: stream.id,
+                recipient: stream.recipient,
+              });
+              const url = `${window.location.origin}/pay/${ref}`;
+              await navigator.clipboard.writeText(url);
+              toast.success("Payment link copied to clipboard!");
+            } catch (err: unknown) {
+              toast.error(`Failed to copy payment link: ${String(err)}`);
+            }
+          }}
+        >
+          Copy Shareable Payment Link
+        </button>
+      </section>
+
+      <p style={{ display: "flex", gap: "16px" }}>
+        <Link href="/">← All streams</Link>
+        <Link href="/listings" style={{ color: "var(--accent2)" }}>
+          Browse Discovery Directory →
+        </Link>
+      </p>
+    </main>
   );
 }
