@@ -56,7 +56,9 @@ async function queryContractStream(streamId: string): Promise<StreamData | null>
       ? Networks.PUBLIC
       : Networks.TESTNET;
 
-  const server = new rpc.Server(rpcUrl);
+  const server = new rpc.Server(rpcUrl, {
+    allowHttp: rpcUrl.startsWith("http://"),
+  });
   const contractInstance = new Contract(contractId);
   const scValId = nativeToScVal(BigInt(streamId), { type: "u64" });
 

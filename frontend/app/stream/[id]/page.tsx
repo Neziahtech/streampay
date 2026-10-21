@@ -329,8 +329,8 @@ export default function StreamDetail() {
 
   return (
     <main className="wrap">
-      <p className="kicker mono">STREAM #{stream.id}</p>
-      <h1>
+      <p className="kicker mono" data-testid="detail-kicker">STREAM #{stream.id}</p>
+      <h1 data-testid="detail-heading">
         {stream.status === "Active" ? "⚡ Streaming" : `⏹ ${stream.status}`}
       </h1>
       {error && (
@@ -353,15 +353,15 @@ export default function StreamDetail() {
           <tbody>
             <tr>
               <th>Sender</th>
-              <td className="mono">{stream.sender}</td>
+              <td className="mono" data-testid="detail-sender">{stream.sender}</td>
             </tr>
             <tr>
               <th>Recipient</th>
-              <td className="mono">{stream.recipient}</td>
+              <td className="mono" data-testid="detail-recipient">{stream.recipient}</td>
             </tr>
             <tr>
               <th>Token</th>
-              <td className="mono" style={{ wordBreak: "break-all" }}>
+              <td className="mono" data-testid="detail-token" style={{ wordBreak: "break-all" }}>
                 {isNativeXlm(stream.token)
                   ? `Native XLM — ${stream.token}`
                   : assetMeta
@@ -371,7 +371,7 @@ export default function StreamDetail() {
             </tr>
             <tr>
               <th>Deposit</th>
-              <td className="mono" title={`${stream.deposit} base units`}>
+              <td className="mono" data-testid="detail-deposit" title={`${stream.deposit} base units`}>
                 {assetMeta
                   ? `${formatAmount(deposit, assetMeta.decimals)} ${assetMeta.code}`
                   : stream.deposit}
@@ -379,7 +379,7 @@ export default function StreamDetail() {
             </tr>
             <tr>
               <th>Withdrawn</th>
-              <td className="mono" title={`${stream.withdrawn} base units`}>
+              <td className="mono" data-testid="detail-withdrawn" title={`${stream.withdrawn} base units`}>
                 {assetMeta
                   ? `${formatAmount(withdrawn, assetMeta.decimals)} ${assetMeta.code}`
                   : stream.withdrawn}
@@ -387,7 +387,7 @@ export default function StreamDetail() {
             </tr>
             <tr>
               <th>Available now</th>
-              <td className="mono">
+              <td className="mono" data-testid="detail-available">
                 {(() => {
                   const availVal =
                     snapshot?.status === "Active"
@@ -422,11 +422,11 @@ export default function StreamDetail() {
             </tr>
             <tr>
               <th>Cancelable</th>
-              <td>{String(stream.cancelable)}</td>
+              <td data-testid="detail-cancelable">{String(stream.cancelable)}</td>
             </tr>
             <tr>
               <th>Status</th>
-              <td>{stream.status}</td>
+              <td data-testid="detail-status">{stream.status}</td>
             </tr>
           </tbody>
         </table>
@@ -472,6 +472,7 @@ export default function StreamDetail() {
               {submitting ? "Withdrawing…" : "Withdraw"}
             </button>
             <button
+              data-testid="withdraw-max-btn"
               onClick={() => void doWithdraw(true)}
               disabled={submitting || available === 0n}
               title="withdraw_max: atomic claim of the full accrued balance"
@@ -570,7 +571,11 @@ export default function StreamDetail() {
               Pays the recipient everything accrued and refunds the sender the
               rest, atomically. This is irreversible.
             </p>
-            <button onClick={() => void doCancel()} disabled={submitting}>
+            <button
+              data-testid="cancel-stream-btn"
+              onClick={() => void doCancel()}
+              disabled={submitting}
+            >
               {submitting ? "Cancelling…" : "Cancel stream"}
             </button>
           </section>

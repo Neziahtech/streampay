@@ -20,7 +20,7 @@ test.describe("StreamPay End-to-End Suite against Disposable Sandbox Network", (
 
     // Verify successful connection as sender
     const senderAddress = signer.sender.publicKey();
-    await expect(page.locator("text=Connected:")).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator("p:has-text('Connected:')")).toBeVisible({ timeout: 15_000 });
     await expect(page.locator("code").first()).toContainText(senderAddress);
 
     // Form and stream management sections should now be rendered
@@ -34,21 +34,25 @@ test.describe("StreamPay End-to-End Suite against Disposable Sandbox Network", (
     const tokenContractId = sandbox.tokenId;
     const depositAmount = "1000000000";
 
-    await page.locator("#token").fill(tokenContractId);
-    await page.locator("#recipient").fill(recipientAddress);
-    await page.locator("#deposit").fill(depositAmount);
-    await page.locator("#days").fill("1");
-    await page.locator("#cancelable").selectOption("yes");
+    // Switch to contract token and fill out stream form using robust data-testid hooks
+    await page.getByTestId("stream-asset-select").selectOption("contract");
+    await page.getByTestId("stream-token-input").fill(tokenContractId);
+    await page.getByTestId("stream-recipient-input").fill(recipientAddress);
+    await page.getByTestId("stream-deposit-input").fill(depositAmount);
+    await page.getByTestId("stream-duration-input").fill("1");
+    await page.getByTestId("stream-cancelable-select").selectOption("yes");
 
-    const createBtn = page.getByRole("button", { name: "Create stream" });
+    const createBtn = page.getByTestId("stream-submit-btn");
     await expect(createBtn).toBeEnabled();
     await createBtn.click();
 
-    // Wait for the stream creation confirmation message
-    const okStatus = page.locator(".ok");
-    await expect(okStatus).toContainText(/Stream #(\d+) created\./, { timeout: 45_000 });
+    // Wait for the stream creation confirmation toast message
+    const createdToast = page
+      .locator("[data-testid='toast-message'], .toast-message")
+      .filter({ hasText: /Stream #(\d+) created\./ });
+    await expect(createdToast).toBeVisible({ timeout: 45_000 });
 
-    const statusText = (await okStatus.textContent()) || "";
+    const statusText = (await createdToast.textContent()) || "";
     const match = statusText.match(/Stream #(\d+) created/);
     expect(match).not.toBeNull();
     const streamId = match![1];
@@ -69,7 +73,10 @@ test.describe("StreamPay End-to-End Suite against Disposable Sandbox Network", (
     // Verify on-chain details match inputs
     await expect(page.locator("tr:has-text('Sender') td")).toHaveText(senderAddress);
     await expect(page.locator("tr:has-text('Recipient') td")).toHaveText(recipientAddress);
-    await expect(page.locator("tr:has-text('Deposit') td")).toHaveText(depositAmount);
+    const depositCell = page.locator("tr:has-text('Deposit') td");
+    await expect(depositCell).toBeVisible();
+    const depositTitle = await depositCell.getAttribute("title");
+    expect(depositTitle).toContain(depositAmount);
     await expect(page.locator("tr:has-text('Cancelable') td")).toHaveText("true");
     await expect(page.locator("tr:has-text('Status') td")).toHaveText("Active");
 
@@ -97,8 +104,11 @@ test.describe("StreamPay End-to-End Suite against Disposable Sandbox Network", (
     await expect(withdrawMaxBtn).toBeVisible();
     await withdrawMaxBtn.click();
 
-    // Verify withdrawal confirmation
-    await expect(page.locator(".ok")).toContainText("Claimed", { timeout: 45_000 });
+    // Verify withdrawal confirmation toast
+    const claimToast = page
+      .locator("[data-testid='toast-message'], .toast-message")
+      .filter({ hasText: "Claimed" });
+    await expect(claimToast).toBeVisible({ timeout: 45_000 });
 
     // Verify withdrawn amount is updated in table
     const withdrawnCell = page.locator("tr:has-text('Withdrawn') td");
@@ -112,8 +122,11 @@ test.describe("StreamPay End-to-End Suite against Disposable Sandbox Network", (
     await expect(cancelBtn).toBeVisible();
     await cancelBtn.click();
 
-    // Verify cancellation confirmation
-    await expect(page.locator(".ok")).toContainText("Stream cancelled", { timeout: 45_000 });
+    // Verify cancellation confirmation toast
+    const cancelToast = page
+      .locator("[data-testid='toast-message'], .toast-message")
+      .filter({ hasText: "Stream cancelled" });
+    await expect(cancelToast).toBeVisible({ timeout: 45_000 });
     await expect(page.locator("h1")).toContainText("Cancelled");
   });
 
@@ -137,7 +150,10 @@ test.describe("StreamPay End-to-End Suite against Disposable Sandbox Network", (
     await expect(page.locator(".kicker")).toContainText(`STREAM #${seededId}`, {
       timeout: 15_000,
     });
-    await expect(page.locator("tr:has-text('Deposit') td")).toHaveText("5000000000");
+    const depositCell = page.locator("tr:has-text('Deposit') td");
+    await expect(depositCell).toBeVisible();
+    const depositTitle = await depositCell.getAttribute("title");
+    expect(depositTitle).toContain("5000000000");
 
     // Verify positive accrual
     const availableCell = page.locator("tr:has-text('Available now') td");
@@ -146,14 +162,17 @@ test.describe("StreamPay End-to-End Suite against Disposable Sandbox Network", (
     // 2. Fetch by ID from homepage lookup
     await page.goto("/");
     await page.getByRole("button", { name: "Connect Freighter" }).click();
-    await expect(page.locator("text=Connected:")).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator("p:has-text('Connected:')")).toBeVisible({ timeout: 15_000 });
 
     const lookupInput = page.getByPlaceholder("Stream ID");
     await lookupInput.fill(seededId);
     await page.getByRole("button", { name: "Fetch stream" }).click();
 
     // Verify the stream appears in list
-    await expect(page.locator(".ok")).toContainText(`Stream #${seededId} loaded.`);
+    const loadedToast = page
+      .locator("[data-testid='toast-message'], .toast-message")
+      .filter({ hasText: `Stream #${seededId} loaded.` });
+    await expect(loadedToast).toBeVisible({ timeout: 30_000 });
     await expect(page.locator(`tr:has-text("#${seededId}")`)).toBeVisible();
   });
 
@@ -175,11 +194,14 @@ test.describe("StreamPay End-to-End Suite against Disposable Sandbox Network", (
 
     await page.goto("/");
     await page.getByRole("button", { name: "Connect Freighter" }).click();
-    await expect(page.locator("text=Connected:")).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator("p:has-text('Connected:')")).toBeVisible({ timeout: 15_000 });
 
     // Click discover on-chain to index streams for sender
     await page.getByRole("button", { name: "Discover on-chain" }).click();
-    await expect(page.locator(".ok")).toContainText("Discovered", { timeout: 30_000 });
+    const discoverToast = page
+      .locator("[data-testid='toast-message'], .toast-message")
+      .filter({ hasText: "Discovered" });
+    await expect(discoverToast).toBeVisible({ timeout: 30_000 });
 
     // Assert stream appears in table
     const row = page.locator(`tr:has-text("#${seededId}")`);
@@ -189,7 +211,10 @@ test.describe("StreamPay End-to-End Suite against Disposable Sandbox Network", (
     const cancelTableBtn = row.getByRole("button", { name: "Cancel" });
     if (await cancelTableBtn.isVisible()) {
       await cancelTableBtn.click();
-      await expect(page.locator(".ok")).toContainText("cancelled", { timeout: 45_000 });
+      const cancelToast = page
+        .locator("[data-testid='toast-message'], .toast-message")
+        .filter({ hasText: "cancelled" });
+      await expect(cancelToast).toBeVisible({ timeout: 45_000 });
     }
   });
 });

@@ -28,7 +28,7 @@ describe("passphrase constants", () => {
     // plain Node run, and this module must stay loadable without it.
     const require = createRequire(import.meta.url);
     const { Networks } = require("@stellar/stellar-sdk") as {
-      Networks: { TESTNET: string; PUBLIC: string };
+      Networks: { TESTNET: string; PUBLIC: string; STANDALONE: string };
     };
     assert.equal(TESTNET_PASSPHRASE, Networks.TESTNET);
     assert.equal(PUBLIC_PASSPHRASE, Networks.PUBLIC);
@@ -36,7 +36,7 @@ describe("passphrase constants", () => {
 });
 
 describe("labelForPassphrase", () => {
-  it("recognises the two SDF passphrases", () => {
+  it("recognises the SDF passphrases and standalone sandbox", () => {
     assert.equal(labelForPassphrase(TESTNET_PASSPHRASE), "testnet");
     assert.equal(labelForPassphrase(PUBLIC_PASSPHRASE), "public");
   });

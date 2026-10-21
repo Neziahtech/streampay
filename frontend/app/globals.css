@@ -785,6 +785,12 @@ code,
   border: 1px solid rgba(61, 220, 132, 0.4);
 }
 
+.network-chip-local {
+  background: rgba(168, 85, 247, 0.15);
+  color: #c084fc;
+  border: 1px solid rgba(168, 85, 247, 0.4);
+}
+
 .network-text {
   color: var(--muted);
 }

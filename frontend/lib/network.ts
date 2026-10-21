@@ -9,24 +9,34 @@
  * ESM. lib/network.test.ts pins the passphrases against the SDK instead.
  */
 
-export type NetworkLabel = "testnet" | "public" | "unknown";
+export type NetworkLabel = "testnet" | "public" | "local" | "unknown";
 
 /**
- * The two SDF network passphrases. They are what Freighter reports from
- * `getNetwork()`, and they match `Networks.TESTNET` / `Networks.PUBLIC` in the
- * SDK that signs the transactions.
+ * The SDF and standalone network passphrases. They are what Freighter reports
+ * from `getNetwork()`, and they match `Networks.TESTNET` / `Networks.PUBLIC` /
+ * `Networks.STANDALONE` in the SDK that signs the transactions.
  */
 export const TESTNET_PASSPHRASE = "Test SDF Network ; September 2015";
 export const PUBLIC_PASSPHRASE =
   "Public Global Stellar Network ; September 2015";
+export const STANDALONE_PASSPHRASE = "Standalone Network ; February 2017";
 
-/** `TESTNET` / `PUBLIC` from `NEXT_PUBLIC_NETWORK`; anything else is testnet. */
-export const APP_NETWORK_LABEL: "testnet" | "public" =
-  process.env.NEXT_PUBLIC_NETWORK === "PUBLIC" ? "public" : "testnet";
+/** `TESTNET` / `PUBLIC` / `LOCAL` / `STANDALONE` from `NEXT_PUBLIC_NETWORK`; anything else is testnet. */
+export const APP_NETWORK_LABEL: "testnet" | "public" | "local" =
+  process.env.NEXT_PUBLIC_NETWORK === "PUBLIC"
+    ? "public"
+    : process.env.NEXT_PUBLIC_NETWORK === "LOCAL" ||
+      process.env.NEXT_PUBLIC_NETWORK === "STANDALONE"
+      ? "local"
+      : "testnet";
 
 /** Uppercase form shown in the badge chip. */
 export const APP_NETWORK_BADGE =
-  APP_NETWORK_LABEL === "public" ? "PUBLIC" : "TESTNET";
+  APP_NETWORK_LABEL === "public"
+    ? "PUBLIC"
+    : APP_NETWORK_LABEL === "local"
+      ? "LOCAL"
+      : "TESTNET";
 
 export const APP_CONTRACT_ID =
   process.env.NEXT_PUBLIC_STREAMING_CONTRACT_ID || "";
@@ -40,6 +50,13 @@ export const APP_CONTRACT_ID =
 export function labelForPassphrase(passphrase: string): NetworkLabel {
   if (passphrase === TESTNET_PASSPHRASE) return "testnet";
   if (passphrase === PUBLIC_PASSPHRASE) return "public";
+  if (
+    passphrase === STANDALONE_PASSPHRASE ||
+    (process.env.NEXT_PUBLIC_NETWORK_PASSPHRASE &&
+      passphrase === process.env.NEXT_PUBLIC_NETWORK_PASSPHRASE)
+  ) {
+    return "local";
+  }
   return "unknown";
 }
 
@@ -47,11 +64,12 @@ export function labelForPassphrase(passphrase: string): NetworkLabel {
 export function networkDisplayName(label: NetworkLabel): string {
   if (label === "testnet") return "Testnet";
   if (label === "public") return "Public Network (mainnet)";
+  if (label === "local") return "Local Sandbox";
   return "another network";
 }
 
 export interface NetworkMismatch {
-  appLabel: "testnet" | "public";
+  appLabel: "testnet" | "public" | "local";
   walletLabel: NetworkLabel;
   walletPassphrase: string;
 }
@@ -63,7 +81,7 @@ export interface NetworkMismatch {
  */
 export function findNetworkMismatch(
   wallet: { networkPassphrase?: string; error?: unknown } | null | undefined,
-  appLabel: "testnet" | "public" = APP_NETWORK_LABEL
+  appLabel: "testnet" | "public" | "local" = APP_NETWORK_LABEL
 ): NetworkMismatch | null {
   const passphrase = wallet?.networkPassphrase;
   if (!passphrase || wallet?.error) return null;
@@ -95,9 +113,9 @@ export function truncateContractId(
 
 export function explorerContractUrl(
   contractId = APP_CONTRACT_ID,
-  label: "testnet" | "public" = APP_NETWORK_LABEL
+  label: "testnet" | "public" | "local" = APP_NETWORK_LABEL
 ): string {
-  if (!contractId) return "";
+  if (!contractId || label === "local") return "";
   return `https://stellar.expert/explorer/${label}/contract/${contractId}`;
 }
 

@@ -216,6 +216,7 @@ export default function StreamForm({
           </label>
           <select
             id={assetId}
+            data-testid="stream-asset-select"
             value={asset}
             onChange={(e) => setAsset(e.target.value as AssetChoice)}
             required
@@ -233,6 +234,7 @@ export default function StreamForm({
             </label>
             <input
               id={tokenId}
+              data-testid="stream-token-input"
               type="text"
               required
               placeholder={t("form.tokenPlaceholder")}
@@ -254,6 +256,7 @@ export default function StreamForm({
           </label>
           <input
             id={recipientId}
+            data-testid="stream-recipient-input"
             type="text"
             required
             placeholder="G…"
@@ -282,6 +285,7 @@ export default function StreamForm({
           </label>
           <input
             id={depositId}
+            data-testid="stream-deposit-input"
             type="text"
             inputMode="numeric"
             required
@@ -312,6 +316,7 @@ export default function StreamForm({
           </label>
           <input
             id={daysId}
+            data-testid="stream-duration-input"
             type="number"
             min="0.001"
             step="any"
@@ -325,6 +330,7 @@ export default function StreamForm({
           <label htmlFor={cancelableId}>{t("form.cancelableLabel")}</label>
           <select
             id={cancelableId}
+            data-testid="stream-cancelable-select"
             value={args.cancelable ? "yes" : "no"}
             onChange={set("cancelable")}
           >
@@ -437,7 +443,7 @@ export default function StreamForm({
         </div>
       )}
 
-      <button type="submit" disabled={busy}>
+      <button type="submit" data-testid="stream-submit-btn" disabled={busy}>
         {busy ? t("form.submitting") : t("form.submit")}
       </button>
     </form>

@@ -4,27 +4,20 @@
   "private": true,
   "description": "Workspace-level scripts exposing every workflow step for contributors.",
   "scripts": {
-    "test":        "cargo test -p streampay-contract --locked",
+    "test": "cargo test -p streampay-contract --locked",
     "client-parity:bless": "node scripts/client-parity/bless.mjs",
-    "test:fuzz":   "echo 'Run fuzz targets manually: cd fuzz && cargo +nightly fuzz run <target>'",
-
-    "lint":        "cargo fmt --all -- --check && cargo clippy --all-targets -- -D warnings",
-    "lint:fix":    "cargo fmt --all",
-
-    "build":       "npm run build:contract && npm run build:frontend",
+    "test:fuzz": "echo 'Run fuzz targets manually: cd fuzz && cargo +nightly fuzz run <target>'",
+    "lint": "cargo fmt --all -- --check && cargo clippy --all-targets -- -D warnings",
+    "lint:fix": "cargo fmt --all",
+    "build": "npm run build:contract && npm run build:frontend",
     "build:contract": "cd contracts/streaming-payments && stellar contract build",
     "build:frontend": "cd frontend && npm run build",
-
-    "deploy":      "bash scripts/deploy_testnet.sh",
+    "deploy": "bash scripts/deploy_testnet.sh",
     "deploy:local": "bash scripts/seed-local.sh",
-
-    "seed":        "bash scripts/seed-local.sh",
-
-    "dev":         "cd frontend && npm run dev",
-
-    "typecheck":   "cd frontend && npm run typecheck",
-    "audit":       "cd frontend && npm audit --omit=dev --audit-level=high",
-
+    "seed": "bash scripts/seed-local.sh",
+    "dev": "cd frontend && npm run dev",
+    "typecheck": "cd frontend && npm run typecheck",
+    "audit": "cd frontend && npm audit --omit=dev --audit-level=high",
     "generated:check": "bash scripts/check_generated.sh all",
     "generated:surface": "bash scripts/check_generated.sh surface",
     "generated:catalog": "bash scripts/check_generated.sh catalog",
@@ -33,13 +26,14 @@
     "codes:check": "bash scripts/check_error_codes.sh",
     "links:check": "node scripts/check_docs_links.mjs",
     "json:check": "node scripts/check_duplicate_json_keys.mjs --self-test",
-
     "errors:check": "bash scripts/check_generated.sh surface",
     "errors:regen": "cargo run -p streampay-contract --example error_surface_doc",
-
     "matrix": "npm run codes:check && npm run lint && npm run test && npm run build:contract && npm run build:frontend && npm run typecheck && npm run audit && npm run generated:check && npm run eol:check && npm run links:check && npm run json:check",
-
     "ci:contract": "npm run codes:check && npm run lint && npm run test && npm run build:contract && npm run generated:surface",
     "ci:frontend": "npm run build:frontend && npm run typecheck && npm run audit"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.1",
+    "@stellar/stellar-sdk": "^17.2.1"
   }
 }

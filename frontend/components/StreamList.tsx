@@ -51,7 +51,7 @@ export default function StreamList({
           const amountInputId = `stream-amount-${s.id}`;
 
           return (
-            <tr key={s.id}>
+            <tr key={s.id} data-testid={`stream-row-${s.id}`}>
               <td className="mono">
                 <Link href={`/stream/${s.id}`}>#{s.id}</Link>
               </td>
@@ -108,6 +108,7 @@ export default function StreamList({
                   </button>
                   <button
                     type="button"
+                    data-testid={`stream-withdraw-max-btn-${s.id}`}
                     onClick={() => onWithdrawMax(s.id)}
                     title="Claim the entire accrued balance in one call"
                     aria-label={`Withdraw maximum from stream #${s.id}`}
@@ -123,6 +124,7 @@ export default function StreamList({
                   </button>
                   <button
                     type="button"
+                    data-testid={`stream-cancel-btn-${s.id}`}
                     onClick={() => onCancel(s.id)}
                     aria-label={`Cancel stream #${s.id}`}
                   >

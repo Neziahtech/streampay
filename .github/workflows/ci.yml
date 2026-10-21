@@ -480,3 +480,80 @@ jobs:
       - name: Error catalog is up to date
         run: bash scripts/check_generated.sh catalog
 
+  e2e:
+    name: E2E — Playwright user journey against Stellar sandbox
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+
+      - name: Cache cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-e2e-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-e2e-cargo-
+
+      - name: Install stellar-cli v28.1.0
+        run: |
+          curl -fsSL https://github.com/stellar/stellar-cli/releases/download/v28.1.0/stellar-cli-28.1.0-x86_64-unknown-linux-gnu.tar.gz | tar xz
+          sudo install stellar /usr/local/bin/stellar
+          stellar --version
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Build contract wasm
+        working-directory: contracts/streaming-payments
+        run: stellar contract build
+
+      - name: Start Stellar sandbox container
+        run: |
+          docker run -d --rm --name stellar-sandbox -p 8000:8000 stellar/quickstart:testing --local
+          echo "Waiting for sandbox RPC to become healthy..."
+          for i in $(seq 1 60); do
+            if curl -s -f -X POST http://localhost:8000/rpc \
+              -H "Content-Type: application/json" \
+              -d '{"jsonrpc": "2.0", "id": 1, "method": "getHealth"}' >/dev/null 2>&1 \
+              || curl -s -f http://localhost:8000/friendbot >/dev/null 2>&1; then
+              echo "Sandbox is healthy!"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Deploy contract and demo asset to sandbox
+        run: bash scripts/deploy_sandbox.sh
+
+      - name: Run Playwright E2E tests
+        run: npx playwright test
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report
+          path: playwright-report/
+          if-no-files-found: ignore
+
+

@@ -260,6 +260,11 @@ function createMockRpcServer(port: number = 8000): Promise<http.Server> {
                       status: "Active",
                     });
                   } catch {}
+                } else if (funcName === "allowance") {
+                  retval = nativeToScVal(1_000_000_000_000n, { type: "i128" });
+                } else if (funcName === "approve") {
+                  retval = nativeToScVal(null);
+                  lastReturnedValue = retval;
                 } else if (funcName === "cancel_stream") {
                   retval = nativeToScVal(null);
                   lastReturnedValue = retval;
@@ -334,6 +339,8 @@ function createMockRpcServer(port: number = 8000): Promise<http.Server> {
                     stream.withdrawn += toWithdraw;
                     lastReturnedValue = nativeToScVal(toWithdraw, { type: "i128" });
                   }
+                } else if (funcName === "approve") {
+                  lastReturnedValue = nativeToScVal(null);
                 } else if (funcName === "cancel_stream") {
                   const sId = BigInt(scValToNative(funcArgs[1]));
                   const stream = mockStreams.get(sId);

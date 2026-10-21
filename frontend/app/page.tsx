@@ -138,7 +138,7 @@ export default function Home() {
         </div>
         <p className="muted">{t("home.tagline")}</p>
         <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
-          <button onClick={connect}>{t("home.connect")}</button>
+          <button data-testid="connect-freighter-btn" onClick={connect}>{t("home.connect")}</button>
           <a
             href="/simulator"
             style={{
@@ -182,7 +182,7 @@ export default function Home() {
           </Link>
         </div>
       </div>
-      <p className="muted">
+      <p className="muted" data-testid="connected-address-label">
         {t("home.connectedLabel")} <code>{address}</code>
       </p>
 
@@ -222,6 +222,7 @@ export default function Home() {
 
         <div className="row">
           <input
+            data-testid="stream-lookup-input"
             type="text"
             inputMode="numeric"
             placeholder={t("home.streamIdPlaceholder")}
@@ -235,6 +236,7 @@ export default function Home() {
           />
 
           <button
+            data-testid="stream-lookup-btn"
             type="button"
             onClick={fetchStreamById}
             disabled={lookupLoading}
@@ -247,7 +249,7 @@ export default function Home() {
       <section className="card">
         <h2>{t("home.yourStreams")}</h2>
         <div className="row">
-          <button onClick={discover} title={t("home.discoverOnchain")}>
+          <button data-testid="discover-streams-btn" onClick={discover} title={t("home.discoverOnchain")}>
             {t("home.discoverOnchain")}
           </button>
         </div>
