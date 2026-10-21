@@ -74,11 +74,11 @@ pub enum ModelError {
     /// Payout of collected fees in withdraw_treasury failed.
     TreasuryPayoutFailed = 30,
     /// Stream funding deposit is below the protocol minimum threshold.
-    DepositBelowMinimum = 64,
+    DepositBelowMinimum = 80,
     /// Claim or withdrawal amount is below the protocol economic threshold.
-    ClaimBelowMinimum = 65,
+    ClaimBelowMinimum = 81,
     /// Stream is active or has unwithdrawn funds and cannot be swept.
-    StreamNotSweepable = 66,
+    StreamNotSweepable = 82,
 }
 
 impl ModelError {
