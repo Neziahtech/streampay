@@ -47,7 +47,9 @@ export function computeAvailable(
   now: bigint
 ): bigint {
   if (status !== "Active") return 0n;
-  return computeAccruedAt(deposit, startTime, endTime, now) - withdrawn;
+  const accrued = computeAccruedAt(deposit, startTime, endTime, now);
+  const available = accrued - withdrawn;
+  return available < 0n ? 0n : available;
 }
 
 export type StreamSnapshot = {

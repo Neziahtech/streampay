@@ -71,6 +71,7 @@ export default function StreamDetail() {
       const [s, a] = await Promise.all([readStream(id), readAvailable(id)]);
       setStream(s);
       setAvailable(a);
+      setDisplayAvailable(a);
       fetchAssetMeta(s.token).then((meta) => setAssetMeta(meta));
       setSnapshot({
         deposit: BigInt(s.deposit),
@@ -108,7 +109,16 @@ export default function StreamDetail() {
   // on-chain `available` value. A client-side guard can only ever prevent, never guarantee,
   // a successful on-chain claim (e.g. near end_time or right after a concurrent cancel).
   useEffect(() => {
-    if (!snapshot) return;
+    if (!snapshot || snapshot.status !== "Active") return;
+
+    // Respect reduced-motion preferences
+    if (
+      typeof window !== "undefined" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ) {
+      return;
+    }
+
     const timer = setInterval(() => {
       const now = BigInt(Math.floor(Date.now() / 1000));
       const next = computeAvailable(

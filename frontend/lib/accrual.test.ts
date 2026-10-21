@@ -57,8 +57,17 @@ describe("computeAvailable", () => {
     assert.strictEqual(computeAvailable(1000n, 1000, 2000, 100n, "Depleted", 1500n), 0n);
   });
 
+  it("returns 0 for completed/ended stream", () => {
+    assert.strictEqual(computeAvailable(1000n, 1000, 2000, 100n, "Completed", 1500n), 0n);
+  });
+
   it("returns streamed - withdrawn for active stream", () => {
     // 1000n * 500n / 1000n = 500n, 500n - 100n = 400n
     assert.strictEqual(computeAvailable(1000n, 1000, 2000, 100n, "Active", 1500n), 400n);
+  });
+
+  it("clamps to 0 when accrued is less than withdrawn (avoids negative balance)", () => {
+    // 1000n * 100n / 1000n = 100n accrued, but withdrawn is 150n
+    assert.strictEqual(computeAvailable(1000n, 1000, 2000, 150n, "Active", 1100n), 0n);
   });
 });
