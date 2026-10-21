@@ -1,0 +1,18 @@
+{
+  "default_branch": "main",
+  "branches": [
+    "main",
+    "origin",
+    "security/issue-24-add-pause-stream-resume-stream-to-the-stream"
+  ],
+  "parent": {
+    "main": null,
+    "origin": "main",
+    "security/issue-24-add-pause-stream-resume-stream-to-the-stream": "main"
+  },
+  "order": [
+    "main",
+    "origin",
+    "security/issue-24-add-pause-stream-resume-stream-to-the-stream"
+  ]
+}
