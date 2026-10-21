@@ -42,7 +42,9 @@ export class FeeObserver {
   private inflight = false;
 
   constructor(private readonly options: FeeObserverOptions) {
-    this.server = new rpc.Server(options.rpcUrl);
+    this.server = new rpc.Server(options.rpcUrl, {
+      allowHttp: options.rpcUrl.startsWith("http://"),
+    });
     this.pollMs = options.pollMs ?? DEFAULT_POLL_MS;
   }
 

@@ -165,6 +165,8 @@ function ToastItem({
     <div
       ref={itemRef}
       className={`toast-item toast-${toast.type}`}
+      data-testid="toast-item"
+      data-toast-type={toast.type}
       // role="alert" for errors (assertive); role="status" for success/info (polite)
       role={isError ? "alert" : "status"}
       aria-live={isError ? "assertive" : "polite"}
@@ -178,7 +180,7 @@ function ToastItem({
       </span>
       {/* Screen-reader-only type label prepended to message for non-visual context */}
       <span className="sr-only">{iconLabels[toast.type]}: </span>
-      <div className="toast-message">{toast.message}</div>
+      <div className="toast-message" data-testid="toast-message">{toast.message}</div>
       <button
         type="button"
         className="toast-close"
