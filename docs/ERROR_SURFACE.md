@@ -8,7 +8,7 @@ Every expected failure is a `StreamError` with a stable numeric code. This docum
 
 | Code | Variant | Status | Processed by | Meaning |
 | ---: | --- | --- | --- | --- |
-| 1 | `StreamNotFound` | reachable (1 branch(es)) | `accept_ownership_transfer`, `available`, `cancel_stream`, `get_stream`, `propose_ownership_transfer`, `sponsored_withdraw`, `top_up`, `withdraw`, `withdraw_max` | no stream is stored under the id |
+| 1 | `StreamNotFound` | reachable (1 branch(es)) | `accept_ownership_transfer`, `available`, `cancel_stream`, `get_stream`, `propose_ownership_transfer`, `sponsored_withdraw`, `sweep_stream`, `top_up`, `withdraw`, `withdraw_max` | no stream is stored under the id |
 | 2 | `NotStreamSender` | **retired** (unreachable) | — | Reserved role check from the original draft. The contract authorizes sender-only actions by comparing the caller address directly and uses `NotAuthorized` (#12) otherwise, so this variant is never returned. Retained for wire compatibility. |
 | 3 | `NotStreamRecipient` | **retired** (unreachable) | — | Reserved role check from the original draft. Recipient-only actions require the recipient's authorization (`require_auth`) and use `NotAuthorized` (#12) for business-rule rejections, so this variant is never returned. Retained for wire compatibility. |
 | 4 | `StreamNotCancellable` | reachable (1 branch(es)) | `cancel_stream` | the recipient calls cancel_stream on a stream created non-cancelable |
@@ -87,23 +87,30 @@ Every expected failure is a `StreamError` with a stable numeric code. This docum
 | 77 | `GovernanceDuplicateSignature` | reachable (1 branch(es)) | `governance_sign` | this address already signed the proposal; execution needs two distinct keys |
 | 78 | `GovernanceSignaturesInsufficient` | reachable (1 branch(es)) | `governance_execute` | fewer than the required distinct, still-current signatures are recorded |
 | 79 | `GovernanceTimelockRequired` | reachable (1 branch(es)) | `execute_upgrade`, `migrate_storage`, `nominate_governor`, `propose_upgrade`, `set_fee_bps`, `set_frozen`, `set_oracle_config`, `set_stream_policy`, `withdraw_treasury` | the action requires an executed governance proposal now that governance is bootstrapped |
+| 80 | `DepositBelowMinimum` | reachable (1 branch(es)) | `create_stream`, `create_streams` | deposit_amount is below MIN_STREAM_DEPOSIT |
+| 81 | `ClaimBelowMinimum` | reachable (2 branch(es)) | `withdraw`, `withdraw_max` | withdraw amount is below MIN_CLAIM_AMOUNT; available amount is below MIN_CLAIM_AMOUNT |
+| 82 | `StreamNotSweepable` | reachable (1 branch(es)) | `sweep_stream` | the stream is active or has unwithdrawn funds and cannot be swept |
 
 ## Branch matrix (entrypoint × condition → error)
 
 | Branch | Entrypoint(s) | Error | Code | Condition | Reachability |
 | --- | --- | --- | ---: | --- | --- |
 | `CreateDepositNonPositive` | `create_stream`, `create_streams` | `ZeroAmount` | 9 | deposit_amount is zero or negative | reachable |
+| `CreateDepositBelowMinimum` | `create_stream`, `create_streams` | `DepositBelowMinimum` | 80 | deposit_amount is below MIN_STREAM_DEPOSIT | reachable |
 | `CreateStartTimeInPast` | `create_stream`, `create_streams` | `StartTimeInPast` | 6 | start_time is before the current ledger timestamp | reachable |
 | `CreateInvalidTimeRange` | `create_stream`, `create_streams` | `InvalidTimeRange` | 7 | end_time is not strictly after start_time (zero or negative duration) | reachable |
 | `CreateDurationTooLong` | `create_stream`, `create_streams` | `DurationTooLong` | 8 | duration exceeds MAX_DURATION_SECONDS (100 years) | reachable |
 | `WithdrawAmountNonPositive` | `withdraw` | `ZeroAmount` | 9 | withdraw amount is zero or negative | reachable |
+| `WithdrawAmountBelowMinimum` | `withdraw` | `ClaimBelowMinimum` | 81 | withdraw amount is below MIN_CLAIM_AMOUNT | reachable |
 | `WithdrawAmountExceedsAvailable` | `withdraw` | `AmountExceedsAvailable` | 10 | amount exceeds the accrued-but-unwithdrawn balance | reachable |
 | `WithdrawMaxNothingToWithdraw` | `withdraw_max` | `NothingToWithdraw` | 13 | nothing has accrued yet, or everything accrued was already withdrawn | reachable |
+| `WithdrawMaxAmountBelowMinimum` | `withdraw_max` | `ClaimBelowMinimum` | 81 | available amount is below MIN_CLAIM_AMOUNT | reachable |
+| `StreamNotSweepable` | `sweep_stream` | `StreamNotSweepable` | 82 | the stream is active or has unwithdrawn funds and cannot be swept | reachable |
 | `CancelStreamNotCancellable` | `cancel_stream` | `StreamNotCancellable` | 4 | the recipient calls cancel_stream on a stream created non-cancelable | reachable |
 | `CancelStreamNotAuthorized` | `cancel_stream` | `NotAuthorized` | 12 | the caller is neither the sender nor the recipient | reachable |
 | `TopUpAmountNonPositive` | `top_up` | `ZeroAmount` | 9 | top-up amount is zero or negative | reachable |
 | `TopUpDepositOverflow` | `top_up` | `MathOverflow` | 11 | deposit + amount would overflow i128 | reachable |
-| `StreamNotFound` | `get_stream`, `available`, `withdraw`, `withdraw_max`, `cancel_stream`, `top_up`, `sponsored_withdraw`, `propose_ownership_transfer`, `accept_ownership_transfer` | `StreamNotFound` | 1 | no stream is stored under the id | reachable |
+| `StreamNotFound` | `get_stream`, `available`, `withdraw`, `withdraw_max`, `cancel_stream`, `top_up`, `sponsored_withdraw`, `propose_ownership_transfer`, `accept_ownership_transfer`, `sweep_stream` | `StreamNotFound` | 1 | no stream is stored under the id | reachable |
 | `StreamNotActive` | `withdraw`, `withdraw_max`, `cancel_stream`, `top_up`, `sponsored_withdraw`, `propose_ownership_transfer`, `accept_ownership_transfer` | `StreamNotActive` | 5 | the stream status is Cancelled or Depleted | reachable |
 | `CapacityOverflow` | `create_stream`, `top_up` | `MathOverflow` | 11 | deposit * duration would overflow u128 | reachable |
 | `RateProductOverflow` | `streamed_at`, `available`, `withdraw`, `withdraw_max`, `cancel_stream`, `sponsored_withdraw` | `MathOverflow` | 11 | deposit * elapsed would overflow u128 | reachable |
