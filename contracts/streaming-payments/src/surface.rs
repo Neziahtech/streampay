@@ -42,14 +42,19 @@ pub enum Reachability {
 pub enum Branch {
     // --------------------------------------------------------- create_stream
     CreateDepositNonPositive,
+    CreateDepositBelowMinimum,
     CreateStartTimeInPast,
     CreateInvalidTimeRange,
     CreateDurationTooLong,
     // -------------------------------------------------------------- withdraw
     WithdrawAmountNonPositive,
+    WithdrawAmountBelowMinimum,
     WithdrawAmountExceedsAvailable,
     // ---------------------------------------------------------- withdraw_max
     WithdrawMaxNothingToWithdraw,
+    WithdrawMaxAmountBelowMinimum,
+    // --------------------------------------------------------- sweep_stream
+    StreamNotSweepable,
     // --------------------------------------------------------- cancel_stream
     CancelStreamNotCancellable,
     CancelStreamNotAuthorized,
@@ -239,14 +244,18 @@ impl Branch {
     /// Every branch, in declaration order. The matrix test walks this list and
     /// the coverage test requires each [`StreamError`] variant to be produced by
     /// one of these (or retired).
-    pub const ALL: [Branch; 93] = [
+    pub const ALL: [Branch; 97] = [
         Branch::CreateDepositNonPositive,
+        Branch::CreateDepositBelowMinimum,
         Branch::CreateStartTimeInPast,
         Branch::CreateInvalidTimeRange,
         Branch::CreateDurationTooLong,
         Branch::WithdrawAmountNonPositive,
+        Branch::WithdrawAmountBelowMinimum,
         Branch::WithdrawAmountExceedsAvailable,
         Branch::WithdrawMaxNothingToWithdraw,
+        Branch::WithdrawMaxAmountBelowMinimum,
+        Branch::StreamNotSweepable,
         Branch::CancelStreamNotCancellable,
         Branch::CancelStreamNotAuthorized,
         Branch::TopUpAmountNonPositive,
@@ -341,14 +350,18 @@ impl Branch {
     pub const fn entrypoints(self) -> &'static [&'static str] {
         match self {
             Branch::CreateDepositNonPositive
+            | Branch::CreateDepositBelowMinimum
             | Branch::CreateStartTimeInPast
             | Branch::CreateInvalidTimeRange
             | Branch::CreateDurationTooLong => &["create_stream", "create_streams"],
             Branch::CreateBatchEmpty | Branch::CreateBatchTooLarge => &["create_streams_batch"],
-            Branch::WithdrawAmountNonPositive | Branch::WithdrawAmountExceedsAvailable => {
-                &["withdraw"]
+            Branch::WithdrawAmountNonPositive
+            | Branch::WithdrawAmountBelowMinimum
+            | Branch::WithdrawAmountExceedsAvailable => &["withdraw"],
+            Branch::WithdrawMaxNothingToWithdraw | Branch::WithdrawMaxAmountBelowMinimum => {
+                &["withdraw_max"]
             }
-            Branch::WithdrawMaxNothingToWithdraw => &["withdraw_max"],
+            Branch::StreamNotSweepable => &["sweep_stream"],
             Branch::CancelStreamNotCancellable | Branch::CancelStreamNotAuthorized => {
                 &["cancel_stream"]
             }
@@ -363,6 +376,7 @@ impl Branch {
                 "sponsored_withdraw",
                 "propose_ownership_transfer",
                 "accept_ownership_transfer",
+                "sweep_stream",
             ],
             Branch::StreamNotActive => &[
                 "withdraw",
@@ -537,12 +551,16 @@ impl Branch {
     pub const fn error(self) -> StreamError {
         match self {
             Branch::CreateDepositNonPositive => StreamError::ZeroAmount,
+            Branch::CreateDepositBelowMinimum => StreamError::DepositBelowMinimum,
             Branch::CreateStartTimeInPast => StreamError::StartTimeInPast,
             Branch::CreateInvalidTimeRange => StreamError::InvalidTimeRange,
             Branch::CreateDurationTooLong => StreamError::DurationTooLong,
             Branch::WithdrawAmountNonPositive => StreamError::ZeroAmount,
+            Branch::WithdrawAmountBelowMinimum => StreamError::ClaimBelowMinimum,
             Branch::WithdrawAmountExceedsAvailable => StreamError::AmountExceedsAvailable,
             Branch::WithdrawMaxNothingToWithdraw => StreamError::NothingToWithdraw,
+            Branch::WithdrawMaxAmountBelowMinimum => StreamError::ClaimBelowMinimum,
+            Branch::StreamNotSweepable => StreamError::StreamNotSweepable,
             Branch::CancelStreamNotCancellable => StreamError::StreamNotCancellable,
             Branch::CancelStreamNotAuthorized => StreamError::NotAuthorized,
             Branch::TopUpAmountNonPositive => StreamError::ZeroAmount,
@@ -640,17 +658,23 @@ impl Branch {
     pub const fn condition(self) -> &'static str {
         match self {
             Branch::CreateDepositNonPositive => "deposit_amount is zero or negative",
+            Branch::CreateDepositBelowMinimum => "deposit_amount is below MIN_STREAM_DEPOSIT",
             Branch::CreateStartTimeInPast => "start_time is before the current ledger timestamp",
             Branch::CreateInvalidTimeRange => {
                 "end_time is not strictly after start_time (zero or negative duration)"
             }
             Branch::CreateDurationTooLong => "duration exceeds MAX_DURATION_SECONDS (100 years)",
             Branch::WithdrawAmountNonPositive => "withdraw amount is zero or negative",
+            Branch::WithdrawAmountBelowMinimum => "withdraw amount is below MIN_CLAIM_AMOUNT",
             Branch::WithdrawAmountExceedsAvailable => {
                 "amount exceeds the accrued-but-unwithdrawn balance"
             }
             Branch::WithdrawMaxNothingToWithdraw => {
                 "nothing has accrued yet, or everything accrued was already withdrawn"
+            }
+            Branch::WithdrawMaxAmountBelowMinimum => "available amount is below MIN_CLAIM_AMOUNT",
+            Branch::StreamNotSweepable => {
+                "the stream is active or has unwithdrawn funds and cannot be swept"
             }
             Branch::CancelStreamNotCancellable => {
                 "the recipient calls cancel_stream on a stream created non-cancelable"

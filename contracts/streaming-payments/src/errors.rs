@@ -226,6 +226,12 @@ pub enum StreamError {
     /// The action requires an executed governance proposal now that the signer
     /// set is bootstrapped; the direct entry point is closed.
     GovernanceTimelockRequired = 79,
+    /// Stream deposit is below the protocol minimum funding threshold (MIN_STREAM_DEPOSIT).
+    DepositBelowMinimum = 80,
+    /// Withdrawal amount is below the protocol minimum claim threshold (MIN_CLAIM_AMOUNT).
+    ClaimBelowMinimum = 81,
+    /// Stream does not qualify for sweeping (it is still active with unwithdrawn funds).
+    StreamNotSweepable = 82,
 }
 
 impl StreamError {
@@ -312,6 +318,9 @@ impl StreamError {
         StreamError::GovernanceDuplicateSignature,
         StreamError::GovernanceSignaturesInsufficient,
         StreamError::GovernanceTimelockRequired,
+        StreamError::DepositBelowMinimum,
+        StreamError::ClaimBelowMinimum,
+        StreamError::StreamNotSweepable,
     ];
 
     /// The stable numeric value carried across the contract boundary

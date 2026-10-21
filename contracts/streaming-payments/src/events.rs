@@ -417,6 +417,18 @@ pub struct OwnershipAccepted {
     pub role: OwnershipRole,
 }
 
+/// Emitted when a fully-depleted or cancelled stream is permissionlessly swept,
+/// removing its persistent storage entry and crediting residual rent.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamSwept {
+    #[topic]
+    pub stream_id: u64,
+    pub caller: Address,
+    pub designated_party: Address,
+    pub rent_refund: i128,
+}
+
 // --------------------------------------------------------------- governance --
 //
 // The lifecycle of a timelocked admin action (issue #119). These events wrap the
