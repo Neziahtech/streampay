@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { isConnected, requestAccess } from "@stellar/freighter-api";
 import {
   createStream,
@@ -15,13 +16,17 @@ import {
   describeError,
   type StreamView,
 } from "@/lib/stellar";
-import { formatAmount } from "@/lib/format";
 import { loadStreamIds, saveStreamId } from "@/lib/storage";
-import StreamDashboardView from "@/components/StreamDashboardView";
+import { checkWalletNetwork } from "@/lib/network";
+import { useLocale } from "@/lib/i18n/provider";
+import StreamForm from "@/components/StreamForm";
+import BatchStreamForm from "@/components/BatchStreamForm";
+import StreamList from "@/components/StreamList";
 import { useToast } from "@/components/toast";
 
 export default function Home() {
   const toast = useToast();
+  const { t, formatToken } = useLocale();
   const [address, setAddress] = useState<string | null>(null);
   const [streams, setStreams] = useState<StreamView[]>([]);
   const [lookupId, setLookupId] = useState("");
@@ -32,20 +37,20 @@ export default function Home() {
       const { isConnected: connected, error: connectedError } =
         await isConnected();
       if (connectedError || !connected) {
-        toast.error("Freighter not detected — install the extension and reload.");
+        toast.error(t("home.walletMissing"));
         return;
       }
       const { address, error: accessError } = await requestAccess();
       if (accessError || !address) {
         toast.error(
-          `Wallet connection failed: ${
-            accessError?.message ?? "no address returned from Freighter."
-          }`
+          t("home.walletFailed", {
+            reason: accessError?.message ?? t("home.walletNoAddress"),
+          })
         );
         return;
       }
       setAddress(address);
-      toast.success(`Connected as ${address.slice(0, 8)}…`);
+      toast.success(t("home.connectedAs", { address: `${address.slice(0, 8)}…` }));
       // Surface a wallet/app network mismatch here instead of letting it
       // arrive later as an opaque signing error (issue #33).
       await checkWalletNetwork();
@@ -60,7 +65,7 @@ export default function Home() {
         );
       }
     } catch (e) {
-      toast.error(`Wallet connection failed: ${String(e)}`);
+      toast.error(t("home.walletFailed", { reason: String(e) }));
     }
   }
 
@@ -85,7 +90,7 @@ export default function Home() {
       for (const s of [...asRecipient, ...asSender]) byId.set(s.id, s);
       const found = [...byId.values()].sort((a, b) => Number(b.id) - Number(a.id));
       setStreams(found);
-      toast.info(`Discovered ${found.length} stream(s) on-chain.`);
+      toast.info(t("home.discovered", { count: found.length }));
       for (const s of found) saveStreamId(address, s.id);
     } catch (e) {
       toast.error(describeError(e));
@@ -96,7 +101,7 @@ export default function Home() {
     const id = lookupId.trim();
 
     if (!id) {
-      toast.error("Enter a stream ID.");
+      toast.error(t("home.enterStreamId"));
       return;
     }
 
@@ -105,92 +110,206 @@ export default function Home() {
     try {
       const stream = await readStream(id);
       setStreams((prev) => [stream, ...prev.filter((x) => x.id !== stream.id)]);
-      toast.success(`Stream #${stream.id} loaded.`);
+      toast.success(t("home.streamLoaded", { id: stream.id }));
       setLookupId("");
     } catch {
-      toast.error("Stream not found. Check the ID and try again.");
+      toast.error(t("home.streamNotFound"));
     } finally {
       setLookupLoading(false);
     }
   }
 
+  if (!address) {
+    return (
+      <main className="wrap">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap" }}>
+          <div>
+            <div className="kicker mono">{t("home.kicker")}</div>
+            <h1>{t("home.title")}</h1>
+          </div>
+          <div style={{ display: "flex", gap: "16px", alignItems: "center" }}>
+            <Link href="/docs" style={{ color: "#38bdf8", fontSize: "0.85rem", textDecoration: "none" }}>
+              {t("chrome.apiDocs")}
+            </Link>
+            <Link href="/listings" style={{ color: "var(--accent2)", fontSize: "14px", textDecoration: "none" }}>
+              {t("home.browse")}
+            </Link>
+          </div>
+        </div>
+        <p className="muted">{t("home.tagline")}</p>
+        <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
+          <button onClick={connect}>{t("home.connect")}</button>
+          <a
+            href="/simulator"
+            style={{
+              display: "inline-block",
+              marginTop: "14px",
+              padding: "10px 18px",
+              background: "#161f30",
+              border: "1px solid var(--line)",
+              borderRadius: "8px",
+              color: "var(--accent2)",
+              textDecoration: "none",
+              fontWeight: 600,
+              fontSize: "14px",
+            }}
+          >
+            {t("chrome.simulatorLink")}
+          </a>
+        </div>
+      </main>
+    );
+  }
+
   return (
-    <StreamDashboardView
-      address={address}
-      streams={streams}
-      lookupId={lookupId}
-      lookupLoading={lookupLoading}
-      onConnect={connect}
-      onLookupChange={setLookupId}
-      onLookupSubmit={fetchStreamById}
-      onCreateStream={async (args) => {
-        if (!address) return;
-        try {
-          const id = await createStream(address, args);
-          toast.success(`Stream #${id} created.`);
-          await refresh(String(id));
-        } catch (e) {
-          toast.error(describeError(e));
-        }
-      }}
-      onCreateBatch={async (token, entries, cancelable) => {
-        if (!address) return false;
-        try {
-          const ids = await createStreams(address, token, entries, cancelable);
-          toast.success(
-            `${ids.length} stream${ids.length === 1 ? "" : "s"} created: ${ids
-              .map((id) => `#${id}`)
-              .join(", ")}.`
-          );
-          await Promise.all(ids.map((id) => refresh(String(id))));
-          return true;
-        } catch (e) {
-          toast.error(describeError(e));
-          return false;
-        }
-      }}
-      onDiscover={discover}
-      onWithdraw={async (id, amount) => {
-        if (!address) return;
-        try {
-          await withdrawFromStream(address, id, amount);
-          toast.success(`Withdrew ${amount} units from stream #${id}.`);
-          await refresh(id);
-        } catch (e) {
-          toast.error(describeError(e));
-        }
-      }}
-      onWithdrawMax={async (id) => {
-        if (!address) return;
-        try {
-          const paid = await withdrawMaxFromStream(address, id);
-          toast.success(`Claimed ${paid} units from stream #${id}.`);
-          await refresh(id);
-        } catch (e) {
-          toast.error(describeError(e));
-        }
-      }}
-      onTopUp={async (id, amount) => {
-        if (!address) return;
-        try {
-          await topUpStream(address, id, amount);
-          toast.success(`Topped up stream #${id} by ${amount} units.`);
-          await refresh(id);
-        } catch (e) {
-          toast.error(describeError(e));
-        }
-      }}
-      onCancel={async (id) => {
-        if (!address) return;
-        try {
-          await cancelStream(address, id);
-          toast.success(`Stream #${id} cancelled.`);
-          await refresh(id);
-        } catch (e) {
-          toast.error(describeError(e));
-        }
-      }}
-      onRefresh={(id) => refresh(id)}
-    />
+    <main className="wrap">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap" }}>
+        <h1>{t("home.title")}</h1>
+        <div style={{ display: "flex", gap: "16px", alignItems: "baseline" }}>
+          <a
+            href="/simulator"
+            style={{
+              color: "var(--accent2)",
+              textDecoration: "none",
+              fontSize: "13px",
+              fontWeight: 600,
+            }}
+          >
+            {t("chrome.simulatorLink")}
+          </a>
+          <Link href="/listings" style={{ color: "var(--accent2)", fontSize: "14px", textDecoration: "none" }}>
+            {t("home.browse")}
+          </Link>
+        </div>
+      </div>
+      <p className="muted">
+        {t("home.connectedLabel")} <code>{address}</code>
+      </p>
+
+      <StreamForm
+        onCreate={async (args) => {
+          try {
+            const id = await createStream(address, args);
+            toast.success(t("home.created", { id }));
+            await refresh(String(id));
+          } catch (e) {
+            toast.error(describeError(e));
+          }
+        }}
+      />
+
+      <BatchStreamForm
+        onCreate={async (token, entries, cancelable) => {
+          try {
+            const ids = await createStreams(address, token, entries, cancelable);
+            toast.success(
+              t("home.batchCreated", {
+                count: ids.length,
+                ids: ids.map((id) => `#${id}`).join(", "),
+              })
+            );
+            await Promise.all(ids.map((id) => refresh(String(id))));
+            return true;
+          } catch (e) {
+            toast.error(describeError(e));
+            return false;
+          }
+        }}
+      />
+
+      <section className="card">
+        <h2>{t("home.fetchById")}</h2>
+
+        <div className="row">
+          <input
+            type="text"
+            inputMode="numeric"
+            placeholder={t("home.streamIdPlaceholder")}
+            value={lookupId}
+            onChange={(e) => setLookupId(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                void fetchStreamById();
+              }
+            }}
+          />
+
+          <button
+            type="button"
+            onClick={fetchStreamById}
+            disabled={lookupLoading}
+          >
+            {lookupLoading ? t("home.fetching") : t("home.fetch")}
+          </button>
+        </div>
+      </section>
+
+      <section className="card">
+        <h2>{t("home.yourStreams")}</h2>
+        <div className="row">
+          <button onClick={discover} title={t("home.discoverOnchain")}>
+            {t("home.discoverOnchain")}
+          </button>
+        </div>
+        <StreamList
+          streams={streams}
+          onWithdraw={async (id, amount) => {
+            try {
+              await withdrawFromStream(address, id, amount);
+              const target = streams.find((s) => s.id === id);
+              let amountLabel = `${amount} ${t("home.unitsWord")}`;
+              if (target) {
+                const meta = await fetchAssetMeta(target.token);
+                amountLabel = `${formatToken(BigInt(amount), meta.decimals)} ${meta.code}`;
+              }
+              toast.success(t("home.withdrew", { amount: amountLabel, id }));
+              await refresh(id);
+            } catch (e) {
+              toast.error(describeError(e));
+            }
+          }}
+          onWithdrawMax={async (id) => {
+            try {
+              const paid = await withdrawMaxFromStream(address, id);
+              const target = streams.find((s) => s.id === id);
+              let paidLabel = `${paid} ${t("home.unitsWord")}`;
+              if (target) {
+                const meta = await fetchAssetMeta(target.token);
+                paidLabel = `${formatToken(paid, meta.decimals)} ${meta.code}`;
+              }
+              toast.success(t("home.claimed", { amount: paidLabel, id }));
+              await refresh(id);
+            } catch (e) {
+              toast.error(describeError(e));
+            }
+          }}
+          onTopUp={async (id, amount) => {
+            try {
+              await topUpStream(address, id, amount);
+              const target = streams.find((s) => s.id === id);
+              let amountLabel = `${amount} ${t("home.unitsWord")}`;
+              if (target) {
+                const meta = await fetchAssetMeta(target.token);
+                amountLabel = `${formatToken(BigInt(amount), meta.decimals)} ${meta.code}`;
+              }
+              toast.success(t("home.toppedUp", { amount: amountLabel, id }));
+              await refresh(id);
+            } catch (e) {
+              toast.error(describeError(e));
+            }
+          }}
+          onCancel={async (id) => {
+            try {
+              await cancelStream(address, id);
+              toast.success(t("home.cancelled", { id }));
+              await refresh(id);
+            } catch (e) {
+              toast.error(describeError(e));
+            }
+          }}
+          onRefresh={(id) => refresh(id)}
+        />
+      </section>
+    </main>
   );
 }
