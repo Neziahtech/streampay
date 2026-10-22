@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { isConnected, requestAccess } from "@stellar/freighter-api";
 import {
   createStream,
   createStreams,
@@ -17,56 +16,40 @@ import {
   type StreamView,
 } from "@/lib/stellar";
 import { loadStreamIds, saveStreamId } from "@/lib/storage";
-import { checkWalletNetwork } from "@/lib/network";
+import { useWallet } from "@/lib/wallet-context";
 import { useLocale } from "@/lib/i18n/provider";
 import StreamForm from "@/components/StreamForm";
 import BatchStreamForm from "@/components/BatchStreamForm";
 import StreamList from "@/components/StreamList";
+import WalletButton from "@/components/WalletButton";
 import { useToast } from "@/components/toast";
 
 export default function Home() {
   const toast = useToast();
+  const { address, signTransaction } = useWallet();
   const { t, formatToken } = useLocale();
-  const [address, setAddress] = useState<string | null>(null);
   const [streams, setStreams] = useState<StreamView[]>([]);
   const [lookupId, setLookupId] = useState("");
   const [lookupLoading, setLookupLoading] = useState(false);
 
-  async function connect() {
-    try {
-      const { isConnected: connected, error: connectedError } =
-        await isConnected();
-      if (connectedError || !connected) {
-        toast.error(t("home.walletMissing"));
-        return;
-      }
-      const { address, error: accessError } = await requestAccess();
-      if (accessError || !address) {
-        toast.error(
-          t("home.walletFailed", {
-            reason: accessError?.message ?? t("home.walletNoAddress"),
-          })
-        );
-        return;
-      }
-      setAddress(address);
-      toast.success(t("home.connectedAs", { address: `${address.slice(0, 8)}…` }));
-      // Surface a wallet/app network mismatch here instead of letting it
-      // arrive later as an opaque signing error (issue #33).
-      await checkWalletNetwork();
-      // Rehydrate the cached list (ids only; state is always read fresh).
-      const cached = loadStreamIds(address);
-      if (cached.length > 0) {
-        const views = await Promise.all(
-          cached.map((id) => readStream(id).catch(() => null))
-        );
-        setStreams(
-          views.filter((s): s is StreamView => s !== null).reverse()
-        );
-      }
-    } catch (e) {
-      toast.error(t("home.walletFailed", { reason: String(e) }));
+  async function onConnected(addr: string) {
+    // Rehydrate the cached list (ids only; state is always read fresh).
+    const cached = loadStreamIds(addr);
+    if (cached.length > 0) {
+      const views = await Promise.all(
+        cached.map((id) => readStream(id).catch(() => null))
+      );
+      setStreams(
+        views.filter((s): s is StreamView => s !== null).reverse()
+      );
     }
+  }
+
+  // Fire rehydration once address becomes known.
+  const [lastAddress, setLastAddress] = useState<string | null>(null);
+  if (address && address !== lastAddress) {
+    setLastAddress(address);
+    void onConnected(address);
   }
 
   async function refresh(id: string) {
@@ -138,7 +121,7 @@ export default function Home() {
         </div>
         <p className="muted">{t("home.tagline")}</p>
         <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
-          <button onClick={connect}>{t("home.connect")}</button>
+          <WalletButton />
           <a
             href="/simulator"
             style={{
@@ -177,6 +160,7 @@ export default function Home() {
           >
             {t("chrome.simulatorLink")}
           </a>
+          <WalletButton />
           <Link href="/listings" style={{ color: "var(--accent2)", fontSize: "14px", textDecoration: "none" }}>
             {t("home.browse")}
           </Link>
@@ -189,7 +173,7 @@ export default function Home() {
       <StreamForm
         onCreate={async (args) => {
           try {
-            const id = await createStream(address, args);
+            const id = await createStream(address, args, signTransaction);
             toast.success(t("home.created", { id }));
             await refresh(String(id));
           } catch (e) {
@@ -201,7 +185,7 @@ export default function Home() {
       <BatchStreamForm
         onCreate={async (token, entries, cancelable) => {
           try {
-            const ids = await createStreams(address, token, entries, cancelable);
+            const ids = await createStreams(address, token, entries, cancelable, signTransaction);
             toast.success(
               t("home.batchCreated", {
                 count: ids.length,
@@ -255,7 +239,7 @@ export default function Home() {
           streams={streams}
           onWithdraw={async (id, amount) => {
             try {
-              await withdrawFromStream(address, id, amount);
+              await withdrawFromStream(address, id, amount, signTransaction);
               const target = streams.find((s) => s.id === id);
               let amountLabel = `${amount} ${t("home.unitsWord")}`;
               if (target) {
@@ -270,7 +254,7 @@ export default function Home() {
           }}
           onWithdrawMax={async (id) => {
             try {
-              const paid = await withdrawMaxFromStream(address, id);
+              const paid = await withdrawMaxFromStream(address, id, signTransaction);
               const target = streams.find((s) => s.id === id);
               let paidLabel = `${paid} ${t("home.unitsWord")}`;
               if (target) {
@@ -285,7 +269,7 @@ export default function Home() {
           }}
           onTopUp={async (id, amount) => {
             try {
-              await topUpStream(address, id, amount);
+              await topUpStream(address, id, amount, signTransaction);
               const target = streams.find((s) => s.id === id);
               let amountLabel = `${amount} ${t("home.unitsWord")}`;
               if (target) {
@@ -300,7 +284,7 @@ export default function Home() {
           }}
           onCancel={async (id) => {
             try {
-              await cancelStream(address, id);
+              await cancelStream(address, id, signTransaction);
               toast.success(t("home.cancelled", { id }));
               await refresh(id);
             } catch (e) {

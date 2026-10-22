@@ -2,9 +2,12 @@
  * Minimal Soroban integration for StreamPay.
  *
  * Flow for every mutating call: build the contract operation → simulate
- * (validity + resource estimate) → Freighter signs → send → poll until
+ * (validity + resource estimate) → wallet adapter signs → send → poll until
  * inclusion, then decode the contract's return value. Read-only calls
  * simulate and decode the return value without signing.
+ *
+ * Signing is injected via a `signer` callback — callers obtain this from
+ * `useWallet().signTransaction` so the signing path is wallet-agnostic.
  */
 import {
   Account,
@@ -17,7 +20,8 @@ import {
   Contract,
   xdr,
 } from "@stellar/stellar-sdk";
-import { signTransaction } from "@stellar/freighter-api";
+/** Injected signing callback type — matches WalletAdapter.signTransaction. */
+export type TxSigner = (txXdr: string, network: string) => Promise<string>;
 import type { BatchStreamEntry } from "./batch";
 import {
   globalFrontendTracer,
@@ -220,22 +224,26 @@ const DUMMY_SOURCE = new Account(
 );
 
 /**
- * Builds, simulates, Freighter-signs, sends and polls a mutating contract
+ * Builds, simulates, adapter-signs, sends and polls a mutating contract
  * operation. Resolves with the contract method's decoded return value.
+ *
+ * @param signer Injected signing callback from the active WalletAdapter.
  */
 async function send<T>(
   source: string,
   operation: xdr.Operation,
-  decode: (v: xdr.ScVal) => T
+  decode: (v: xdr.ScVal) => T,
+  signer: TxSigner
 ): Promise<T> {
-  const { result } = await sendWithTx(source, operation, decode);
+  const { result } = await sendWithTx(source, operation, decode, signer);
   return result;
 }
 
 async function sendWithTx<T>(
   source: string,
   operation: xdr.Operation,
-  decode: (v: xdr.ScVal) => T
+  decode: (v: xdr.ScVal) => T,
+  signer: TxSigner
 ): Promise<{ result: T; txHash: string }> {
   const server = new rpc.Server(RPC_URL);
   const account = await server.getAccount(source);
@@ -254,10 +262,8 @@ async function sendWithTx<T>(
   }
   const ready = rpc.assembleTransaction(tx, simulated).build();
 
-  // 2. Sign with Freighter.
-  const { signedTxXdr } = await signTransaction(ready.toXDR(), {
-    networkPassphrase: NETWORK,
-  });
+  // 2. Sign via the injected adapter (Freighter, Albedo, …).
+  const signedTxXdr = await signer(ready.toXDR(), NETWORK);
   const signed = TransactionBuilder.fromXDR(signedTxXdr, NETWORK);
 
   // 3. Send and poll for inclusion.
@@ -302,8 +308,8 @@ async function readAllowance(
 /**
  * Makes sure the streaming contract may pull `amount` of `token` from
  * `sender` before a create/top-up is simulated. SAC allowances are exact and
- * decrease with every pull, so this signs a `token.approve` transaction with
- * Freighter **only when the current allowance is short**.
+ * decrease with every pull, so this signs a `token.approve` transaction via
+ * the active wallet adapter **only when the current allowance is short**.
  *
  * A token that does not answer `allowance` (not SEP-41 shaped) or an RPC
  * hiccup returns without approving: the contract call that follows then
@@ -312,7 +318,8 @@ async function readAllowance(
 async function ensureAllowance(
   sender: string,
   token: string,
-  amount: string
+  amount: string,
+  signer: TxSigner
 ): Promise<void> {
   const current = await readAllowance(token, sender, CONTRACT_ID);
   if (current === null || current >= BigInt(amount)) return;
@@ -331,20 +338,22 @@ async function ensureAllowance(
       i128(amount),
       u32(liveUntilLedger)
     ),
-    () => undefined
+    () => undefined,
+    signer
   );
 }
 
 export async function createStream(
   sender: string,
-  args: StreamArgs
+  args: StreamArgs,
+  signer: TxSigner
 ): Promise<bigint> {
   const token = tokenContractId(args.token); // "native" → the network's XLM SAC
   const start = BigInt(Math.floor(Date.now() / 1000) + 1);
   // The contract pulls the deposit through a token allowance — make sure it
-  // is in place before simulation (one extra Freighter signature on the
-  // first stream with a given asset).
-  await ensureAllowance(sender, token, args.deposit);
+  // is in place before simulation (one extra wallet signature on the first
+  // stream with a given asset).
+  await ensureAllowance(sender, token, args.deposit, signer);
   const op = buildCreateStreamOperationForDays(
     CONTRACT_ID,
     sender,
@@ -356,7 +365,7 @@ export async function createStream(
     args.cancelable
   );
   // create_stream returns the new stream id (u64).
-  return send(sender, op, (v) => BigInt(scValToNative(v) as bigint));
+  return send(sender, op, (v) => BigInt(scValToNative(v) as bigint), signer);
 }
 
 /** Creates a payroll batch with a single contract invocation. */
@@ -364,7 +373,8 @@ export async function createStreams(
   sender: string,
   token: string,
   entries: BatchStreamEntry[],
-  cancelable: boolean
+  cancelable: boolean,
+  signer: TxSigner
 ): Promise<bigint[]> {
   if (entries.length === 0) {
     throw new Error("Add at least one stream to the batch.");
@@ -401,19 +411,25 @@ export async function createStreams(
     scAddr(sender),
     xdr.ScVal.scvVec(inputs)
   );
-  return send(sender, op, (v) => {
-    const decoded = scValToNative(v);
-    if (!Array.isArray(decoded)) {
-      throw new Error("Contract returned an invalid stream id list.");
-    }
-    return decoded.map((id) => BigInt(id));
-  });
+  return send(
+    sender,
+    op,
+    (v) => {
+      const decoded = scValToNative(v);
+      if (!Array.isArray(decoded)) {
+        throw new Error("Contract returned an invalid stream id list.");
+      }
+      return decoded.map((id) => BigInt(id));
+    },
+    signer
+  );
 }
 
 export async function withdrawFromStream(
   recipient: string,
   streamId: string,
-  amount: string
+  amount: string,
+  signer: TxSigner
 ): Promise<void> {
   return globalFrontendTracer.withSpan(
     "browser.claim_click",
@@ -427,7 +443,8 @@ export async function withdrawFromStream(
       const { result, txHash } = await sendWithTx(
         recipient,
         buildWithdrawOperation(CONTRACT_ID, streamId, amount),
-        () => undefined
+        () => undefined,
+        signer
       );
 
       if (txHash) {
@@ -447,7 +464,8 @@ export async function withdrawFromStream(
  */
 export async function withdrawMaxFromStream(
   recipient: string,
-  streamId: string
+  streamId: string,
+  signer: TxSigner
 ): Promise<bigint> {
   return globalFrontendTracer.withSpan(
     "browser.claim_click",
@@ -461,7 +479,8 @@ export async function withdrawMaxFromStream(
       const { result, txHash } = await sendWithTx(
         recipient,
         contract().call("withdraw_max", u64(streamId)),
-        (v) => BigInt(scValToNative(v) as bigint)
+        (v) => BigInt(scValToNative(v) as bigint),
+        signer
       );
 
       if (txHash) {
@@ -523,6 +542,7 @@ export async function prepareWithdrawMax(
 
 /** Freighter-signs a prepared envelope, returning the signed XDR. */
 export async function signPreparedIntent(xdr: string): Promise<string> {
+  const { signTransaction } = await import("@stellar/freighter-api");
   const { signedTxXdr } = await signTransaction(xdr, {
     networkPassphrase: NETWORK,
   });
@@ -566,12 +586,14 @@ export interface ClaimReceipt {
  */
 export async function claimStreamWithReceipt(
   recipient: string,
-  streamId: string
+  streamId: string,
+  signer: TxSigner
 ): Promise<ClaimReceipt> {
   const { result, txHash } = await sendWithTx(
     recipient,
     contract().call("withdraw_max", u64(streamId)),
-    (v) => BigInt(scValToNative(v) as bigint)
+    (v) => BigInt(scValToNative(v) as bigint),
+    signer
   );
   return {
     txHash,
@@ -583,28 +605,32 @@ export async function claimStreamWithReceipt(
 export async function topUpStream(
   sender: string,
   streamId: string,
-  amount: string
+  amount: string,
+  signer: TxSigner
 ): Promise<void> {
   // Top-ups pull through the same token allowance as the deposit. If the
   // stream cannot be read, skip the pre-check and let `top_up` simulation
   // surface the contract's own error (e.g. StreamNotFound).
   const stream = await readStream(streamId).catch(() => null);
-  if (stream) await ensureAllowance(sender, stream.token, amount);
+  if (stream) await ensureAllowance(sender, stream.token, amount, signer);
   await send(
     sender,
     contract().call("top_up", u64(streamId), i128(amount)),
-    () => undefined
+    () => undefined,
+    signer
   );
 }
 
 export async function cancelStream(
   caller: string,
-  streamId: string
+  streamId: string,
+  signer: TxSigner
 ): Promise<void> {
   await send(
     caller,
     contract().call("cancel_stream", scAddr(caller), u64(streamId)),
-    () => undefined
+    () => undefined,
+    signer
   );
 }
 
@@ -916,12 +942,14 @@ export async function readBeneficiaryKey(
  */
 export async function enrollBeneficiary(
   beneficiary: string,
-  publicKeyHex: string
+  publicKeyHex: string,
+  signer: TxSigner
 ): Promise<void> {
   await send(
     beneficiary,
     contract().call("enroll_beneficiary", scAddr(beneficiary), bytesScVal(publicKeyHex)),
-    () => undefined
+    () => undefined,
+    signer
   );
 }
 
