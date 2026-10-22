@@ -464,6 +464,23 @@ fn canonical_relay_message_has_a_frozen_wire_form() {
     );
 }
 
+#[test]
+fn test_sponsored_withdraw_rejects_claim_below_minimum() {
+    let f = Fixture::setup();
+    let sponsor_addr = Address::generate(&f.env);
+    let op = test_signer(&f.env, 11);
+    let ben = test_signer(&f.env, 22);
+    register_op(&f, &sponsor_addr, &op, DEPOSIT, DEPOSIT, DAY);
+    f.client
+        .mock_all_auths()
+        .enroll_beneficiary(&f.recipient, &ben.public_key);
+    let id = accrued_stream(&f);
+
+    // amount: 10 < MIN_CLAIM_AMOUNT (50)
+    let res = relay_claim(&f, &sponsor_addr, &op, &ben, id, 10, 1, f.env.ledger().timestamp() + DAY);
+    assert_eq!(relay_rejection(res), StreamError::ClaimBelowMinimum);
+}
+
 fn hex_bytes(b: &soroban_sdk::Bytes) -> std::string::String {
     let mut s = std::string::String::new();
     for i in 0..b.len() {

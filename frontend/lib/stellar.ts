@@ -26,6 +26,7 @@ import {
 import { sanitizeAddress } from "./privacy.ts";
 import {
   buildCreateStreamOperationForDays,
+  buildSweepStreamOperation,
   buildWithdrawOperation,
   i128,
   scAddr,
@@ -472,6 +473,23 @@ export async function withdrawMaxFromStream(
       return result;
     },
     { kind: "CLIENT" }
+  );
+}
+
+/**
+ * Permissionlessly sweeps a fully depleted or cancelled stream, deleting its
+ * storage entry from the ledger and refunding residual rent (in stroops) to
+ * the designated party (or stream sender if omitted).
+ */
+export async function sweepStream(
+  caller: string,
+  streamId: string,
+  designatedParty?: string | null
+): Promise<bigint> {
+  return send(
+    caller,
+    buildSweepStreamOperation(CONTRACT_ID, caller, streamId, designatedParty),
+    (v) => BigInt(scValToNative(v) as bigint)
   );
 }
 

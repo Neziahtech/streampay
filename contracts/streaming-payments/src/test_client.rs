@@ -78,6 +78,22 @@ pub trait StreamingPaymentsApi {
     fn available(env: Env, stream_id: u64) -> Result<i128, StreamError>;
     fn recipient_streams(env: Env, recipient: Address, offset: u32, limit: u32) -> Vec<u64>;
     fn sender_streams(env: Env, sender: Address, offset: u32, limit: u32) -> Vec<u64>;
+    fn is_stream_sweepable(env: Env, stream_id: u64) -> bool;
+    fn sweep_stream(
+        env: Env,
+        caller: Address,
+        stream_id: u64,
+        designated_party: Option<Address>,
+    ) -> Result<i128, StreamError>;
+    fn rent_refund_balance(env: Env, party: Address) -> i128;
+    fn total_streams_swept(env: Env) -> u64;
+    fn total_rent_refunded(env: Env) -> i128;
+    fn claim_rent_refund(
+        env: Env,
+        party: Address,
+        token: Address,
+        recipient: Address,
+    ) -> Result<i128, StreamError>;
     // ---------------------------------------------------------- treasury surface
 
     // --- scheduled intents ---

@@ -506,6 +506,10 @@ pub fn sponsored_withdraw(
             Branch::SponsoredWithdrawAmountExceedsAvailable,
         ));
     }
+    // Blocker 3: enforce economic floor on sponsored path too.
+    if amount < crate::stream::MIN_CLAIM_AMOUNT {
+        return Err(surface::reject(Branch::WithdrawAmountBelowMinimum));
+    }
 
     // --- consent / replay / expiry ---------------------------------------
     let beneficiary_key = get_beneficiary_key(&env, &beneficiary)

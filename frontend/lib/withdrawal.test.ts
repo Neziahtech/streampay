@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { validateWithdrawal, fmtUnits } from "./withdrawal.ts";
+import { validateWithdrawal, isClaimWorthwhile, MIN_CLAIM_AMOUNT, fmtUnits } from "./withdrawal.ts";
 
 describe("Withdrawal Validation", () => {
   it("rejects empty or whitespace-only inputs", () => {
@@ -48,6 +48,22 @@ describe("Withdrawal Validation", () => {
     assert.equal(res.valid, true);
     assert.equal(res.overWithdrawal, false);
     assert.equal(res.amount, 100n);
+  });
+
+  it("flags and rejects amounts below economic minimum floor", () => {
+    const res = validateWithdrawal("25", 100n, 50n);
+    assert.equal(res.valid, false);
+    assert.equal(res.belowMinimum, true);
+    assert.equal(res.overWithdrawal, false);
+    assert.match(res.error ?? "", /minimum economic claim floor/);
+  });
+
+  it("checks whether claiming available amount is worthwhile", () => {
+    assert.equal(isClaimWorthwhile(null), false);
+    assert.equal(isClaimWorthwhile(0n), false);
+    assert.equal(isClaimWorthwhile(49n, 50n), false);
+    assert.equal(isClaimWorthwhile(50n, 50n), true);
+    assert.equal(isClaimWorthwhile(100n, 50n), true);
   });
 
   it("formats token units safely", () => {

@@ -3612,7 +3612,7 @@
                   "u64": "17"
                 },
                 {
-                  "i128": "22109"
+                  "i128": "21396"
                 }
               ]
             }
@@ -3780,7 +3780,7 @@
                   "u64": "12"
                 },
                 {
-                  "i128": "10610"
+                  "i128": "3779"
                 }
               ]
             }
@@ -3876,7 +3876,7 @@
                   "u64": "4"
                 },
                 {
-                  "i128": "25884"
+                  "i128": "23021"
                 }
               ]
             }
@@ -3972,7 +3972,7 @@
                   "u64": "5"
                 },
                 {
-                  "i128": "202530"
+                  "i128": "224182"
                 }
               ]
             }
@@ -4399,7 +4399,7 @@
                   "u64": "13"
                 },
                 {
-                  "i128": "7749"
+                  "i128": "37200"
                 }
               ]
             }
@@ -5591,7 +5591,7 @@
                   "u64": "13"
                 },
                 {
-                  "i128": "57314"
+                  "i128": "623"
                 }
               ]
             }
@@ -6056,7 +6056,7 @@
                   "u64": "5"
                 },
                 {
-                  "i128": "11592"
+                  "i128": "235516"
                 }
               ]
             }
@@ -6931,7 +6931,7 @@
                   "u64": "14"
                 },
                 {
-                  "i128": "6029"
+                  "i128": "9443"
                 }
               ]
             }
@@ -11013,6 +11013,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "use_oracle"
+                    },
+                    "val": {
+                      "bool": false
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "withdrawn"
                     },
                     "val": {
@@ -11121,6 +11129,14 @@
                     },
                     "val": {
                       "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "use_oracle"
+                    },
+                    "val": {
+                      "bool": false
                     }
                   },
                   {
@@ -11237,6 +11253,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "use_oracle"
+                    },
+                    "val": {
+                      "bool": false
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "withdrawn"
                     },
                     "val": {
@@ -11345,6 +11369,14 @@
                     },
                     "val": {
                       "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "use_oracle"
+                    },
+                    "val": {
+                      "bool": false
                     }
                   },
                   {
@@ -11461,6 +11493,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "use_oracle"
+                    },
+                    "val": {
+                      "bool": false
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "withdrawn"
                     },
                     "val": {
@@ -11569,6 +11609,14 @@
                     },
                     "val": {
                       "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "use_oracle"
+                    },
+                    "val": {
+                      "bool": false
                     }
                   },
                   {
@@ -11685,6 +11733,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "use_oracle"
+                    },
+                    "val": {
+                      "bool": false
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "withdrawn"
                     },
                     "val": {
@@ -11793,6 +11849,14 @@
                     },
                     "val": {
                       "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "use_oracle"
+                    },
+                    "val": {
+                      "bool": false
                     }
                   },
                   {
@@ -11909,6 +11973,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "use_oracle"
+                    },
+                    "val": {
+                      "bool": false
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "withdrawn"
                     },
                     "val": {
@@ -12017,6 +12089,14 @@
                     },
                     "val": {
                       "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "use_oracle"
+                    },
+                    "val": {
+                      "bool": false
                     }
                   },
                   {
@@ -12133,6 +12213,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "use_oracle"
+                    },
+                    "val": {
+                      "bool": false
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "withdrawn"
                     },
                     "val": {
@@ -12241,6 +12329,14 @@
                     },
                     "val": {
                       "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "use_oracle"
+                    },
+                    "val": {
+                      "bool": false
                     }
                   },
                   {
@@ -12357,6 +12453,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "use_oracle"
+                    },
+                    "val": {
+                      "bool": false
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "withdrawn"
                     },
                     "val": {
@@ -12469,10 +12573,18 @@
                   },
                   {
                     "key": {
+                      "symbol": "use_oracle"
+                    },
+                    "val": {
+                      "bool": false
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "withdrawn"
                     },
                     "val": {
-                      "i128": "206459"
+                      "i128": "209873"
                     }
                   }
                 ]
@@ -12577,6 +12689,14 @@
                     },
                     "val": {
                       "address": "CBEPDNVYXQGWB5YUBXKJWYJA7OXTZW5LFLNO5JRRGE6Z6C5OSUZPCCEL"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "use_oracle"
+                    },
+                    "val": {
+                      "bool": false
                     }
                   },
                   {
@@ -12693,6 +12813,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "use_oracle"
+                    },
+                    "val": {
+                      "bool": false
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "withdrawn"
                     },
                     "val": {
@@ -12805,10 +12933,18 @@
                   },
                   {
                     "key": {
+                      "symbol": "use_oracle"
+                    },
+                    "val": {
+                      "bool": false
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "withdrawn"
                     },
                     "val": {
-                      "i128": "22109"
+                      "i128": "21396"
                     }
                   }
                 ]
@@ -12913,6 +13049,14 @@
                     },
                     "val": {
                       "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "use_oracle"
+                    },
+                    "val": {
+                      "bool": false
                     }
                   },
                   {
@@ -13029,6 +13173,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "use_oracle"
+                    },
+                    "val": {
+                      "bool": false
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "withdrawn"
                     },
                     "val": {
@@ -13137,6 +13289,14 @@
                     },
                     "val": {
                       "address": "CBEPDNVYXQGWB5YUBXKJWYJA7OXTZW5LFLNO5JRRGE6Z6C5OSUZPCCEL"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "use_oracle"
+                    },
+                    "val": {
+                      "bool": false
                     }
                   },
                   {
@@ -13253,6 +13413,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "use_oracle"
+                    },
+                    "val": {
+                      "bool": false
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "withdrawn"
                     },
                     "val": {
@@ -13361,6 +13529,14 @@
                     },
                     "val": {
                       "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "use_oracle"
+                    },
+                    "val": {
+                      "bool": false
                     }
                   },
                   {
@@ -13477,6 +13653,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "use_oracle"
+                    },
+                    "val": {
+                      "bool": false
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "withdrawn"
                     },
                     "val": {
@@ -13585,6 +13769,14 @@
                     },
                     "val": {
                       "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "use_oracle"
+                    },
+                    "val": {
+                      "bool": false
                     }
                   },
                   {
@@ -13701,6 +13893,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "use_oracle"
+                    },
+                    "val": {
+                      "bool": false
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "withdrawn"
                     },
                     "val": {
@@ -13809,6 +14009,14 @@
                     },
                     "val": {
                       "address": "CBEPDNVYXQGWB5YUBXKJWYJA7OXTZW5LFLNO5JRRGE6Z6C5OSUZPCCEL"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "use_oracle"
+                    },
+                    "val": {
+                      "bool": false
                     }
                   },
                   {
@@ -13925,6 +14133,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "use_oracle"
+                    },
+                    "val": {
+                      "bool": false
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "withdrawn"
                     },
                     "val": {
@@ -14033,6 +14249,14 @@
                     },
                     "val": {
                       "address": "CBEPDNVYXQGWB5YUBXKJWYJA7OXTZW5LFLNO5JRRGE6Z6C5OSUZPCCEL"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "use_oracle"
+                    },
+                    "val": {
+                      "bool": false
                     }
                   },
                   {
@@ -14149,6 +14373,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "use_oracle"
+                    },
+                    "val": {
+                      "bool": false
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "withdrawn"
                     },
                     "val": {
@@ -14257,6 +14489,14 @@
                     },
                     "val": {
                       "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "use_oracle"
+                    },
+                    "val": {
+                      "bool": false
                     }
                   },
                   {
@@ -15789,7 +16029,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "206459"
+                      "i128": "209873"
                     }
                   },
                   {
@@ -15893,7 +16133,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "1526921"
+                      "i128": "1523507"
                     }
                   },
                   {
@@ -16213,7 +16453,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "253003"
+                      "i128": "252290"
                     }
                   },
                   {
@@ -16369,7 +16609,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "2670284"
+                      "i128": "2670997"
                     }
                   },
                   {

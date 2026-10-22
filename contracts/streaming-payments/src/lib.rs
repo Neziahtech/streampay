@@ -104,7 +104,7 @@ pub use events::{
     PolicyAssetExecuted, PolicyAssetQueued, PolicyHandoffAccepted, PolicyHandoffCancelled,
     PolicyHandoffProposed, PolicyInitialized, ScheduledIntentCancelled, ScheduledIntentExpired,
     ScheduledStreamExecuted, SponsorActiveSet, SponsorClaim, SponsorRegistered, StorageMigrated,
-    StreamCancelled, StreamCreated, StreamPolicySet, StreamScheduled, StreamToppedUp,
+    StreamCancelled, StreamCreated, StreamPolicySet, StreamScheduled, StreamSwept, StreamToppedUp,
     StreamsCreated, UpgradeCancelled, UpgradeProposed, Withdrawn,
 };
 pub use governance::{
@@ -120,8 +120,9 @@ pub use sponsor::{PeriodSpend, SponsorConfig};
 pub use stream::{
     streamed_at, BatchEntry, MigrationStatus, OwnershipRole, PendingOwnership, PendingUpgrade,
     Stream, StreamStatus, INITIAL_SCHEMA_VERSION, MAX_BATCH, MAX_DURATION_SECONDS,
-    MAX_MIGRATION_BATCH_SIZE, MAX_PAGE_SIZE, MIN_BATCH, MIN_UPGRADE_DELAY_SECONDS,
-    OWNERSHIP_PROPOSAL_TTL_SECONDS, TARGET_SCHEMA_VERSION,
+    MAX_MIGRATION_BATCH_SIZE, MAX_PAGE_SIZE, MIN_BATCH, MIN_CLAIM_AMOUNT, MIN_STREAM_DEPOSIT,
+    MIN_UPGRADE_DELAY_SECONDS, OWNERSHIP_PROPOSAL_TTL_SECONDS, STREAM_RENT_REFUND,
+    TARGET_SCHEMA_VERSION,
 };
 pub use treasury::{fee_amount, FeeScan, Treasury, TreasuryStatus, BPS_DENOMINATOR, MAX_FEE_BPS};
 
@@ -464,6 +465,9 @@ impl StreamingPayments {
     ) -> Result<(), StreamError> {
         if deposit_amount <= 0 {
             return Err(surface::reject(Branch::CreateDepositNonPositive));
+        }
+        if deposit_amount < stream::MIN_STREAM_DEPOSIT {
+            return Err(surface::reject(Branch::CreateDepositBelowMinimum));
         }
         if start_time < now {
             return Err(surface::reject(Branch::CreateStartTimeInPast));
@@ -956,6 +960,9 @@ impl StreamingPayments {
             return Err(surface::reject(Branch::WithdrawAmountNonPositive));
         }
         let mut s = Self::authorize_withdrawal(&env, stream_id)?;
+        if amount < stream::MIN_CLAIM_AMOUNT {
+            return Err(surface::reject(Branch::WithdrawAmountBelowMinimum));
+        }
 
         let resolved = oracle::resolve_stream_time(&env, stream_id, s.use_oracle);
         let available = stream::available_amount_at(&s, resolved.timestamp)?;
@@ -1012,6 +1019,9 @@ impl StreamingPayments {
         let amount = stream::available_amount_at(&s, resolved.timestamp)?;
         if amount <= 0 {
             return Err(surface::reject(Branch::WithdrawMaxNothingToWithdraw));
+        }
+        if amount < stream::MIN_CLAIM_AMOUNT {
+            return Err(surface::reject(Branch::WithdrawMaxAmountBelowMinimum));
         }
 
         Self::pay_out(&env, &mut s, amount)?;
@@ -1720,6 +1730,130 @@ impl StreamingPayments {
         stream::page_stream_ids(&env, &stream::DataKey::SenderStreams(sender), offset, limit)
     }
 
+    // --------------------------------------------------- stale stream sweep ---
+
+    /// Checks whether a stream qualifies for permissionless sweeping.
+    ///
+    /// # Security Invariant
+    /// Sweep is provably unable to touch live streams:
+    /// - An `Active` stream NEVER qualifies, even if past `end_time` (unwithdrawn funds remain).
+    /// - Only terminal streams where all token liabilities are completely extinguished
+    ///   (`Depleted` with `withdrawn == deposit`, or `Cancelled` where splits are fully settled)
+    ///   qualify for storage sweeping.
+    pub fn is_stream_sweepable(env: Env, stream_id: u64) -> bool {
+        let Ok(s) = stream::get_stream(&env, stream_id) else {
+            return false;
+        };
+        Self::is_stream_sweepable_internal(&s)
+    }
+
+    fn is_stream_sweepable_internal(s: &Stream) -> bool {
+        match s.status {
+            StreamStatus::Depleted => s.withdrawn == s.deposit,
+            StreamStatus::Cancelled => true,
+            StreamStatus::Active => false,
+        }
+    }
+
+    /// Permissionlessly sweeps a fully-depleted-but-storage-occupying stream,
+    /// removing its persistent storage entry and crediting residual rent
+    /// to `designated_party` (or the original stream sender if None).
+    ///
+    /// Reverts with [`StreamError::StreamNotFound`] if no stream exists with `stream_id`.
+    /// Reverts with [`StreamError::StreamNotSweepable`] if the stream is active or has unwithdrawn funds.
+    pub fn sweep_stream(
+        env: Env,
+        caller: Address,
+        stream_id: u64,
+        designated_party: Option<Address>,
+    ) -> Result<i128, StreamError> {
+        caller.require_auth();
+        Self::require_not_frozen(&env)?;
+
+        let s = stream::get_stream(&env, stream_id)?;
+        if !Self::is_stream_sweepable_internal(&s) {
+            return Err(surface::reject(Branch::StreamNotSweepable));
+        }
+
+        let target = designated_party.unwrap_or(s.sender.clone());
+        let refund = stream::STREAM_RENT_REFUND;
+
+        // Checks-Effects-Interactions:
+        // 1. Credit rent refund to designated party and record sweep statistics
+        stream::credit_rent_refund(&env, &target, refund)?;
+        stream::record_sweep(&env, refund);
+
+        // 2. Remove stream state from persistent storage (including discovery indexes)
+        stream::remove_stream(&env, stream_id, &s.sender, &s.recipient);
+
+        #[cfg(test)]
+        cei_trace::record("event StreamSwept");
+        StreamSwept {
+            stream_id,
+            caller,       // Blocker 4 fix: actual caller, not current_contract_address
+            designated_party: target,
+            rent_refund: refund,
+        }
+        .publish(&env);
+
+        Ok(refund)
+    }
+
+    /// Returns the accumulated rent refund credit balance for `party`.
+    pub fn rent_refund_balance(env: Env, party: Address) -> i128 {
+        stream::rent_refund_balance(&env, &party)
+    }
+
+    /// Returns total number of stale streams swept.
+    pub fn total_streams_swept(env: Env) -> u64 {
+        stream::total_streams_swept(&env)
+    }
+
+    /// Returns total residual rent refunded across all sweeps.
+    pub fn total_rent_refunded(env: Env) -> i128 {
+        stream::total_rent_refunded(&env)
+    }
+
+    /// Blocker 1 fix: transfers the accumulated rent-refund credit for `party`
+    /// to `recipient` using the contract's native token balance.
+    ///
+    /// `party` must authorize this call. The accumulated credit is cleared
+    /// atomically — the balance can only be claimed once per sweep cycle.
+    ///
+    /// Reverts with [`StreamError::NothingToWithdraw`] if the balance is zero.
+    /// Reverts with [`StreamError::RentRefundTransferFailed`] if the token transfer fails.
+    pub fn claim_rent_refund(
+        env: Env,
+        party: Address,
+        token: Address,
+        recipient: Address,
+    ) -> Result<i128, StreamError> {
+        party.require_auth();
+        Self::require_not_frozen(&env)?;
+
+        let balance = stream::rent_refund_balance(&env, &party);
+        if balance == 0 {
+            return Err(surface::reject(Branch::WithdrawTreasuryAmountNonPositive));
+        }
+
+        // Effect: clear the balance before the transfer (CEI).
+        stream::clear_rent_refund(&env, &party);
+
+        // Interaction: transfer tokens from contract to recipient.
+        #[cfg(test)]
+        cei_trace::record("transfer rent refund");
+        token_result(
+            TokenClient::new(&env, &token).try_transfer(
+                &env.current_contract_address(),
+                &recipient,
+                &balance,
+            ),
+            Branch::RentRefundTransferFailed,
+        )?;
+
+        Ok(balance)
+    }
+
     // ------------------------------------------------- scheduled intents ----
 
     #[cfg_attr(
@@ -1963,6 +2097,11 @@ impl StreamingPayments {
         }
 
         let (start_time, end_time) = intent.occurrence_window(index);
+
+        // Blocker 3: enforce economic floor on scheduled paths too.
+        if intent.deposit < stream::MIN_STREAM_DEPOSIT {
+            return Err(surface::reject(Branch::CreateDepositBelowMinimum));
+        }
 
         // Effects first (CEI): advance the intent before moving any tokens.
         intent.occurrences_remaining = intent

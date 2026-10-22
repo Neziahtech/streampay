@@ -78,3 +78,18 @@ export function buildWithdrawOperation(
     i128(amount)
   );
 }
+
+export function buildSweepStreamOperation(
+  contractId: string,
+  caller: string,
+  streamId: string,
+  designatedParty?: string | null
+): xdr.Operation {
+  return new Contract(contractId).call(
+    "sweep_stream",
+    scAddr(caller),
+    u64(streamId),
+    designatedParty ? scAddr(designatedParty) : nativeToScVal(null)
+  );
+}
+
