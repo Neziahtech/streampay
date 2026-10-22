@@ -1,10 +1,10 @@
 # StreamPay: a formal account of the protocol
 
-**Status:** draft for review. **Pinned commit:** `952fa32` (the `main` tip this paper was written against). Every code claim is tagged `[Cn]` and resolves to a `file:line` and an anchor snippet in [Appendix A](#appendix-a--claim-to-code-traceability). `scripts/check_whitepaper_claims.py` checks in CI that each anchor still appears at its cited lines, so this paper fails loudly when the code moves under it.
+**Status:** draft for review. **Original basis:** `952fa32` (the `main` tip this paper was written against). Every code claim is tagged `[Cn]` and resolves to a `file:line` and an anchor snippet in [Appendix A](#appendix-a--claim-to-code-traceability). `scripts/check_whitepaper_claims.py` checks in CI that each anchor still appears at its cited lines, so this paper fails loudly when the code moves under it.
 
 **Honesty standard.** Every argument here is labelled either **Proof**, meaning complete given the stated assumptions and the cited code, or **Argument sketch**, meaning it depends on a property this paper does not prove, which is named. Nothing unlabelled is claimed to be proven.
 
-**Scope.** This covers the stream core: creation, accrual, withdrawal, top-up and cancellation, plus the fee layer and storage rent. Scheduled intents appear only where they create streams or hold escrow. Governance, the upgrade timelock and the asset policy module are out of scope, except where a policy bound narrows an input domain.
+**Scope.** This covers the stream core: creation, accrual, withdrawal, top-up and cancellation, plus the fee layer and storage rent. The formal accrual model assumes ledger time and no pauses; pause/resume and oracle-timed streams are not proved here. Scheduled intents appear only where they create streams or hold escrow. Governance, the upgrade timelock and the asset policy module are out of scope, except where a policy bound narrows an input domain.
 
 ---
 
@@ -60,9 +60,9 @@ $$
 | $W$ | `withdrawn` | $\mathbb{Z}$ | Total paid to $\rho$: withdrawals plus the cancel payout |
 | $t_0, t_1$ | `start_time`, `end_time` | $\mathbb{N}$ (`u64`) | The window |
 | $c$ | `cancelable` | bool | Whether $\rho$ may also cancel |
-| $\varphi$ | `status` | $\{\textsf{Active},\textsf{Cancelled},\textsf{Depleted}\}$ | Lifecycle state |
+| $\varphi$ | `status` | $\{\textsf{Active},\textsf{Paused},\textsf{Cancelled},\textsf{Depleted}\}$ | Lifecycle state |
 
-The layout is `[C5]`. We write $T(s) = t_1 - t_0$ for the **duration**.
+The accounting fields are represented in the stream layout `[C5]`. For the unpaused streams modeled here, we write $T(s) = t_1 - t_0$ for the **duration**.
 
 ### 2.1 Admissible streams
 
@@ -86,17 +86,20 @@ The last conjunct is the **capacity bound**, and §3 shows it is exactly what ma
 >
 > *Top-up* is the only other writer of $D$ `[C13]`. It requires an amount $a \ge 1$ `[C14]`, so $D' = D + a > D \ge 1$. It re-runs `validate_capacity(D', T)` before writing `[C15]`, so $D' T \le U$.
 >
-> *No other writer.* No code path assigns $t_0$, $t_1$ or $D$ outside creation and top-up `[C13]`. Storage migration reads each stream and re-stores it unchanged `[C16]`. $\blacksquare$
+> *No other writer.* No code path assigns $t_0$, $t_1$ or $D$ outside creation and top-up `[C13]`. Storage migration loads each stream through the compatibility reader and persists it in the current representation `[C16]`. $\blacksquare$
 
 ### 2.2 Lifecycle
 
 $$
-\textsf{Active} \xrightarrow{\ \texttt{cancel\_stream}\ } \textsf{Cancelled}
+\textsf{Active} \xrightarrow{\ \texttt{pause\_stream}\ } \textsf{Paused}
+\xrightarrow{\ \texttt{resume\_stream}\ } \textsf{Active}
 \qquad
-\textsf{Active} \xrightarrow{\ \texttt{withdraw*},\ W = D\ } \textsf{Depleted}
+\textsf{Active or Paused} \xrightarrow{\ \texttt{cancel\_stream}\ } \textsf{Cancelled}
+\qquad
+\textsf{Active or Paused} \xrightarrow{\ \texttt{withdraw*},\ W = D\ } \textsf{Depleted}
 $$
 
-Both targets are terminal. Every mutating entrypoint on a stream first requires $\varphi = \textsf{Active}$: withdraw and withdraw_max `[C17]`, cancel `[C53]`, top_up `[C54]`, so nothing leaves a terminal state. A payout that makes $W = D$ sets $\textsf{Depleted}$ `[C18]`.
+Cancelled and Depleted are terminal. Withdrawals reject only those terminal states `[C17]`; cancellation `[C53]` and top-up `[C54]` accept both Active and Paused streams. A payout that makes $W = D$ sets $\textsf{Depleted}$ `[C18]`.
 
 ---
 

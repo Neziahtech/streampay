@@ -1643,7 +1643,9 @@ fn stream_error_variant_list_is_exhaustive() {
             | StreamError::PolicyNotInitialized
             | StreamError::PolicyNoPendingHandoff
             | StreamError::BatchEmpty
-            | StreamError::BatchTooLarge => StreamError::ALL.contains(&e),
+            | StreamError::BatchTooLarge
+            | StreamError::PauseStreamNotAuthorized
+            | StreamError::ResumeStreamNotAuthorized => StreamError::ALL.contains(&e),
             StreamError::ContractFrozen
             | StreamError::ContractNotFrozen
             | StreamError::NoPendingUpgrade

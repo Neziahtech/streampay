@@ -21,6 +21,8 @@ pub enum ModelStreamStatus {
     Cancelled,
     /// Fully accrued and fully withdrawn. Terminal.
     Depleted,
+    /// Accrual is frozen; withdrawals and top-ups remain available.
+    Paused,
 }
 
 /// Full state of a payment stream.
@@ -36,12 +38,14 @@ pub struct ModelStream {
     pub end_time: u64,
     pub cancelable: bool,
     pub status: ModelStreamStatus,
+    pub paused_total: u64,
+    pub last_resumed_at: u64,
 }
 
 impl ModelStream {
-    /// Full stream duration in seconds.
+    /// Original accrual duration, excluding time the stream has been paused.
     pub fn duration(&self) -> u64 {
-        self.end_time - self.start_time
+        self.end_time - self.start_time - self.paused_total
     }
 }
 

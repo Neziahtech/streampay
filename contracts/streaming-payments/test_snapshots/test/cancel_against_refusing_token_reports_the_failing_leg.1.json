@@ -399,6 +399,22 @@
                   },
                   {
                     "key": {
+                      "symbol": "last_resumed_at"
+                    },
+                    "val": {
+                      "u64": "86400"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "paused_total"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "recipient"
                     },
                     "val": {
@@ -515,6 +531,22 @@
                     },
                     "val": {
                       "u64": "2"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "last_resumed_at"
+                    },
+                    "val": {
+                      "u64": "259200"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "paused_total"
+                    },
+                    "val": {
+                      "u64": "0"
                     }
                   },
                   {

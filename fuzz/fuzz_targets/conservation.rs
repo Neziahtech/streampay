@@ -57,6 +57,12 @@ pub enum FuzzOp {
         stream_idx: u8,
         amount: i128,
     },
+    PauseStream {
+        stream_idx: u8,
+    },
+    ResumeStream {
+        stream_idx: u8,
+    },
     CancelStream {
         caller_is_recipient: bool,
         stream_idx: u8,
@@ -236,6 +242,24 @@ fuzz_target!(|campaign: ConservationCampaign| {
                         .try_top_up(&stream_id, &bounded_amount);
                 }
             }
+            FuzzOp::PauseStream { stream_idx } => {
+                if !created_stream_ids.is_empty() {
+                    let stream_id =
+                        created_stream_ids[(stream_idx as usize) % created_stream_ids.len()];
+                    let _ = client
+                        .mock_all_auths()
+                        .try_pause_stream(&sender, &stream_id);
+                }
+            }
+            FuzzOp::ResumeStream { stream_idx } => {
+                if !created_stream_ids.is_empty() {
+                    let stream_id =
+                        created_stream_ids[(stream_idx as usize) % created_stream_ids.len()];
+                    let _ = client
+                        .mock_all_auths()
+                        .try_resume_stream(&sender, &stream_id);
+                }
+            }
             FuzzOp::CancelStream {
                 caller_is_recipient,
                 stream_idx,
@@ -319,7 +343,7 @@ fuzz_target!(|campaign: ConservationCampaign| {
         // Invariant 1: For every active stream, deposit == withdrawn + available + refundable
         for &stream_id in &created_stream_ids {
             if let Ok(Ok(stream)) = client.try_get_stream(&stream_id) {
-                if stream.status == StreamStatus::Active {
+                if stream.status == StreamStatus::Active || stream.status == StreamStatus::Paused {
                     let avail = client.available(&stream_id);
                     assert!(
                         avail >= 0,
@@ -355,7 +379,10 @@ fuzz_target!(|campaign: ConservationCampaign| {
             let mut active_escrows: i128 = 0;
             for &stream_id in &created_stream_ids {
                 if let Ok(Ok(stream)) = client.try_get_stream(&stream_id) {
-                    if stream.status == StreamStatus::Active && stream.token == *token {
+                    if (stream.status == StreamStatus::Active
+                        || stream.status == StreamStatus::Paused)
+                        && stream.token == *token
+                    {
                         active_escrows += stream.deposit - stream.withdrawn;
                     }
                 }

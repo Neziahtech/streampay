@@ -350,7 +350,42 @@ pub fn seed_complex_interleaved_lifecycle() -> ActionSequence {
     ])
 }
 
-/// Returns all 14 baseline seeded scenarios.
+/// 15. Pause, withdraw while paused, top up, and resume a stream.
+pub fn seed_pause_and_resume() -> ActionSequence {
+    ActionSequence::new(vec![
+        Action::CreateStream {
+            sender_idx: 0,
+            recipient_idx: 1,
+            deposit_amount: DEPOSIT,
+            start_delay_secs: 0,
+            duration_secs: 10 * DAY,
+            cancelable: false,
+        },
+        Action::AdvanceTime { seconds: 2 * DAY },
+        Action::PauseStream {
+            sender_idx: 0,
+            stream_id: 1,
+        },
+        Action::AdvanceTime { seconds: 3 * DAY },
+        Action::Withdraw {
+            stream_id: 1,
+            amount: DEPOSIT / 10,
+        },
+        Action::TopUp {
+            caller_idx: 0,
+            stream_id: 1,
+            amount: DEPOSIT,
+        },
+        Action::ResumeStream {
+            sender_idx: 0,
+            stream_id: 1,
+        },
+        Action::AdvanceTime { seconds: 8 * DAY },
+        Action::WithdrawMax { stream_id: 1 },
+    ])
+}
+
+/// Returns all 15 baseline seeded scenarios.
 pub fn all_seeded_scenarios() -> Vec<(&'static str, ActionSequence)> {
     vec![
         (
@@ -388,5 +423,6 @@ pub fn all_seeded_scenarios() -> Vec<(&'static str, ActionSequence)> {
             "14_complex_interleaved_lifecycle",
             seed_complex_interleaved_lifecycle(),
         ),
+        ("15_pause_and_resume", seed_pause_and_resume()),
     ]
 }

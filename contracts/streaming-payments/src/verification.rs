@@ -40,6 +40,10 @@ pub mod spec {
         pub start_time: u64,
         /// Unix end timestamp in seconds (`end_time > start_time`).
         pub end_time: u64,
+        /// Cumulative paused duration.
+        pub paused_total: u64,
+        /// Pause boundary while Paused; last resume time otherwise.
+        pub last_resumed_at: u64,
         /// Lifecycle status.
         pub status: StreamStatus,
     }
@@ -48,19 +52,23 @@ pub mod spec {
         /// Computes stream window duration in seconds.
         #[inline]
         pub fn duration(&self) -> u64 {
-            self.end_time.saturating_sub(self.start_time)
+            self.end_time
+                .saturating_sub(self.start_time)
+                .saturating_sub(self.paused_total)
         }
 
         /// Computes seconds elapsed at given ledger timestamp `now`.
         #[inline]
         pub fn elapsed_at(&self, now: u64) -> u64 {
-            if now <= self.start_time {
-                0
-            } else if now >= self.end_time {
-                self.duration()
+            let effective_now = if self.status == StreamStatus::Paused {
+                self.last_resumed_at
             } else {
-                now - self.start_time
-            }
+                now
+            };
+            effective_now
+                .saturating_sub(self.start_time)
+                .saturating_sub(self.paused_total)
+                .min(self.duration())
         }
 
         /// Computes cumulative accrued amount at timestamp `now`.
@@ -73,7 +81,7 @@ pub mod spec {
         /// Computes accrued-but-unwithdrawn amount at timestamp `now`.
         #[inline]
         pub fn available_at(&self, now: u64) -> Result<i128, StreamError> {
-            if self.status != StreamStatus::Active {
+            if self.status != StreamStatus::Active && self.status != StreamStatus::Paused {
                 return Ok(0);
             }
             let accrued = self.streamed_amount_at(now)?;
@@ -123,6 +131,8 @@ pub mod spec {
                 withdrawn: 0,
                 start_time,
                 end_time: start_time.saturating_add(duration),
+                paused_total: 0,
+                last_resumed_at: start_time,
                 status: StreamStatus::Active,
             };
 
@@ -231,6 +241,7 @@ pub mod spec {
             StreamStatus::Depleted => s.stream.withdrawn == s.stream.deposit,
             StreamStatus::Active => s.stream.withdrawn < s.stream.deposit,
             StreamStatus::Cancelled => s.stream.withdrawn <= s.stream.deposit,
+            StreamStatus::Paused => s.stream.withdrawn < s.stream.deposit,
         }
     }
 
@@ -256,7 +267,9 @@ pub mod transitions {
         if amount <= 0 {
             return Err(StreamError::ZeroAmount);
         }
-        if state.stream.status != StreamStatus::Active {
+        if state.stream.status != StreamStatus::Active
+            && state.stream.status != StreamStatus::Paused
+        {
             return Err(StreamError::StreamNotActive);
         }
         let available = state.stream.available_at(state.ledger.timestamp)?;
@@ -268,7 +281,9 @@ pub mod transitions {
 
     /// Guard condition for `withdraw_max()`.
     pub fn can_withdraw_max(state: &SystemState) -> Result<i128, StreamError> {
-        if state.stream.status != StreamStatus::Active {
+        if state.stream.status != StreamStatus::Active
+            && state.stream.status != StreamStatus::Paused
+        {
             return Err(StreamError::StreamNotActive);
         }
         let available = state.stream.available_at(state.ledger.timestamp)?;
@@ -602,6 +617,8 @@ pub mod proofs {
                 withdrawn,
                 start_time: 1_000,
                 end_time: 1_000 + duration,
+                paused_total: 0,
+                last_resumed_at: 1_000,
                 status: StreamStatus::Active,
             },
             ledger: AbstractLedger {

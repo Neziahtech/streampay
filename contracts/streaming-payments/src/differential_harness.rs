@@ -48,6 +48,8 @@ pub fn convert_stream_error(err: StreamError) -> ModelError {
         StreamError::RecipientPayoutFailed => ModelError::RecipientPayoutFailed,
         StreamError::SenderRefundFailed => ModelError::SenderRefundFailed,
         StreamError::TreasuryPayoutFailed => ModelError::TreasuryPayoutFailed,
+        StreamError::PauseStreamNotAuthorized => ModelError::PauseStreamNotAuthorized,
+        StreamError::ResumeStreamNotAuthorized => ModelError::ResumeStreamNotAuthorized,
         other => panic!("unhandled StreamError in differential model: {other:?}"),
     }
 }
@@ -57,6 +59,7 @@ pub fn convert_stream_status(status: StreamStatus) -> ModelStreamStatus {
         StreamStatus::Active => ModelStreamStatus::Active,
         StreamStatus::Cancelled => ModelStreamStatus::Cancelled,
         StreamStatus::Depleted => ModelStreamStatus::Depleted,
+        StreamStatus::Paused => ModelStreamStatus::Paused,
     }
 }
 
@@ -262,6 +265,52 @@ impl DifferentialHarness {
                 assert_eq!(
                     c_mapped, m_res,
                     "DIVERGENCE at step {step}: top_up mismatch. Contract: {c_mapped:?}, Model: {m_res:?}"
+                );
+            }
+
+            Action::PauseStream {
+                sender_idx,
+                stream_id,
+            } => {
+                let sender_idx = (*sender_idx as usize) % 4;
+                let sender = &self.users[sender_idx];
+                let sender_name = self.user_names[sender_idx];
+                let c_res = self
+                    .client
+                    .mock_all_auths()
+                    .try_pause_stream(sender, stream_id);
+                let m_res = self.model.pause_stream(sender_name, *stream_id);
+                let c_mapped = match c_res {
+                    Ok(Ok(())) => Ok(()),
+                    Err(Ok(err)) => Err(convert_stream_error(err)),
+                    _ => Err(ModelError::MathOverflow),
+                };
+                assert_eq!(
+                    c_mapped, m_res,
+                    "DIVERGENCE at step {step}: pause_stream mismatch. Contract: {c_mapped:?}, Model: {m_res:?}"
+                );
+            }
+
+            Action::ResumeStream {
+                sender_idx,
+                stream_id,
+            } => {
+                let sender_idx = (*sender_idx as usize) % 4;
+                let sender = &self.users[sender_idx];
+                let sender_name = self.user_names[sender_idx];
+                let c_res = self
+                    .client
+                    .mock_all_auths()
+                    .try_resume_stream(sender, stream_id);
+                let m_res = self.model.resume_stream(sender_name, *stream_id);
+                let c_mapped = match c_res {
+                    Ok(Ok(())) => Ok(()),
+                    Err(Ok(err)) => Err(convert_stream_error(err)),
+                    _ => Err(ModelError::MathOverflow),
+                };
+                assert_eq!(
+                    c_mapped, m_res,
+                    "DIVERGENCE at step {step}: resume_stream mismatch. Contract: {c_mapped:?}, Model: {m_res:?}"
                 );
             }
 
@@ -471,6 +520,14 @@ impl DifferentialHarness {
             assert_eq!(
                 c_stream.end_time, m_stream.end_time,
                 "DIVERGENCE at step {step}: Stream {id} end_time mismatch"
+            );
+            assert_eq!(
+                c_stream.paused_total, m_stream.paused_total,
+                "DIVERGENCE at step {step}: Stream {id} paused_total mismatch"
+            );
+            assert_eq!(
+                c_stream.last_resumed_at, m_stream.last_resumed_at,
+                "DIVERGENCE at step {step}: Stream {id} last_resumed_at mismatch"
             );
             assert_eq!(
                 c_stream.cancelable, m_stream.cancelable,

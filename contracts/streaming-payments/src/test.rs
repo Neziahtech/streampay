@@ -981,6 +981,102 @@ fn multiple_partial_withdrawals_in_sequence() {
 }
 
 #[test]
+fn pause_freezes_accrual_and_resume_continues_from_same_point() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    f.advance_time(2 * DAY);
+    let frozen = f.client.mock_all_auths().available(&id);
+    assert_eq!(frozen, DEPOSIT / 10);
+
+    f.client.mock_all_auths().pause_stream(&f.sender, &id);
+    assert_eq!(
+        f.client.mock_all_auths().get_stream(&id).status,
+        StreamStatus::Paused
+    );
+    f.advance_time(3 * DAY);
+    assert_eq!(f.client.mock_all_auths().available(&id), frozen);
+
+    f.client.mock_all_auths().resume_stream(&f.sender, &id);
+    let resumed = f.client.mock_all_auths().get_stream(&id);
+    assert_eq!(resumed.paused_total, 3 * DAY);
+    assert_eq!(resumed.end_time, f.env.ledger().timestamp() + 9 * DAY);
+    assert_eq!(f.client.mock_all_auths().available(&id), frozen);
+
+    f.advance_time(DAY);
+    assert_eq!(f.client.mock_all_auths().available(&id), DEPOSIT / 5);
+    f.advance_time(8 * DAY);
+    assert_eq!(f.client.mock_all_auths().available(&id), DEPOSIT);
+}
+
+#[test]
+fn withdrawals_and_top_ups_remain_allowed_while_paused() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    f.advance_time(2 * DAY);
+    f.client.mock_all_auths().pause_stream(&f.sender, &id);
+    let frozen = f.client.mock_all_auths().available(&id);
+    let withdrawal = frozen / 2;
+    f.client.mock_all_auths().withdraw(&id, &withdrawal);
+    f.client.mock_all_auths().top_up(&id, &DEPOSIT);
+    f.advance_time(3 * DAY);
+
+    let stream = f.client.mock_all_auths().get_stream(&id);
+    assert_eq!(stream.status, StreamStatus::Paused);
+    assert_eq!(stream.deposit, 2 * DEPOSIT);
+    assert_eq!(
+        f.client.mock_all_auths().available(&id),
+        DEPOSIT / 5 - withdrawal
+    );
+}
+
+#[test]
+fn paused_stream_can_be_cancelled_at_its_frozen_accrual_point() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    f.advance_time(2 * DAY);
+    let accrued = f.client.mock_all_auths().available(&id);
+    f.client.mock_all_auths().pause_stream(&f.sender, &id);
+    f.advance_time(4 * DAY);
+
+    f.client.mock_all_auths().cancel_stream(&f.sender, &id);
+    let stream = f.client.mock_all_auths().get_stream(&id);
+    assert_eq!(stream.status, StreamStatus::Cancelled);
+    assert_eq!(stream.withdrawn, accrued);
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.recipient),
+        accrued
+    );
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.sender),
+        2 * DEPOSIT - accrued
+    );
+}
+
+#[test]
+fn pausing_or_resuming_from_the_wrong_state_reverts() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    f.client.mock_all_auths().pause_stream(&f.sender, &id);
+
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_pause_stream(&f.sender, &id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::StreamNotActive);
+
+    f.client.mock_all_auths().resume_stream(&f.sender, &id);
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_resume_stream(&f.sender, &id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::StreamNotActive);
+}
+
+#[test]
 fn withdraw_fails_without_recipient_authorization() {
     // An attacker "signs" a withdraw call; the contract requires the stream
     // recipient's authorization, which was not granted.
@@ -1974,6 +2070,26 @@ fn top_up_event_emitted() {
     );
 }
 
+#[test]
+fn pause_and_resume_events_are_keyed_by_stream_id() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let _ = f.env.events().all();
+
+    f.client.mock_all_auths().pause_stream(&f.sender, &id);
+    assert_eq!(
+        f.env.events().all().filter_by_contract(&f.client.address),
+        [crate::PauseStream { stream_id: id }.to_xdr(&f.env, &f.client.address)],
+    );
+
+    f.advance_time(DAY);
+    f.client.mock_all_auths().resume_stream(&f.sender, &id);
+    assert_eq!(
+        f.env.events().all().filter_by_contract(&f.client.address),
+        [crate::ResumeStream { stream_id: id }.to_xdr(&f.env, &f.client.address)],
+    );
+}
+
 // --------------------------------------------------- address indexes -------
 
 #[test]
@@ -2814,14 +2930,25 @@ struct StateMachineStream {
     withdrawn: i128,
     start: u64,
     end: u64,
+    paused_total: u64,
+    last_resumed_at: u64,
+    pause_open: bool,
     cancelable: bool,
     status: StreamStatus,
 }
 
 impl StateMachineStream {
     fn accrued(&self, now: u64) -> i128 {
-        let duration = self.end - self.start;
-        let elapsed = now.clamp(self.start, self.end) - self.start;
+        let duration = self.end - self.start - self.paused_total;
+        let effective_now = if self.pause_open {
+            self.last_resumed_at
+        } else {
+            now
+        };
+        let elapsed = effective_now
+            .saturating_sub(self.start)
+            .saturating_sub(self.paused_total)
+            .min(duration);
         (self.deposit as u128 * elapsed as u128 / duration as u128) as i128
     }
 }
@@ -2876,7 +3003,7 @@ fn run_state_machine_sequence(seed: u64, steps: &[(u8, u16, u16)]) -> Result<(),
     for (step_index, &(operation, first, second)) in steps.iter().enumerate() {
         let context =
             format!("seed {seed:#x}, step {step_index}, input {operation}/{first}/{second}");
-        match operation % 5 {
+        match operation % 7 {
             0 => {
                 let now = env.ledger().timestamp();
                 let start = now + (first as u64 % 4);
@@ -2898,6 +3025,9 @@ fn run_state_machine_sequence(seed: u64, steps: &[(u8, u16, u16)]) -> Result<(),
                     withdrawn: 0,
                     start,
                     end: start + duration,
+                    paused_total: 0,
+                    last_resumed_at: start,
+                    pause_open: false,
                     cancelable,
                     status: StreamStatus::Active,
                 });
@@ -2956,7 +3086,9 @@ fn run_state_machine_sequence(seed: u64, steps: &[(u8, u16, u16)]) -> Result<(),
             3 if !streams.is_empty() => {
                 let index = first as usize % streams.len();
                 let id = index as u64 + 1;
-                if streams[index].status == StreamStatus::Active {
+                if streams[index].status == StreamStatus::Active
+                    || streams[index].status == StreamStatus::Paused
+                {
                     let amount = 1 + second as i128;
                     client.mock_all_auths().top_up(&id, &amount);
                     streams[index].deposit += amount;
@@ -2972,7 +3104,9 @@ fn run_state_machine_sequence(seed: u64, steps: &[(u8, u16, u16)]) -> Result<(),
             4 if !streams.is_empty() => {
                 let index = first as usize % streams.len();
                 let id = index as u64 + 1;
-                if streams[index].status == StreamStatus::Active {
+                if streams[index].status == StreamStatus::Active
+                    || streams[index].status == StreamStatus::Paused
+                {
                     let caller = if streams[index].cancelable && second & 1 != 0 {
                         &recipient
                     } else {
@@ -3018,6 +3152,44 @@ fn run_state_machine_sequence(seed: u64, steps: &[(u8, u16, u16)]) -> Result<(),
                     );
                 }
             }
+            5 if !streams.is_empty() => {
+                let index = first as usize % streams.len();
+                let id = index as u64 + 1;
+                if streams[index].status == StreamStatus::Active {
+                    client.mock_all_auths().pause_stream(&sender, &id);
+                    streams[index].status = StreamStatus::Paused;
+                    streams[index].last_resumed_at = env.ledger().timestamp();
+                    streams[index].pause_open = true;
+                } else {
+                    let error = client
+                        .mock_all_auths()
+                        .try_pause_stream(&sender, &id)
+                        .unwrap_err()
+                        .unwrap();
+                    prop_assert_eq!(error, StreamError::StreamNotActive, "{}", context);
+                }
+            }
+            6 if !streams.is_empty() => {
+                let index = first as usize % streams.len();
+                let id = index as u64 + 1;
+                if streams[index].status == StreamStatus::Paused {
+                    let now = env.ledger().timestamp();
+                    let pause_duration = now - streams[index].last_resumed_at;
+                    client.mock_all_auths().resume_stream(&sender, &id);
+                    streams[index].paused_total += pause_duration;
+                    streams[index].end += pause_duration;
+                    streams[index].last_resumed_at = now;
+                    streams[index].pause_open = false;
+                    streams[index].status = StreamStatus::Active;
+                } else {
+                    let error = client
+                        .mock_all_auths()
+                        .try_resume_stream(&sender, &id)
+                        .unwrap_err()
+                        .unwrap();
+                    prop_assert_eq!(error, StreamError::StreamNotActive, "{}", context);
+                }
+            }
             _ => {}
         }
 
@@ -3049,8 +3221,25 @@ fn run_state_machine_sequence(seed: u64, steps: &[(u8, u16, u16)]) -> Result<(),
                 context,
                 id
             );
+            prop_assert_eq!(actual.paused_total, expected.paused_total);
+            prop_assert_eq!(actual.last_resumed_at, expected.last_resumed_at);
 
             let accrued = expected.accrued(now);
+            prop_assert!(accrued <= expected.deposit);
+            let mut completed = expected.clone();
+            if completed.pause_open {
+                let remaining_pause = now - completed.last_resumed_at;
+                completed.end += remaining_pause;
+                completed.paused_total += remaining_pause;
+                completed.pause_open = false;
+            }
+            prop_assert_eq!(
+                completed.accrued(completed.end),
+                completed.deposit,
+                "{}: stream {} is fully accrued at its effective end",
+                context,
+                id
+            );
             prop_assert!(
                 actual.withdrawn <= accrued,
                 "{}: stream {} withdrew {} but accrued only {}",
@@ -3061,7 +3250,7 @@ fn run_state_machine_sequence(seed: u64, steps: &[(u8, u16, u16)]) -> Result<(),
             );
             total_withdrawn += actual.withdrawn;
             total_accrued += accrued;
-            if expected.status == StreamStatus::Active {
+            if expected.status == StreamStatus::Active || expected.status == StreamStatus::Paused {
                 remaining += expected.deposit - expected.withdrawn;
                 prop_assert_eq!(
                     client.mock_all_auths().available(&id),

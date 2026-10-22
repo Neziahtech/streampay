@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use crate::errors::ModelError;
 use crate::events::ModelEvent;
-use crate::math::{self, cancel_amounts, elapsed_seconds, fee_amount, validate_capacity};
+use crate::math::{self, cancel_amounts, fee_amount, validate_capacity};
 use crate::types::{
     ModelFeeScan, ModelStream, ModelStreamStatus, ModelTreasury, ModelTreasuryStatus,
     MAX_DURATION_SECONDS, MAX_FEE_BPS, MAX_PAGE_SIZE,
@@ -92,7 +92,15 @@ impl StreamPayModel {
         if stream.status == ModelStreamStatus::Cancelled {
             return Ok(0);
         }
-        let elapsed = elapsed_seconds(self.now, stream.start_time, stream.end_time);
+        let effective_now = if stream.status == ModelStreamStatus::Paused {
+            stream.last_resumed_at
+        } else {
+            self.now
+        };
+        let elapsed = effective_now
+            .saturating_sub(stream.start_time)
+            .saturating_sub(stream.paused_total)
+            .min(stream.duration());
         let streamed = self.streamed_at_internal(stream.deposit, stream.duration(), elapsed)?;
         streamed
             .checked_sub(stream.withdrawn)
@@ -163,6 +171,8 @@ impl StreamPayModel {
             end_time,
             cancelable,
             status: ModelStreamStatus::Active,
+            paused_total: 0,
+            last_resumed_at: start_time,
         };
         self.streams.insert(id, s);
         self.sender_streams
@@ -217,7 +227,7 @@ impl StreamPayModel {
                 .streams
                 .get(&stream_id)
                 .ok_or(ModelError::StreamNotFound)?;
-            if s.status != ModelStreamStatus::Active {
+            if s.status != ModelStreamStatus::Active && s.status != ModelStreamStatus::Paused {
                 return Err(ModelError::StreamNotActive);
             }
             self.available_amount(s)?
@@ -273,7 +283,7 @@ impl StreamPayModel {
                 .streams
                 .get(&stream_id)
                 .ok_or(ModelError::StreamNotFound)?;
-            if s.status != ModelStreamStatus::Active {
+            if s.status != ModelStreamStatus::Active && s.status != ModelStreamStatus::Paused {
                 return Err(ModelError::StreamNotActive);
             }
             self.available_amount(s)?
@@ -329,7 +339,7 @@ impl StreamPayModel {
                 .streams
                 .get(&stream_id)
                 .ok_or(ModelError::StreamNotFound)?;
-            if s.status != ModelStreamStatus::Active {
+            if s.status != ModelStreamStatus::Active && s.status != ModelStreamStatus::Paused {
                 return Err(ModelError::StreamNotActive);
             }
             if caller != s.sender {
@@ -410,7 +420,7 @@ impl StreamPayModel {
             .streams
             .get_mut(&stream_id)
             .ok_or(ModelError::StreamNotFound)?;
-        if s.status != ModelStreamStatus::Active {
+        if s.status != ModelStreamStatus::Active && s.status != ModelStreamStatus::Paused {
             return Err(ModelError::StreamNotActive);
         }
         if caller != s.sender {
@@ -448,6 +458,54 @@ impl StreamPayModel {
             new_deposit,
         });
 
+        Ok(())
+    }
+
+    /// Pauses accrual for the sender's active stream.
+    pub fn pause_stream(&mut self, caller: &str, stream_id: u64) -> Result<(), ModelError> {
+        let s = self
+            .streams
+            .get_mut(&stream_id)
+            .ok_or(ModelError::StreamNotFound)?;
+        if s.status != ModelStreamStatus::Active {
+            return Err(ModelError::StreamNotActive);
+        }
+        if caller != s.sender {
+            return Err(ModelError::PauseStreamNotAuthorized);
+        }
+        s.status = ModelStreamStatus::Paused;
+        s.last_resumed_at = self.now;
+        self.events.push(ModelEvent::PauseStream { stream_id });
+        Ok(())
+    }
+
+    /// Resumes accrual at the sender's frozen balance and extends the window.
+    pub fn resume_stream(&mut self, caller: &str, stream_id: u64) -> Result<(), ModelError> {
+        let s = self
+            .streams
+            .get_mut(&stream_id)
+            .ok_or(ModelError::StreamNotFound)?;
+        if s.status != ModelStreamStatus::Paused {
+            return Err(ModelError::StreamNotActive);
+        }
+        if caller != s.sender {
+            return Err(ModelError::ResumeStreamNotAuthorized);
+        }
+        let pause_duration = self
+            .now
+            .checked_sub(s.last_resumed_at)
+            .ok_or(ModelError::MathOverflow)?;
+        s.paused_total = s
+            .paused_total
+            .checked_add(pause_duration)
+            .ok_or(ModelError::MathOverflow)?;
+        s.end_time = s
+            .end_time
+            .checked_add(pause_duration)
+            .ok_or(ModelError::MathOverflow)?;
+        s.last_resumed_at = self.now;
+        s.status = ModelStreamStatus::Active;
+        self.events.push(ModelEvent::ResumeStream { stream_id });
         Ok(())
     }
 

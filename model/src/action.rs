@@ -49,6 +49,14 @@ pub enum Action {
     AdvanceTime {
         seconds: u32,
     },
+    PauseStream {
+        sender_idx: u8,
+        stream_id: u64,
+    },
+    ResumeStream {
+        sender_idx: u8,
+        stream_id: u64,
+    },
 }
 
 impl Action {
@@ -131,6 +139,22 @@ impl Action {
             Action::AdvanceTime { seconds } => {
                 out.push(10);
                 out.extend_from_slice(&seconds.to_le_bytes());
+            }
+            Action::PauseStream {
+                sender_idx,
+                stream_id,
+            } => {
+                out.push(11);
+                out.push(*sender_idx);
+                out.extend_from_slice(&stream_id.to_le_bytes());
+            }
+            Action::ResumeStream {
+                sender_idx,
+                stream_id,
+            } => {
+                out.push(12);
+                out.push(*sender_idx);
+                out.extend_from_slice(&stream_id.to_le_bytes());
             }
         }
     }
@@ -260,6 +284,25 @@ impl Action {
                 *data = &data[4..];
                 Some(Action::AdvanceTime { seconds })
             }
+            11 | 12 => {
+                if data.len() < 1 + 8 {
+                    return None;
+                }
+                let sender_idx = data[0];
+                let stream_id = u64::from_le_bytes(data[1..9].try_into().ok()?);
+                *data = &data[9..];
+                if tag == 11 {
+                    Some(Action::PauseStream {
+                        sender_idx,
+                        stream_id,
+                    })
+                } else {
+                    Some(Action::ResumeStream {
+                        sender_idx,
+                        stream_id,
+                    })
+                }
+            }
             _ => None,
         }
     }
@@ -268,7 +311,7 @@ impl Action {
 #[cfg(feature = "arbitrary")]
 impl<'a> Arbitrary<'a> for Action {
     fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
-        let choice: u8 = u.int_in_range(0..=9)?;
+        let choice: u8 = u.int_in_range(0..=11)?;
         match choice {
             0 => Ok(Action::CreateStream {
                 sender_idx: u.int_in_range(0..=3)?,
@@ -310,8 +353,16 @@ impl<'a> Arbitrary<'a> for Action {
                 recipient_idx: u.int_in_range(0..=3)?,
                 amount: u.int_in_range(1..=1_000_000_000_000i128)?,
             }),
-            _ => Ok(Action::AdvanceTime {
+            9 => Ok(Action::AdvanceTime {
                 seconds: u.int_in_range(0..=86400 * 30)?,
+            }),
+            10 => Ok(Action::PauseStream {
+                sender_idx: u.int_in_range(0..=3)?,
+                stream_id: u.int_in_range(1..=50)?,
+            }),
+            _ => Ok(Action::ResumeStream {
+                sender_idx: u.int_in_range(0..=3)?,
+                stream_id: u.int_in_range(1..=50)?,
             }),
         }
     }

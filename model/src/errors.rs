@@ -73,6 +73,10 @@ pub enum ModelError {
     SenderRefundFailed = 29,
     /// Payout of collected fees in withdraw_treasury failed.
     TreasuryPayoutFailed = 30,
+    /// The caller is not the sender authorized to pause the stream.
+    PauseStreamNotAuthorized = 80,
+    /// The caller is not the sender authorized to resume the stream.
+    ResumeStreamNotAuthorized = 81,
 }
 
 impl ModelError {

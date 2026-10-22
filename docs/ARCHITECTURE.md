@@ -23,7 +23,8 @@ reentrancy, TTL strategy, and the design decisions behind the v1 API. Read the
 │  lib.rs      entrypoints: create_stream(s) / withdraw / withdraw_max /│
 │  lib.rs      entrypoints: create_stream / create_streams /          │
 │              create_streams_batch / withdraw / withdraw_max /       │
-│              cancel_stream / top_up / get_stream / available /      │
+│              cancel_stream / pause_stream / resume_stream / top_up /│
+│              get_stream / available /                              │
 │              recipient_streams / sender_streams / schedule_stream / │
 │              execute_scheduled / cancel_scheduled / reclaim_expired │
 │              set_fee_bps / nominate_governor / accept_governor /    │
@@ -60,7 +61,7 @@ reentrancy, TTL strategy, and the design decisions behind the v1 API. Read the
 | Key | Value | Purpose |
 |---|---|---|
 | `DataKey::NextStreamId` | `u64` | monotonic id counter (ids start at 1) |
-| `DataKey::Stream(id)` | `Stream` | full per-stream state |
+| `DataKey::Stream(id)` | `Stream` | full per-stream state, including pause accounting |
 | `DataKey::RecipientStreams(addr)` | `Vec<u64>` | append-only ids where `addr` receives |
 | `DataKey::SenderStreams(addr)` | `Vec<u64>` | append-only ids created by `addr` |
 | `DataKey::NextIntentId` | `u64` | monotonic scheduled-intent id counter |
@@ -141,6 +142,10 @@ A gas optimization evaluation (`contracts/streaming-payments/examples/storage_be
 3. **Double-Read & Host Resolution Elimination:** The contract avoids double reads in `withdraw`: `authorize_withdrawal` loads `s` once and passes `&mut s` directly to `pay_out`. In `pull` and `cancel_stream`, `env.current_contract_address()` is resolved once and cached across transfers, saving 548 CPU instructions and 80 memory bytes.
 4. **Native Index Slicing:** In `page_stream_ids`, pagination utilizes native `ids.slice(start..end)`, eliminating manual looping and intermediate allocation overhead.
 
+Pause-aware streams retain the monolithic `DataKey::Stream(u64)` layout.
+`get_stream` decodes the stored value fallibly against the current and legacy
+shapes, preserving records created before oracle time or pause accounting was
+added; the next write persists the current shape without a per-stream marker.
 
 
 ## 3. Accrual math
@@ -150,6 +155,24 @@ Everything reduces to one pure function (`stream.rs`):
 ```rust
 streamed_at(deposit: i128, duration: u64, elapsed: u64) -> Result<i128, StreamError>
 ```
+
+For a stream with pauses, `elapsed` is active time rather than wall-clock
+time:
+
+```text
+elapsed = effective_now − start_time − paused_total
+```
+
+`effective_now` is the resolved stream time (oracle time when configured,
+otherwise ledger time) while Active and `last_resumed_at` while Paused (which
+records the pause boundary until resume). `paused_total` contains completed
+pause intervals; on resume, the current pause interval is added to it and
+`end_time` is shifted by the same number of seconds. Thus
+`end_time − start_time − paused_total` remains the original accrual duration,
+the rate does not change, and the stream's effective end shifts by exactly the
+paused interval. While Paused, elapsed time stops changing, so withdrawals
+remain bounded by the frozen accrued balance. Top-ups remain permitted and
+retain the existing pro-rata deposit semantics.
 
 - `elapsed == 0` (before `start_time`) → `0`
 - `elapsed >= duration` (at/after `end_time`) → `deposit`
@@ -228,7 +251,8 @@ streamed_amount_at_segments(stream, now, segments)
 | `create_streams` | anyone; `sender` must authorize once for the batch | sender |
 | `withdraw` | recipient only | recipient |
 | `cancel_stream` | sender always; recipient iff `cancelable` | caller |
-| `top_up` | sender only | sender |
+| `pause_stream` / `resume_stream` | sender only | sender |
+| `top_up` | sender only, while Active or Paused | sender |
 | `propose_ownership_transfer` | current sender or recipient | caller |
 | `accept_ownership_transfer` | named pending `new_owner` only | new owner |
 | `cancel_ownership_transfer` | pending proposer only | proposer |
@@ -340,13 +364,23 @@ this exact equality after every operation
                  │
                  ├─ withdrawn == deposit ──▶ Depleted (terminal)
                  │
-                 └─ top_up allowed while Active (even after end_time:
-                    funds become fully accrued → recipient withdraws)
+                 ├─ pause_stream ──────────▶ Paused
+                 │                             │
+                 │                             ├─ resume_stream ─▶ Active
+                 │                             ├─ withdraw/top_up
+                 │                             └─ cancel_stream ─▶ Cancelled
+                 │
+                 └─ top_up allowed while Active (even after effective
+                    end_time: funds become fully accrued → recipient withdraws)
 ```
 
 - Cancelling a `Depleted` stream reverts (`StreamNotActive`) — there is
   nothing left to split.
 - Cancelling a not-yet-started stream is a 100 % refund to the sender.
+- While `Paused`, accrual is frozen at the pause-time balance; `withdraw`,
+  `top_up`, and `cancel_stream` remain available.
+- `pause_stream` on any non-Active stream and `resume_stream` on any
+  non-Paused stream revert (`StreamNotActive`).
 - `top_up` on a cancelled/depleted stream reverts.
 - Ownership transfers are proposed and accepted only on `Active` streams; a
   pending proposal for a stream that later becomes terminal can never move a
@@ -701,8 +735,6 @@ griefing) is in [`SCHEDULED_INTENTS.md`](./SCHEDULED_INTENTS.md).
 
 ## 10. Open problems / roadmap hooks
 
-- `pause_stream` (sender-initiated temporary hold) — needs a fourth status and
-  careful `cancel_amounts` treatment; drafted as a good-first-issue.
 - Multi-token batch creation — one tx, N streams; watch the instruction
   budget, likely `try_create_batch` with per-item results.
 - Gas optimization pass on storage reads — `cancel_stream` does one
@@ -1044,6 +1076,14 @@ a new struct and migrate/cross-read deliberately, rather than editing the
 existing type. `StreamStatus` is name-encoded like `DataKey`, but is nested
 inside stored `Stream` values — same practical freeze.
 
+The pause fields are introduced as schema v3: `get_stream` cross-reads the v2
+shape (`LegacyStream`) and supplies zero paused time, while the governor's
+bounded `migrate_storage` calls rewrite entries in the v3 shape. A per-stream
+format marker distinguishes new entries from legacy entries (which cannot be
+decoded as the expanded struct); both marker and stream entry have their TTL
+extended on writes. The legacy decoder remains available during a partially
+completed migration.
+
 ### 13.3 Event shapes
 
 Events are the off-chain ledger indexers consume; fields decode by position
@@ -1055,6 +1095,8 @@ Events are the off-chain ledger indexers consume; fields decode by position
 | `Withdrawn` | `stream_id: u64` | `recipient: Address`; `amount: i128`; `withdrawn_total: i128` |
 | `StreamCancelled` | `stream_id: u64` | `cancelled_by: Address`; `recipient_amount: i128`; `sender_amount: i128` |
 | `StreamToppedUp` | `stream_id: u64` | `sender: Address`; `amount: i128`; `new_deposit: i128` |
+| `PauseStream` | `stream_id: u64` | — |
+| `ResumeStream` | `stream_id: u64` | — |
 | `FeeCharged` | `stream_id: u64` | `token: Address`; `payer: Address`; `amount: i128`; `fee_bps: u32` |
 | `FeeWithdrawn` | `token: Address` | `governor: Address`; `recipient: Address`; `amount: i128`; `withdrawn_total: i128` |
 | `RateChangeProposed` | `stream_id: u64` | `proposed_by`, `counterparty: Address`; `amount_per_second: i128`; `expires_at: u64` |

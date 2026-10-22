@@ -5,6 +5,18 @@
 use crate::errors::ModelError;
 use crate::types::{ModelStream, ModelStreamStatus, BPS_DENOMINATOR};
 
+fn stream_elapsed_seconds(now: u64, stream: &ModelStream) -> u64 {
+    let effective_now = if stream.status == ModelStreamStatus::Paused {
+        stream.last_resumed_at
+    } else {
+        now
+    };
+    effective_now
+        .saturating_sub(stream.start_time)
+        .saturating_sub(stream.paused_total)
+        .min(stream.duration())
+}
+
 /// Seconds elapsed within the half-open window `[start_time, end_time)`.
 pub fn elapsed_seconds(now: u64, start_time: u64, end_time: u64) -> u64 {
     if now <= start_time {
@@ -42,7 +54,7 @@ pub fn available_amount(now: u64, stream: &ModelStream) -> Result<i128, ModelErr
     if stream.status == ModelStreamStatus::Cancelled {
         return Ok(0);
     }
-    let elapsed = elapsed_seconds(now, stream.start_time, stream.end_time);
+    let elapsed = stream_elapsed_seconds(now, stream);
     let streamed = streamed_at(stream.deposit, stream.duration(), elapsed)?;
     streamed
         .checked_sub(stream.withdrawn)
@@ -51,7 +63,7 @@ pub fn available_amount(now: u64, stream: &ModelStream) -> Result<i128, ModelErr
 
 /// Cancel split: `(recipient_amount, sender_refund)`.
 pub fn cancel_amounts(now: u64, stream: &ModelStream) -> Result<(i128, i128), ModelError> {
-    let elapsed = elapsed_seconds(now, stream.start_time, stream.end_time);
+    let elapsed = stream_elapsed_seconds(now, stream);
     let streamed = streamed_at(stream.deposit, stream.duration(), elapsed)?;
     let recipient_amount = streamed
         .checked_sub(stream.withdrawn)

@@ -739,6 +739,8 @@ impl StreamingPayments {
                 end_time: input.end_time,
                 cancelable: input.cancelable,
                 status: StreamStatus::Active,
+                paused_total: 0,
+                last_resumed_at: input.start_time,
                 use_oracle: false,
             };
             stream::put_stream(&env, &created);
@@ -1058,7 +1060,7 @@ impl StreamingPayments {
     fn authorize_withdrawal(env: &Env, stream_id: u64) -> Result<Stream, StreamError> {
         let s = stream::get_stream(env, stream_id)?;
         s.recipient.require_auth();
-        if s.status != StreamStatus::Active {
+        if s.status == StreamStatus::Cancelled || s.status == StreamStatus::Depleted {
             return Err(surface::reject(Branch::StreamNotActive));
         }
         Ok(s)
@@ -1255,7 +1257,7 @@ impl StreamingPayments {
         caller.require_auth();
 
         let mut s = stream::get_stream(&env, stream_id)?;
-        if s.status != StreamStatus::Active {
+        if s.status != StreamStatus::Active && s.status != StreamStatus::Paused {
             return Err(surface::reject(Branch::StreamNotActive));
         }
         if dispute::get_dispute_opt(&env, stream_id).is_some() {
@@ -1325,7 +1327,63 @@ impl StreamingPayments {
         Ok(())
     }
 
-    /// Adds funds to an existing active stream. The deposit grows and accrual
+    /// Stops accrual for an active stream. Only its sender may pause it.
+    ///
+    /// The stream remains open: the recipient can withdraw the balance accrued
+    /// at the pause timestamp, and the sender can still top it up or cancel it.
+    pub fn pause_stream(env: Env, sender: Address, stream_id: u64) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
+        sender.require_auth();
+
+        let mut s = stream::get_stream(&env, stream_id)?;
+        if s.status != StreamStatus::Active {
+            return Err(surface::reject(Branch::StreamNotActive));
+        }
+        if sender != s.sender {
+            return Err(surface::reject(Branch::PauseStreamNotAuthorized));
+        }
+
+        s.status = StreamStatus::Paused;
+        s.last_resumed_at = oracle::resolve_stream_time(&env, stream_id, s.use_oracle).timestamp;
+        stream::put_stream(&env, &s);
+        PauseStream { stream_id }.publish(&env);
+        Ok(())
+    }
+
+    /// Resumes a paused stream at its frozen accrual point. Only its sender may
+    /// resume it; the effective end time is extended by the full pause interval.
+    pub fn resume_stream(env: Env, sender: Address, stream_id: u64) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
+        sender.require_auth();
+
+        let mut s = stream::get_stream(&env, stream_id)?;
+        if s.status != StreamStatus::Paused {
+            return Err(surface::reject(Branch::StreamNotActive));
+        }
+        if sender != s.sender {
+            return Err(surface::reject(Branch::ResumeStreamNotAuthorized));
+        }
+
+        let now = oracle::resolve_stream_time(&env, stream_id, s.use_oracle).timestamp;
+        let pause_duration = now
+            .checked_sub(s.last_resumed_at)
+            .ok_or(StreamError::MathOverflow)?;
+        s.paused_total = s
+            .paused_total
+            .checked_add(pause_duration)
+            .ok_or(StreamError::MathOverflow)?;
+        s.end_time = s
+            .end_time
+            .checked_add(pause_duration)
+            .ok_or(StreamError::MathOverflow)?;
+        s.last_resumed_at = now;
+        s.status = StreamStatus::Active;
+        stream::put_stream(&env, &s);
+        ResumeStream { stream_id }.publish(&env);
+        Ok(())
+    }
+
+    /// Adds funds to an existing active or paused stream. The deposit grows and accrual
     /// remains linear over the original window, so the recipient's accrued
     /// amount increases pro-rata immediately (Sablier-v1 `increaseAmount`
     /// semantics).
@@ -1395,7 +1453,7 @@ impl StreamingPayments {
             return Err(surface::reject(Branch::TopUpAmountNonPositive));
         }
         let mut s = stream::get_stream(&env, stream_id)?;
-        if s.status != StreamStatus::Active {
+        if s.status != StreamStatus::Active && s.status != StreamStatus::Paused {
             return Err(surface::reject(Branch::StreamNotActive));
         }
         s.sender.require_auth();

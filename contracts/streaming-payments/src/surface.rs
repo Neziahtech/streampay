@@ -66,7 +66,8 @@ pub enum Branch {
     // ------------------------------------------------- shared storage/math
     /// `stream.rs::get_stream` finds no stored entry.
     StreamNotFound,
-    /// A terminal (cancelled/depleted) stream is mutated.
+    /// A terminal (cancelled/depleted) stream is mutated, or a pause/resume
+    /// transition is attempted from the wrong state.
     StreamNotActive,
     /// `validate_capacity`: `deposit * duration` would exceed `u128`.
     CapacityOverflow,
@@ -444,6 +445,8 @@ impl Branch {
                 "resolve_dispute",
                 "required_dispute_bond",
                 "sponsored_withdraw",
+                "pause_stream",
+                "resume_stream",
                 "propose_ownership_transfer",
                 "accept_ownership_transfer",
                 "propose_rate_change",
@@ -456,6 +459,8 @@ impl Branch {
                 "top_up",
                 "raise_dispute",
                 "sponsored_withdraw",
+                "pause_stream",
+                "resume_stream",
                 "propose_ownership_transfer",
                 "accept_ownership_transfer",
                 "propose_rate_change",
@@ -813,7 +818,9 @@ impl Branch {
             }
             Branch::ResolveCallerNotSender => "resolve_dispute called by a non-sender",
             Branch::StreamNotFound => "no stream is stored under the id",
-            Branch::StreamNotActive => "the stream status is Cancelled or Depleted",
+            Branch::StreamNotActive => {
+                "the stream status does not permit the requested lifecycle operation"
+            }
             Branch::CapacityOverflow => "deposit * duration would overflow u128",
             Branch::RateProductOverflow => "deposit * elapsed would overflow u128",
             Branch::AvailableBalanceOverflow => {

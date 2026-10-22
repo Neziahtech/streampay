@@ -32,6 +32,12 @@ pub enum ModelEvent {
         amount: i128,
         new_deposit: i128,
     },
+    PauseStream {
+        stream_id: u64,
+    },
+    ResumeStream {
+        stream_id: u64,
+    },
     FeeCharged {
         stream_id: u64,
         token: String,

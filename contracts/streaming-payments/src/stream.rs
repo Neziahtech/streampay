@@ -17,7 +17,7 @@
 //! `test::empty_plan_matches_single_window_formula` proves by exhaustive
 //! comparison.
 
-use soroban_sdk::{contracttype, Address, BytesN, Env, MuxedAddress, Vec};
+use soroban_sdk::{contracttype, Address, BytesN, Env, MuxedAddress, TryFromVal, Val, Vec};
 
 use crate::errors::StreamError;
 use crate::surface::{self, Branch};
@@ -28,8 +28,8 @@ pub const MIN_UPGRADE_DELAY_SECONDS: u64 = 86_400;
 /// Initial schema version (v1).
 pub const INITIAL_SCHEMA_VERSION: u32 = 1;
 
-/// Target schema version after migration (v2).
-pub const TARGET_SCHEMA_VERSION: u32 = 2;
+/// Target schema version after migration (v3).
+pub const TARGET_SCHEMA_VERSION: u32 = 3;
 
 /// Maximum number of streams processed per migration call.
 pub const MAX_MIGRATION_BATCH_SIZE: u32 = 50;
@@ -171,6 +171,8 @@ pub enum StreamStatus {
         doc = " Fully streamed and fully withdrawn. Terminal."
     )]
     Depleted,
+    /// Accrual is frozen; withdrawals and top-ups remain available.
+    Paused,
 }
 
 #[cfg_attr(
@@ -363,10 +365,9 @@ pub struct Stream {
 }
 
 impl Stream {
-    /// Seconds in the stream's full window. Always `>= 1` for a stored stream
-    /// (`create_stream` rejects `end_time <= start_time`).
+    /// Original accrual duration, excluding time the stream has been paused.
     pub fn duration(&self) -> u64 {
-        self.end_time - self.start_time
+        self.end_time - self.start_time - self.paused_total
     }
 }
 
@@ -632,7 +633,14 @@ pub fn streamed_at(deposit: i128, duration: u64, elapsed: u64) -> Result<i128, S
 
 /// Amount streamed (accrued) at reference timestamp `now`.
 pub fn streamed_amount_at(stream: &Stream, now: u64) -> Result<i128, StreamError> {
-    let elapsed = elapsed_seconds_at(now, stream.start_time, stream.end_time);
+    let effective_now = if stream.status == StreamStatus::Paused {
+        stream.last_resumed_at
+    } else {
+        now
+    };
+    let elapsed = elapsed_seconds_at(effective_now, stream.start_time, stream.end_time)
+        .saturating_sub(stream.paused_total)
+        .min(stream.duration());
     streamed_at(stream.deposit, stream.duration(), elapsed)
 }
 
@@ -866,10 +874,48 @@ pub fn reserve_stream_ids(env: &Env, count: u32) -> Result<u64, StreamError> {
 pub fn get_stream(env: &Env, id: u64) -> Result<Stream, StreamError> {
     #[cfg(test)]
     crate::cei_trace::record(&std::format!("read persistent Stream({id})"));
-    env.storage()
-        .persistent()
-        .get(&DataKey::Stream(id))
-        .ok_or_else(|| surface::reject(Branch::StreamNotFound))
+    let key = DataKey::Stream(id);
+    let storage = env.storage().persistent();
+    if let Some(value) = storage.get::<_, Val>(&key) {
+        if let Ok(stream) = Stream::try_from_val(env, &value) {
+            return Ok(stream);
+        }
+        if let Ok(legacy) = LegacyOracleStream::try_from_val(env, &value) {
+            return Ok(Stream {
+                id: legacy.id,
+                sender: legacy.sender,
+                recipient: legacy.recipient,
+                token: legacy.token,
+                deposit: legacy.deposit,
+                withdrawn: legacy.withdrawn,
+                start_time: legacy.start_time,
+                end_time: legacy.end_time,
+                cancelable: legacy.cancelable,
+                status: legacy.status,
+                paused_total: 0,
+                last_resumed_at: legacy.start_time,
+                use_oracle: legacy.use_oracle,
+            });
+        }
+        if let Ok(legacy) = LegacyStream::try_from_val(env, &value) {
+            return Ok(Stream {
+                id: legacy.id,
+                sender: legacy.sender,
+                recipient: legacy.recipient,
+                token: legacy.token,
+                deposit: legacy.deposit,
+                withdrawn: legacy.withdrawn,
+                start_time: legacy.start_time,
+                end_time: legacy.end_time,
+                cancelable: legacy.cancelable,
+                status: legacy.status,
+                paused_total: 0,
+                last_resumed_at: legacy.start_time,
+                use_oracle: false,
+            });
+        }
+    }
+    Err(surface::reject(Branch::StreamNotFound))
 }
 
 /// Persists a stream and extends its storage TTL.
@@ -1175,4 +1221,82 @@ pub fn set_migration_cursor(env: &Env, cursor: u64) {
     env.storage()
         .instance()
         .extend_ttl(TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soroban_sdk::testutils::Address as _;
+
+    #[test]
+    fn reads_legacy_streams_and_upgrades_them_on_write() {
+        let env = Env::default();
+        let governor = Address::generate(&env);
+        let contract_id = env.register(crate::StreamingPayments, (governor,));
+        let id = 1;
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let token = Address::generate(&env);
+        let legacy = LegacyStream {
+            id,
+            sender: sender.clone(),
+            recipient: recipient.clone(),
+            token: token.clone(),
+            deposit: 100,
+            withdrawn: 0,
+            start_time: 10,
+            end_time: 20,
+            cancelable: false,
+            status: StreamStatus::Active,
+        };
+        env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::Stream(id), &legacy);
+
+            let upgraded = get_stream(&env, id).unwrap();
+            assert_eq!(upgraded.paused_total, 0);
+            assert_eq!(upgraded.last_resumed_at, legacy.start_time);
+            assert_eq!(upgraded.deposit, legacy.deposit);
+            put_stream(&env, &upgraded);
+            assert_eq!(get_stream(&env, id).unwrap(), upgraded);
+        });
+    }
+
+    #[test]
+    fn reads_oracle_streams_from_the_pre_pause_schema() {
+        let env = Env::default();
+        let governor = Address::generate(&env);
+        let contract_id = env.register(crate::StreamingPayments, (governor,));
+        let id = 1;
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let token = Address::generate(&env);
+        let legacy = LegacyOracleStream {
+            id,
+            sender,
+            recipient,
+            token,
+            deposit: 100,
+            withdrawn: 0,
+            start_time: 10,
+            end_time: 20,
+            cancelable: false,
+            status: StreamStatus::Active,
+            use_oracle: true,
+        };
+
+        env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::Stream(id), &legacy);
+
+            let upgraded = get_stream(&env, id).unwrap();
+            assert_eq!(upgraded.paused_total, 0);
+            assert_eq!(upgraded.last_resumed_at, legacy.start_time);
+            assert!(upgraded.use_oracle);
+            put_stream(&env, &upgraded);
+            assert_eq!(get_stream(&env, id).unwrap(), upgraded);
+        });
+    }
 }
