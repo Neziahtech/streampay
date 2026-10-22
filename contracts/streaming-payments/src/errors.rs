@@ -588,6 +588,12 @@ pub enum StreamError {
         doc = " (`MAX_RATE_SEGMENTS`); cancel it or open a new stream instead."
     )]
     TooManyRateSegments = 83,
+    /// `confirm_payout` or `cancel_payout` was called without a pending binding.
+    NoPendingPayoutBinding = 84,
+    /// `confirm_payout` was called before the binding delay elapsed.
+    PayoutBindingNotReady = 85,
+    /// The contract itself cannot be a payout destination.
+    InvalidPayoutAddress = 86,
 }
 
 impl StreamError {
@@ -678,6 +684,9 @@ impl StreamError {
         StreamError::RateProposalExpired,
         StreamError::RateProposalPending,
         StreamError::TooManyRateSegments,
+        StreamError::NoPendingPayoutBinding,
+        StreamError::PayoutBindingNotReady,
+        StreamError::InvalidPayoutAddress,
     ];
 
     /// The stable numeric value carried across the contract boundary

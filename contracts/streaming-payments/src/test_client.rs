@@ -11,9 +11,9 @@
 use soroban_sdk::{contractclient, Address, BytesN, Env, Vec};
 
 use crate::{
-    BatchEntry, FeeScan, GovernanceAction, MigrationStatus, PendingOwnership, PendingRateChange,
-    PendingUpgrade, PeriodSpend, Proposal, RateSegment, ScheduledIntent, SponsorConfig, Stream,
-    StreamError, StreamInput, StreamPolicy, TreasuryStatus,
+    BatchEntry, FeeScan, GovernanceAction, MigrationStatus, PayoutProposal, PendingOwnership,
+    PendingRateChange, PendingUpgrade, PeriodSpend, Proposal, RateSegment, ScheduledIntent,
+    SponsorConfig, Stream, StreamError, StreamInput, StreamPolicy, TreasuryStatus,
 };
 
 /// Interface of the StreamPay streaming-payments contract.
@@ -55,6 +55,16 @@ pub trait StreamingPaymentsApi {
 
     fn withdraw(env: Env, stream_id: u64, amount: i128) -> Result<(), StreamError>;
     fn withdraw_max(env: Env, stream_id: u64) -> Result<i128, StreamError>;
+    fn bind_payout(
+        env: Env,
+        recipient: Address,
+        payout_address: Address,
+    ) -> Result<u64, StreamError>;
+    fn confirm_payout(env: Env, recipient: Address) -> Result<(), StreamError>;
+    fn cancel_payout(env: Env, recipient: Address) -> Result<(), StreamError>;
+    fn payout_address(env: Env, recipient: Address) -> Address;
+    fn pending_payout(env: Env, recipient: Address) -> Option<PayoutProposal>;
+    fn ledger_timestamp(env: Env) -> u64;
     fn cancel_stream(env: Env, caller: Address, stream_id: u64) -> Result<(), StreamError>;
     fn top_up(env: Env, stream_id: u64, amount: i128) -> Result<(), StreamError>;
     fn propose_ownership_transfer(

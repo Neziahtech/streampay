@@ -43,7 +43,7 @@ Every expected failure is a `StreamError` with a stable numeric code. This docum
 | 33 | `PolicyNoQueuedChange` | reachable (1 branch(es)) | `policy_execute_asset` | no policy change is queued for the specified asset |
 | 34 | `PolicyNotInitialized` | reachable (1 branch(es)) | `policy_accept_handoff`, `policy_cancel_handoff`, `policy_execute_asset`, `policy_propose_asset`, `policy_propose_handoff`, `policy_set_timelock_delay` | the policy module has not been initialized |
 | 35 | `PolicyNoPendingHandoff` | reachable (1 branch(es)) | `policy_accept_handoff`, `policy_cancel_handoff` | no admin handoff proposal is pending |
-| 36 | `ContractFrozen` | reachable (1 branch(es)) | `accept_ownership_transfer`, `accept_rate_change`, `cancel_ownership_transfer`, `cancel_rate_change`, `cancel_stream`, `create_stream`, `create_streams`, `propose_ownership_transfer`, `propose_rate_change`, `top_up`, `withdraw`, `withdraw_max` | the contract is frozen for maintenance or upgrade |
+| 36 | `ContractFrozen` | reachable (1 branch(es)) | `accept_ownership_transfer`, `accept_rate_change`, `bind_payout`, `cancel_ownership_transfer`, `cancel_payout`, `cancel_rate_change`, `cancel_stream`, `confirm_payout`, `create_stream`, `create_streams`, `propose_ownership_transfer`, `propose_rate_change`, `top_up`, `withdraw`, `withdraw_max` | the contract is frozen for maintenance or upgrade |
 | 37 | `ContractNotFrozen` | reachable (1 branch(es)) | `migrate_storage` | storage migration requires the contract to be frozen |
 | 38 | `NoPendingUpgrade` | reachable (2 branch(es)) | `cancel_upgrade`, `execute_upgrade` | execute_upgrade called with no upgrade pending; cancel_upgrade called with no upgrade pending |
 | 39 | `TimelockNotExpired` | reachable (1 branch(es)) | `execute_upgrade` | upgrade timelock delay has not yet expired |
@@ -91,6 +91,9 @@ Every expected failure is a `StreamError` with a stable numeric code. This docum
 | 81 | `RateProposalExpired` | reachable (1 branch(es)) | `accept_rate_change` | the rate proposal's acceptance window has elapsed |
 | 82 | `RateProposalPending` | reachable (1 branch(es)) | `propose_rate_change` | an unexpired rate-change proposal already exists for the stream |
 | 83 | `TooManyRateSegments` | reachable (1 branch(es)) | `accept_rate_change` | the stream already carries MAX_RATE_SEGMENTS rate-change segments |
+| 84 | `NoPendingPayoutBinding` | reachable (1 branch(es)) | `cancel_payout`, `confirm_payout` | no pending payout binding exists |
+| 85 | `PayoutBindingNotReady` | reachable (1 branch(es)) | `confirm_payout` | the payout binding delay has not elapsed |
+| 86 | `InvalidPayoutAddress` | reachable (1 branch(es)) | `bind_payout` | the payout destination is the streaming contract |
 
 ## Branch matrix (entrypoint × condition → error)
 
@@ -150,7 +153,7 @@ Every expected failure is a `StreamError` with a stable numeric code. This docum
 | `PolicyNoPendingHandoff` | `policy_accept_handoff`, `policy_cancel_handoff` | `PolicyNoPendingHandoff` | 35 | no admin handoff proposal is pending | reachable |
 | `CreateBatchEmpty` | `create_streams_batch` | `BatchEmpty` | 47 | entries is empty | reachable |
 | `CreateBatchTooLarge` | `create_streams_batch` | `BatchTooLarge` | 48 | entries length exceeds MAX_BATCH | reachable |
-| `ContractFrozen` | `create_stream`, `create_streams`, `withdraw`, `withdraw_max`, `cancel_stream`, `top_up`, `propose_ownership_transfer`, `accept_ownership_transfer`, `cancel_ownership_transfer`, `propose_rate_change`, `accept_rate_change`, `cancel_rate_change` | `ContractFrozen` | 36 | the contract is frozen for maintenance or upgrade | reachable |
+| `ContractFrozen` | `create_stream`, `create_streams`, `withdraw`, `withdraw_max`, `cancel_stream`, `top_up`, `bind_payout`, `confirm_payout`, `cancel_payout`, `propose_ownership_transfer`, `accept_ownership_transfer`, `cancel_ownership_transfer`, `propose_rate_change`, `accept_rate_change`, `cancel_rate_change` | `ContractFrozen` | 36 | the contract is frozen for maintenance or upgrade | reachable |
 | `MigrationNotFrozen` | `migrate_storage` | `ContractNotFrozen` | 37 | storage migration requires the contract to be frozen | reachable |
 | `ExecuteUpgradeNoPending` | `execute_upgrade` | `NoPendingUpgrade` | 38 | execute_upgrade called with no upgrade pending | reachable |
 | `CancelUpgradeNoPending` | `cancel_upgrade` | `NoPendingUpgrade` | 38 | cancel_upgrade called with no upgrade pending | reachable |
@@ -206,6 +209,9 @@ Every expected failure is a `StreamError` with a stable numeric code. This docum
 | `RatePolicyAboveCeiling` | `accept_rate_change` | `PolicyRateAboveCeiling` | 43 | the new rate exceeds the governance policy rate ceiling | reachable |
 | `RateTopUpTransferFailed` | `accept_rate_change` | `TopUpTransferFailed` | 27 | the token refuses the pull of the shortfall a rate increase requires | reachable |
 | `RateRefundFailed` | `accept_rate_change` | `SenderRefundFailed` | 29 | the token refuses the refund of the escrow a rate decrease frees | reachable |
+| `PayoutBindingMissing` | `confirm_payout`, `cancel_payout` | `NoPendingPayoutBinding` | 84 | no pending payout binding exists | reachable |
+| `PayoutBindingNotReady` | `confirm_payout` | `PayoutBindingNotReady` | 85 | the payout binding delay has not elapsed | reachable |
+| `InvalidPayoutAddress` | `bind_payout` | `InvalidPayoutAddress` | 86 | the payout destination is the streaming contract | reachable |
 
 ## Retired codes
 

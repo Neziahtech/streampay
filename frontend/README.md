@@ -6,6 +6,9 @@ atomic **withdraw max**, or **claim for free** through a sponsor relay),
 top up, cancel — with on-chain discovery so the list survives reloads and
 shows streams you didn't create in this session.
 
+Recipients can route claims to a delayed alternate payout address. The new
+destination requires a second confirmation after 24 hours.
+
 It also ships **opt-in fee-aware claim scheduling**: a recipient can defer a
 claim and have StreamPay submit it when the Soroban inclusion fee drops under a
 budget they set, with a hard deadline fallback. See
@@ -16,11 +19,8 @@ budget they set, with a hard deadline fallback. See
 
 | Route | What it does |
 |---|---|
-| `/` | Connect, create form, stream list with per-row actions and a **Discover on-chain** button (scans the contract's `recipient_streams` / `sender_streams` indexes for your address) |
-| `/stream/[id]` | Stream detail: progress bar, live `available` poll (15 s), withdraw form with over-withdrawal guard, **Withdraw max** (`withdraw_max`), **Claim for free** (gas-sponsored relay when a sponsor covers the stream's token), cancel. Read-only-safe without a wallet; contract errors decode to `StreamError` names |
-| `/stream/[id]` | Stream detail: progress bar, live `available` poll (15 s), withdraw form with over-withdrawal guard, **Withdraw max** (`withdraw_max`), cancel, and the fee-aware claim scheduler panel (recipients only). Read-only-safe without a wallet; contract errors decode to `StreamError` names |
-| `/` | Connect, single and CSV batch creation forms (asset selector: **native XLM** or an entered token contract id), stream list with per-row actions and a **Discover on-chain** button (scans the contract's `recipient_streams` / `sender_streams` indexes for your address) |
-| `/stream/[id]` | Stream detail: progress bar, live `available` poll (15 s) with on-demand refetch, dedicated withdrawal panel with auto-prefilled accrued balance, client-side over-withdrawal guard, **Withdraw max** (`withdraw_max`), cancel. Read-only-safe without a wallet; contract errors decode to human-readable `StreamError` names |
+| `/` | Connect, single and CSV batch creation forms (asset selector: **native XLM** or an entered token contract id), delayed payout destination proposal with a live countdown, stream list with per-row actions and on-chain discovery |
+| `/stream/[id]` | Stream detail: progress, live `available` polling, withdrawal panel, **Withdraw max**, **Claim for free** through a sponsor relay, fee-aware claim scheduling, and cancel. Read-only-safe without a wallet; contract errors decode to `StreamError` names |
 | `GET /accrual/[id]` | Computed accrual curve time-series API (`?from&to&step`) with ETag/304 caching, honest staleness headers, and shared RPC rate budgets |
 | `/docs` | Public interactive API documentation page (Swagger UI) rendering OpenAPI 3.1 spec |
 
@@ -71,10 +71,14 @@ For a one-command deployed contract + demo stream, see
   asset costs one extra signature instead of failing at simulation.
 - Read-only calls (`get_stream`, `available`, the index views, `allowance`)
   simulate against the RPC without signing.
-- Contract errors decode to `StreamError` names, including the scheduled-intent
-  codes (18–25) and the transfer-failure codes: `DepositTransferFailed` (26),
-  `TopUpTransferFailed` (27), `RecipientPayoutFailed` (28),
-  `SenderRefundFailed` (29), `TreasuryPayoutFailed` (30).
+- Contract errors decode to `StreamError` names; the generated
+  [error catalog](../docs/errors.md) is the authority for names and wire codes.
+- A payout change needs a second recipient signature after 24 hours; the active
+  destination is used by `withdraw`, `withdraw_max`, and the accrued recipient
+  leg of `cancel_stream`. Destinations cannot be the streaming contract and
+  must support every asset used by the recipient's streams; issued assets need
+  the corresponding trustline. Generic SEP-41 tokens do not support a uniform
+  trustline preflight, so an unreceivable payout fails atomically.
 - Amounts are **smallest token units** (stroops for classic assets).
 - The batch form accepts `address,rate,duration` CSV rows. Rate is an integer
   in smallest token units per second; duration is integer seconds. Each

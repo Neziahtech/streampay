@@ -71,6 +71,11 @@ export interface StreamArgs {
 import type { StreamView } from "./pagination.ts";
 export type { StreamView };
 
+export interface PayoutProposalView {
+  payoutAddress: string;
+  activatesAt: number;
+}
+
 export interface AssetMeta {
   code: string;
   decimals: number;
@@ -198,6 +203,37 @@ const STREAM_ERRORS: Record<number, string> = {
   53: "ClaimNonceReplay",
   54: "SponsorBudgetExceeded",
   55: "BeneficiaryBudgetExceeded",
+  56: "InvalidOracleThreshold",
+  57: "OraclePublishersNotConfigured",
+  58: "OracleReportTooOld",
+  59: "NotOraclePublisher",
+  60: "NoPendingOwnership",
+  61: "OwnershipProposalExpired",
+  62: "InvalidTransferTarget",
+  63: "OwnershipProposalPending",
+  64: "GovernanceNotInitialized",
+  65: "GovernanceAlreadyInitialized",
+  66: "NotGovernanceSigner",
+  67: "GovernanceDuplicateSigner",
+  68: "GovernanceSignerSetEmpty",
+  69: "GovernanceTooManySigners",
+  70: "GovernanceSignersNotDistinct",
+  71: "GovernanceProposalNotFound",
+  72: "GovernanceVetoWindowOpen",
+  73: "GovernanceVetoWindowClosed",
+  74: "GovernanceVetoWindowTooShort",
+  75: "GovernanceAlreadyVetoed",
+  76: "GovernanceAlreadyExecuted",
+  77: "GovernanceDuplicateSignature",
+  78: "GovernanceSignaturesInsufficient",
+  79: "GovernanceTimelockRequired",
+  80: "NoPendingRateChange",
+  81: "RateProposalExpired",
+  82: "RateProposalPending",
+  83: "TooManyRateSegments",
+  84: "NoPendingPayoutBinding",
+  85: "PayoutBindingNotReady",
+  86: "InvalidPayoutAddress",
 };
 
 /** Rewrites raw simulation/tx error text into a readable StreamError name. */
@@ -580,6 +616,36 @@ export async function claimStreamWithReceipt(
   };
 }
 
+/** Proposes a recipient payout destination and returns its activation time. */
+export async function bindPayout(
+  recipient: string,
+  payoutAddress: string
+): Promise<bigint> {
+  return send(
+    recipient,
+    contract().call("bind_payout", scAddr(recipient), scAddr(payoutAddress)),
+    (v) => BigInt(scValToNative(v) as bigint)
+  );
+}
+
+/** Confirms a payout destination after the contract-enforced delay. */
+export async function confirmPayout(recipient: string): Promise<void> {
+  await send(
+    recipient,
+    contract().call("confirm_payout", scAddr(recipient)),
+    () => undefined
+  );
+}
+
+/** Cancels a pending payout destination without affecting the active one. */
+export async function cancelPayout(recipient: string): Promise<void> {
+  await send(
+    recipient,
+    contract().call("cancel_payout", scAddr(recipient)),
+    () => undefined
+  );
+}
+
 export async function topUpStream(
   sender: string,
   streamId: string,
@@ -829,6 +895,38 @@ export async function readAvailable(streamId: string): Promise<bigint> {
     throw new Error(`Stream #${streamId} not found or RPC unavailable`);
   }
   return BigInt(scValToNative(retval) as bigint);
+}
+
+/** Effective destination for recipient payouts (the recipient when unbound). */
+export async function readPayoutAddress(recipient: string): Promise<string> {
+  const retval = await simulateRead(CONTRACT_ID, "payout_address", [scAddr(recipient)]);
+  if (!retval) throw new Error("Payout address unavailable");
+  return String(scValToNative(retval));
+}
+
+/** Current Soroban ledger timestamp in seconds, read without signing. */
+export async function readLedgerTimestamp(): Promise<number | null> {
+  const retval = await simulateRead(CONTRACT_ID, "ledger_timestamp", []);
+  if (!retval) return null;
+  try {
+    return Number(scValToNative(retval));
+  } catch {
+    return null;
+  }
+}
+
+/** Pending delayed destination, or null when no change is waiting. */
+export async function readPendingPayout(
+  recipient: string
+): Promise<PayoutProposalView | null> {
+  const retval = await simulateRead(CONTRACT_ID, "pending_payout", [scAddr(recipient)]);
+  if (!retval) return null;
+  const raw = scValToNative(retval) as Record<string, unknown> | null;
+  if (!raw) return null;
+  return {
+    payoutAddress: String(raw.payout_address),
+    activatesAt: Number(raw.activates_at),
+  };
 }
 
 const MAX_PAGE_SIZE = 50; // mirrors the contract's MAX_PAGE_SIZE

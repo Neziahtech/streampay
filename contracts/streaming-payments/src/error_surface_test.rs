@@ -803,6 +803,31 @@ fn probe(branch: Branch) -> Option<StreamError> {
                 &50
             )))
         }
+        Branch::PayoutBindingMissing => {
+            let f = Fixture::setup_quiet();
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_confirm_payout(&f.recipient)))
+        }
+        Branch::PayoutBindingNotReady => {
+            let f = Fixture::setup_quiet();
+            f.client
+                .mock_all_auths()
+                .bind_payout(&f.recipient, &soroban_sdk::Address::generate(&f.env));
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_confirm_payout(&f.recipient)))
+        }
+        Branch::InvalidPayoutAddress => {
+            let f = Fixture::setup_quiet();
+            let contract_address = f.client.address.clone();
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_bind_payout(&f.recipient, &contract_address,)))
+        }
         Branch::PolicyDepositBelowFloor => {
             let f = Fixture::setup_quiet();
             let now = f.env.ledger().timestamp();
@@ -1635,7 +1660,10 @@ fn stream_error_variant_list_is_exhaustive() {
             | StreamError::GovernanceAlreadyExecuted
             | StreamError::GovernanceDuplicateSignature
             | StreamError::GovernanceSignaturesInsufficient
-            | StreamError::GovernanceTimelockRequired => StreamError::ALL.contains(&e),
+            | StreamError::GovernanceTimelockRequired
+            | StreamError::NoPendingPayoutBinding
+            | StreamError::PayoutBindingNotReady
+            | StreamError::InvalidPayoutAddress => StreamError::ALL.contains(&e),
         }
     }
 

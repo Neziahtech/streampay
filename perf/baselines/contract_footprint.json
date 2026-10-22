@@ -16,20 +16,20 @@
       "description": "Stream creation with deposit pull (allowance), rate validation, stream storage, and 2 index entries"
     },
     "withdraw": {
-      "budget_cpu": 360000,
+      "budget_cpu": 370000,
       "baseline_cpu": 347082,
       "memory_bytes": 138899,
       "storage_entries": 1,
       "event_bytes_xdr": 236,
-      "description": "Partial withdrawal of accrued balance, stream state update, and token transfer"
+      "description": "Partial withdrawal of accrued balance, payout destination lookup, stream state update, and token transfer"
     },
     "withdraw_max": {
-      "budget_cpu": 350000,
+      "budget_cpu": 370000,
       "baseline_cpu": 338663,
       "memory_bytes": 134329,
       "storage_entries": 1,
       "event_bytes_xdr": 236,
-      "description": "Atomic withdrawal of all accrued funds, stream depletion update, and token transfer"
+      "description": "Atomic withdrawal of all accrued funds, payout destination lookup, stream depletion update, and token transfer"
     },
     "cancel_stream": {
       "budget_cpu": 540000,

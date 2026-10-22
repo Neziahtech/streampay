@@ -176,6 +176,11 @@ pub enum Branch {
     PolicyDurationBelowFloor,
     PolicyDurationAboveCeiling,
     PolicyDepositBelowFloor,
+    // --------------------------------------------------------- payout binding
+    PayoutBindingMissing,
+    PayoutBindingNotReady,
+    /// `bind_payout`: the streaming contract cannot receive its own payouts.
+    InvalidPayoutAddress,
     // ------------------------------------------------------------- oracle
     InvalidOracleThreshold,
     OraclePublishersNotConfigured,
@@ -282,7 +287,7 @@ impl Branch {
     /// Every branch, in declaration order. The matrix test walks this list and
     /// the coverage test requires each [`StreamError`] variant to be produced by
     /// one of these (or retired).
-    pub const ALL: [Branch; 110] = [
+    pub const ALL: [Branch; 113] = [
         Branch::CreateDepositNonPositive,
         Branch::CreateStartTimeInPast,
         Branch::CreateInvalidTimeRange,
@@ -393,6 +398,9 @@ impl Branch {
         Branch::RatePolicyAboveCeiling,
         Branch::RateTopUpTransferFailed,
         Branch::RateRefundFailed,
+        Branch::PayoutBindingMissing,
+        Branch::PayoutBindingNotReady,
+        Branch::InvalidPayoutAddress,
     ];
 
     /// The entrypoint(s) through which this branch can fire. Shared helpers
@@ -520,6 +528,9 @@ impl Branch {
                 "withdraw_max",
                 "cancel_stream",
                 "top_up",
+                "bind_payout",
+                "confirm_payout",
+                "cancel_payout",
                 "propose_ownership_transfer",
                 "accept_ownership_transfer",
                 "cancel_ownership_transfer",
@@ -624,6 +635,9 @@ impl Branch {
                 "accept_rate_change",
                 "top_up",
             ],
+            Branch::PayoutBindingMissing => &["confirm_payout", "cancel_payout"],
+            Branch::PayoutBindingNotReady => &["confirm_payout"],
+            Branch::InvalidPayoutAddress => &["bind_payout"],
         }
     }
 
@@ -747,6 +761,9 @@ impl Branch {
                 StreamError::GovernanceSignaturesInsufficient
             }
             Branch::GovernanceTimelockRequired => StreamError::GovernanceTimelockRequired,
+            Branch::PayoutBindingMissing => StreamError::NoPendingPayoutBinding,
+            Branch::PayoutBindingNotReady => StreamError::PayoutBindingNotReady,
+            Branch::InvalidPayoutAddress => StreamError::InvalidPayoutAddress,
         }
     }
 
@@ -981,6 +998,9 @@ impl Branch {
             Branch::GovernanceTimelockRequired => {
                 "the action requires an executed governance proposal now that governance is bootstrapped"
             }
+            Branch::PayoutBindingMissing => "no pending payout binding exists",
+            Branch::PayoutBindingNotReady => "the payout binding delay has not elapsed",
+            Branch::InvalidPayoutAddress => "the payout destination is the streaming contract",
         }
     }
 

@@ -338,14 +338,16 @@ An adversary acquires private keys corresponding to User Accounts (Sender/Recipi
   - **Consequence**:
     - *Stolen Sender Key*: Attacker cancels active streams to reclaim unaccrued remainder, or tops up streams. Attacker **cannot** steal accrued recipient funds (`cancel_amounts` routes accrued tokens strictly to recipient).
     - *Stolen Recipient Key*: Attacker drains accrued funds via `withdraw` / `withdraw_max`.
+    - *Payout routing*: A stolen recipient key can still claim funds immediately to its own address and can propose a different destination. The 24-hour delay separates proposal from activation, giving a recipient who detects temporary key exposure time to cancel it; it does not stop an attacker who retains the key from confirming after the delay.
     - *Stolen Deployer / Ops Key*: **Zero impact on contract state.** Deployer and Ops keys hold **no** administrative, ownership, pause, or upgrade privileges in the contract bytecode.
     - (Severity: **High** for compromised user; **Nil** for uncompromised users / systemic contract).
   - **Existing Mitigations**:
     1. Per-stream isolation: Compromise of user $A$'s key exposes only streams where $A$ is sender or recipient; other streams remain completely unaffected.
     2. Pro-rata payout enforcement: `cancel_stream` routes `recipient_amount` strictly to `s.recipient`, preventing a compromised sender key from stealing accrued funds (`contracts/streaming-payments/src/lib.rs:281-287`).
     3. Absence of admin role: Contract has no admin functions, eliminating systemic takeover via compromised deployment credentials (`docs/INCIDENT_RUNBOOK.md:17-19`).
-  - **Status**: `PARTIALLY MITIGATED` (Proving test for pro-rata payout isolation: `contracts/streaming-payments/src/test.rs:564`; user key custody is an accepted off-chain operational risk)
-  - **Evidence Citations**: `contracts/streaming-payments/src/test.rs:564` (`fn cancel_by_sender_refunds_remainder_and_pays_accrued()`), `docs/INCIDENT_RUNBOOK.md:17-19`.
+    4. Delayed payout binding: `bind_payout` requires recipient authorization; `confirm_payout` requires the same authorization after 24 hours. Pending and active destinations use separate persistent keys; pending-key TTL is extended only after existence is confirmed. A delay improves detection and recovery for temporary compromise but is not a substitute for key security and does not protect a continuously compromised account.
+  - **Status**: `PARTIALLY MITIGATED` (Payout routing and delay do not prevent claims signed by a stolen recipient key; user key custody remains an accepted off-chain operational risk)
+  - **Evidence Citations**: `contracts/streaming-payments/src/test.rs:564` (`fn cancel_by_sender_refunds_remainder_and_pays_accrued()`), payout binding transition and authorization tests in `contracts/streaming-payments/src/test.rs`, `docs/INCIDENT_RUNBOOK.md:17-19`.
 
 - **Cell 3.2: Stolen Keys × Frontend**
   - **Consequence**: Compromise of hosting infrastructure (e.g. Netlify access token or DNS hijacking) allows injecting malicious contract IDs or transaction targets to intercept user deposits. (Severity: **Critical**).

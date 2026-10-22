@@ -105,13 +105,13 @@ pub use events::{
     BeneficiaryEnrolled, ContractFrozenStateChanged, ContractUpgraded, FeeCharged, FeeWithdrawn,
     GovernanceActionExecuted, GovernanceActionProposed, GovernanceActionSigned,
     GovernanceActionVetoed, GovernanceSignersSet, OperatorKeyRotated, OracleConfigUpdated,
-    OracleStaleFallback, OracleTimeReported, OwnershipAccepted, OwnershipProposed,
-    PolicyAssetExecuted, PolicyAssetQueued, PolicyHandoffAccepted, PolicyHandoffCancelled,
-    PolicyHandoffProposed, PolicyInitialized, RateChangeAccepted, RateChangeProposed,
-    ScheduledIntentCancelled, ScheduledIntentExpired, ScheduledStreamExecuted, SponsorActiveSet,
-    SponsorClaim, SponsorRegistered, StorageMigrated, StreamCancelled, StreamCreated,
-    StreamPolicySet, StreamScheduled, StreamToppedUp, StreamsCreated, UpgradeCancelled,
-    UpgradeProposed, Withdrawn,
+    OracleStaleFallback, OracleTimeReported, OwnershipAccepted, OwnershipProposed, PayoutActive,
+    PayoutBindingCancelled, PayoutBound, PolicyAssetExecuted, PolicyAssetQueued,
+    PolicyHandoffAccepted, PolicyHandoffCancelled, PolicyHandoffProposed, PolicyInitialized,
+    RateChangeAccepted, RateChangeProposed, ScheduledIntentCancelled, ScheduledIntentExpired,
+    ScheduledStreamExecuted, SponsorActiveSet, SponsorClaim, SponsorRegistered, StorageMigrated,
+    StreamCancelled, StreamCreated, StreamPolicySet, StreamScheduled, StreamToppedUp,
+    StreamsCreated, UpgradeCancelled, UpgradeProposed, Withdrawn,
 };
 pub use governance::{
     GovernanceAction, Proposal, DEFAULT_VETO_WINDOW_SECONDS, MAX_SIGNERS, MIN_VETO_WINDOW_SECONDS,
@@ -127,10 +127,11 @@ pub use sponsor::{PeriodSpend, SponsorConfig};
 // calculators: it is a pure function requiring no `Env`.
 pub use stream::{
     streamed_amount_at_segments, streamed_at, BatchEntry, MigrationStatus, OwnershipRole,
-    PendingOwnership, PendingRateChange, PendingUpgrade, RateSegment, Stream, StreamStatus,
-    INITIAL_SCHEMA_VERSION, MAX_BATCH, MAX_DURATION_SECONDS, MAX_MIGRATION_BATCH_SIZE,
-    MAX_PAGE_SIZE, MAX_RATE_SEGMENTS, MIN_BATCH, MIN_UPGRADE_DELAY_SECONDS,
-    OWNERSHIP_PROPOSAL_TTL_SECONDS, RATE_PROPOSAL_TTL_SECONDS, TARGET_SCHEMA_VERSION,
+    PayoutProposal, PendingOwnership, PendingRateChange, PendingUpgrade, RateSegment, Stream,
+    StreamStatus, INITIAL_SCHEMA_VERSION, MAX_BATCH, MAX_DURATION_SECONDS,
+    MAX_MIGRATION_BATCH_SIZE, MAX_PAGE_SIZE, MAX_RATE_SEGMENTS, MIN_BATCH,
+    MIN_UPGRADE_DELAY_SECONDS, OWNERSHIP_PROPOSAL_TTL_SECONDS, PAYOUT_BINDING_DELAY_SECONDS,
+    RATE_PROPOSAL_TTL_SECONDS, TARGET_SCHEMA_VERSION,
 };
 pub use treasury::{fee_amount, FeeScan, Treasury, TreasuryStatus, BPS_DENOMINATOR, MAX_FEE_BPS};
 
@@ -1028,6 +1029,92 @@ impl StreamingPayments {
         Ok(amount)
     }
 
+    /// Proposes a payout destination. The recipient's original address remains
+    /// the sole authorization principal; confirmation is delayed by 24 hours.
+    /// The destination must be able to receive every stream asset for this
+    /// recipient. The contract rejects itself as a destination, but generic
+    /// SEP-41 tokens do not provide a uniform trustline preflight.
+    pub fn bind_payout(
+        env: Env,
+        recipient: Address,
+        payout_address: Address,
+    ) -> Result<u64, StreamError> {
+        Self::require_not_frozen(&env)?;
+        recipient.require_auth();
+        if payout_address == env.current_contract_address() {
+            return Err(surface::reject(Branch::InvalidPayoutAddress));
+        }
+        let activates_at = env
+            .ledger()
+            .timestamp()
+            .saturating_add(PAYOUT_BINDING_DELAY_SECONDS);
+        let proposal = PayoutProposal {
+            payout_address: payout_address.clone(),
+            activates_at,
+        };
+        stream::put_pending_payout(&env, &recipient, &proposal);
+        PayoutBound {
+            recipient,
+            payout_address,
+            activates_at,
+        }
+        .publish(&env);
+        Ok(activates_at)
+    }
+
+    /// Activates a matured payout destination after a second recipient action.
+    pub fn confirm_payout(env: Env, recipient: Address) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
+        recipient.require_auth();
+        let proposal = stream::pending_payout(&env, &recipient)
+            .ok_or_else(|| surface::reject(Branch::PayoutBindingMissing))?;
+        if env.ledger().timestamp() < proposal.activates_at {
+            return Err(surface::reject(Branch::PayoutBindingNotReady));
+        }
+
+        stream::put_payout_address(&env, &recipient, &proposal.payout_address);
+        stream::remove_pending_payout(&env, &recipient);
+        PayoutActive {
+            recipient,
+            payout_address: proposal.payout_address,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Cancels a pending payout destination without changing the active one.
+    pub fn cancel_payout(env: Env, recipient: Address) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
+        recipient.require_auth();
+        let proposal = stream::pending_payout(&env, &recipient)
+            .ok_or_else(|| surface::reject(Branch::PayoutBindingMissing))?;
+        stream::remove_pending_payout(&env, &recipient);
+        PayoutBindingCancelled {
+            recipient,
+            payout_address: proposal.payout_address,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Effective destination for recipient payouts; defaults to recipient.
+    pub fn payout_address(env: Env, recipient: Address) -> Address {
+        stream::payout_address(&env, &recipient)
+    }
+
+    /// Current ledger timestamp in seconds, for clients displaying on-chain
+    /// time-based actions such as payout-binding confirmation.
+    pub fn ledger_timestamp(env: Env) -> u64 {
+        env.ledger().timestamp()
+    }
+
+    /// Current pending destination and activation timestamp, if one exists.
+    pub fn pending_payout(env: Env, recipient: Address) -> Option<PayoutProposal> {
+        stream::pending_payout(&env, &recipient)
+    }
+
+    /// Shared preamble for both withdrawal paths: load the stream, require
+    /// the recipient's authorization, and reject terminal streams.
     #[cfg_attr(
         not(target_family = "wasm"),
         doc = " Shared preamble for both withdrawal paths: load the stream, require"
@@ -1058,6 +1145,9 @@ impl StreamingPayments {
         doc = " moving tokens, so a reentrant token callback can never double-spend."
     )]
     fn pay_out(env: &Env, s: &mut Stream, amount: i128) -> Result<(), StreamError> {
+        // Resolve the destination in the checks phase. This storage read may
+        // extend its TTL, so it must precede effects, events, and token calls.
+        let payout = stream::muxed(&stream::payout_address(env, &s.recipient));
         s.withdrawn = s
             .withdrawn
             .checked_add(amount)
@@ -1080,7 +1170,7 @@ impl StreamingPayments {
         push(
             env,
             &s.token,
-            &stream::muxed(&s.recipient),
+            &payout,
             amount,
             Branch::RecipientPayoutFailed,
         )
@@ -1217,6 +1307,8 @@ impl StreamingPayments {
         let resolved = oracle::resolve_stream_time(&env, stream_id, s.use_oracle);
         let (recipient_amount, sender_amount) =
             stream::cancel_amounts_with_plan(&env, &s, resolved.timestamp)?;
+        // Resolve before effects and the event; the lookup can extend storage TTL.
+        let payout = stream::muxed(&stream::payout_address(&env, &s.recipient));
 
         // Effects first (CEI): finalise state before moving tokens.
         s.status = StreamStatus::Cancelled;
@@ -1248,7 +1340,7 @@ impl StreamingPayments {
                     &env,
                     &s.token,
                     &current_contract,
-                    &stream::muxed(&s.recipient),
+                    &payout,
                     recipient_amount,
                     Branch::RecipientPayoutFailed,
                 )?;

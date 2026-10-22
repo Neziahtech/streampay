@@ -189,10 +189,12 @@ The harness measures:
    - `cargo test -p streampay-contract --lib operation_order_matches_golden --locked`: All 9 golden traces match byte-for-byte.
 3. **Footprint Regression Harness**:
    - `hot_path_footprint_harness` in `contracts/streaming-payments/src/test.rs` permanently asserts that hot paths execute within instruction budgets:
-     - `create_stream` <= 560,000 CPU (541,608 measured)
-     - `withdraw` <= 370,000 CPU (365,133 measured)
-     - `cancel_stream` <= 545,000 CPU (538,801 measured)
-     - `withdraw_max` <= 375,000 CPU (368,142 measured)
-     - `withdraw` on a renegotiated (two-window) stream <= 415,000 CPU (407,316 measured)
-   - `full_schedule_pricing_is_bounded` asserts the worst case a schedule can
-     produce — a stream at the 32-segment cap — at <= 850,000 CPU (820,911 measured).
+     - `create_stream` <= 560,000 CPU
+     - `withdraw` <= 395,000 CPU (381,975 measured; includes payout lookup)
+     - `cancel_stream` <= 580,000 CPU (560,731 measured; includes payout lookup)
+     - `withdraw_max` <= 395,000 CPU (includes payout lookup)
+     - `withdraw` on a renegotiated stream <= 435,000 CPU (419,345 measured)
+   - `full_schedule_pricing_is_bounded` caps a 32-segment schedule at 850,000 CPU
+     (820,911 measured).
+   - Measurements above are from the merged-tree local run of
+     `hot_path_footprint_harness`; CI will measure the pushed head independently.

@@ -10,6 +10,10 @@ interface: they are only ever appended to, never renumbered or reused.
 ## [Unreleased]
 
 ### Added
+- Delayed recipient payout binding: recipients can propose a withdrawal
+  destination, wait 24 hours, then confirm it in a second authorized action.
+  `withdraw` and `withdraw_max` route to the active destination while retaining
+  authorization by the original recipient.
 - Two-step rate renegotiation (#54): `propose_rate_change`,
   `accept_rate_change`, `cancel_rate_change`, and the `pending_rate_change` and
   `rate_segments` read views. Either party can propose a new
@@ -64,6 +68,9 @@ interface: they are only ever appended to, never renumbered or reused.
 - New `StreamError` variants (appended): `NoPendingOwnership` (60),
   `OwnershipProposalExpired` (61), `InvalidTransferTarget` (62), and
   `OwnershipProposalPending` (63).
+- New `StreamError` variants for delayed payout binding, appended after the
+  rate-renegotiation codes: `NoPendingPayoutBinding` (84),
+  `PayoutBindingNotReady` (85), and `InvalidPayoutAddress` (86).
 - Frontend (opt-in) **fee-aware claim scheduling**: a recipient can queue a
   signed `withdraw_max` intent and have the client submit it when the Soroban
   inclusion-fee percentile drops under a budget, with a deadline fallback so a

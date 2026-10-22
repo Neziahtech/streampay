@@ -60,6 +60,8 @@ reentrancy, TTL strategy, and the design decisions behind the v1 API. Read the
 | `DataKey::PendingOwnership(id)` | `PendingOwnership` | at most one unexpired role-proposal per stream |
 | `DataKey::PendingRateChange(id)` | `PendingRateChange` | at most one unexpired rate-proposal per stream; absent = no offer |
 | `DataKey::RateSegments(id)` | `Vec<RateSegment>` | accepted rate schedule, ≤ `MAX_RATE_SEGMENTS` windows; absent = never renegotiated |
+| `DataKey::PayoutAddress(recipient)` | `Address` | recipient-scoped active payout destination; absent = recipient |
+| `DataKey::PendingPayout(recipient)` | `PayoutProposal` | recipient-scoped pending destination and activation timestamp |
 
 Streams live in **persistent** storage. Every mutating entrypoint that touches
 a stream extends its TTL (`TTL_THRESHOLD_LEDGERS = 200_000`, extend to

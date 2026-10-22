@@ -44,6 +44,8 @@ pub const MAX_DURATION_SECONDS: u64 = 3_155_760_000;
 /// of the address-index views.
 pub const MAX_PAGE_SIZE: u32 = 50;
 
+/// Recipients must wait this long before confirming a payout destination.
+pub const PAYOUT_BINDING_DELAY_SECONDS: u64 = 24 * 60 * 60;
 /// Minimum number of stream entries permitted in a batch.
 pub const MIN_BATCH: u32 = 1;
 
@@ -362,6 +364,14 @@ pub struct Stream {
     pub use_oracle: bool,
 }
 
+/// A recipient-authenticated payout destination awaiting confirmation.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PayoutProposal {
+    pub payout_address: Address,
+    pub activates_at: u64,
+}
+
 impl Stream {
     /// Seconds in the stream's full window. Always `>= 1` for a stored stream
     /// (`create_stream` rejects `end_time <= start_time`).
@@ -538,6 +548,12 @@ pub enum DataKey {
         doc = " Most recent timestamp report from a publisher (persistent storage)."
     )]
     OracleReport(Address),
+    /// Active withdrawal destination for a recipient; absent means recipient.
+    PayoutAddress(Address),
+    /// Pending delayed payout destination, with an independent persistent TTL.
+    PendingPayout(Address),
+    /// The pending two-step ownership proposal for the given stream, if any.
+    /// At most one proposal exists per stream at a time.
     #[cfg_attr(
         not(target_family = "wasm"),
         doc = " The pending two-step ownership proposal for the given stream, if any."
@@ -881,6 +897,57 @@ pub fn put_stream(env: &Env, stream: &Stream) {
     env.storage()
         .persistent()
         .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+}
+
+/// Returns the effective payout destination and refreshes its TTL if bound.
+pub fn payout_address(env: &Env, recipient: &Address) -> Address {
+    let key = DataKey::PayoutAddress(recipient.clone());
+    let storage = env.storage().persistent();
+    #[cfg(test)]
+    crate::cei_trace::record("read persistent PayoutAddress(recipient)");
+    let Some(address) = storage.get(&key) else {
+        return recipient.clone();
+    };
+    #[cfg(test)]
+    crate::cei_trace::record("extend_ttl PayoutAddress(recipient)");
+    storage.extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+    address
+}
+
+/// Loads a pending proposal, refreshing its independent TTL only when present.
+pub fn pending_payout(env: &Env, recipient: &Address) -> Option<PayoutProposal> {
+    let key = DataKey::PendingPayout(recipient.clone());
+    let storage = env.storage().persistent();
+    let proposal = storage.get(&key);
+    if proposal.is_some() {
+        storage.extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+    }
+    proposal
+}
+
+/// Persists a pending proposal and its delayed-window TTL.
+pub fn put_pending_payout(env: &Env, recipient: &Address, proposal: &PayoutProposal) {
+    let key = DataKey::PendingPayout(recipient.clone());
+    env.storage().persistent().set(&key, proposal);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+}
+
+/// Persists an active destination and refreshes its TTL.
+pub fn put_payout_address(env: &Env, recipient: &Address, address: &Address) {
+    let key = DataKey::PayoutAddress(recipient.clone());
+    env.storage().persistent().set(&key, address);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+}
+
+/// Removes a pending proposal after confirmation or recipient cancellation.
+pub fn remove_pending_payout(env: &Env, recipient: &Address) {
+    env.storage()
+        .persistent()
+        .remove(&DataKey::PendingPayout(recipient.clone()));
 }
 
 /// Appends a stream's id to both parties' address indexes.

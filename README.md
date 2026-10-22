@@ -73,6 +73,12 @@ Metrics, alerting stack, and operational diagnosis: [`docs/RUNBOOK.md`](./docs/R
 | `create_streams(sender, inputs: Vec<StreamInput>) → Vec<u64>` | anyone (sender auth required) | one pull per token | `StreamsCreated`; `FeeCharged` per charged stream |
 | `withdraw(stream_id, amount)` | recipient | pays out ≤ accrued | `Withdrawn` |
 | `withdraw_max(stream_id) → i128` | recipient | pays out all accrued, atomically | `Withdrawn` |
+| `bind_payout(recipient, payout_address) → u64` | recipient | proposes destination; 24-hour delay | `PayoutBound` |
+| `confirm_payout(recipient)` | recipient | activates a matured destination | `PayoutActive` |
+| `cancel_payout(recipient)` | recipient | cancels a pending destination | `PayoutBindingCancelled` |
+| `payout_address(recipient) → Address` | — (read-only) | returns active destination or recipient | — |
+| `pending_payout(recipient) → Option<PayoutProposal>` | — (read-only) | returns pending destination and deadline | — |
+| `ledger_timestamp() → u64` | — (read-only) | returns the current ledger timestamp in seconds | — |
 | `cancel_stream(caller, stream_id)` | sender; recipient iff `cancelable` | pro-rata split, atomic | `StreamCancelled` |
 | `top_up(stream_id, amount)` | sender | pulls added funds | `StreamToppedUp` |
 | `propose_ownership_transfer(caller, stream_id, new_owner)` | sender or recipient | — (records a pending target) | `OwnershipProposed` |
@@ -121,6 +127,27 @@ individual `StreamCreated` events; fee-enabled batches still emit one
 `FeeCharged` event per charged stream to preserve treasury auditability — see
 [Protocol fees](#protocol-fees-optional) below. Soroban transaction resource
 limits bound the practical maximum batch size.
+
+Payout routing affects recipient `withdraw`, `withdraw_max`, and the accrued
+recipient leg of `cancel_stream`. Withdrawals require the original recipient's
+authorization; sender cancellation uses the active recipient binding for the
+accrued leg. A proposed destination must wait 24 hours and be confirmed in a
+second recipient-authorized transaction. The
+destination cannot be the streaming contract and must be able to receive every
+asset used by the recipient's streams (including the required trustline for
+issued assets). Generic SEP-41 tokens do not expose a uniform trustline
+preflight, so a destination that cannot receive a token causes that payout to
+fail atomically.
+The binding is recipient-scoped: one identity has one destination across all
+its streams, so rotating the address changes every live stream's future payout
+destination at once. The pending destination is not active automatically; the
+old destination stays in use until the recipient confirms the proposal. It can
+be confirmed once ledger time is at least `activates_at`. Since ledger time
+advances discretely, confirmation becomes available on the first ledger at or
+after the 24-hour instant. `ledger_timestamp` exposes that chain clock for UI
+countdowns. The delay gives a recipient time to detect and cancel a change after
+temporary key exposure; it cannot protect an account whose key remains
+compromised.
 
 `recipient_streams` / `sender_streams` are on-chain discovery indexes:
 append-only, creation-ordered stream-id lists per address, paginated
@@ -178,7 +205,7 @@ Any SEP-41-compatible asset can fund a stream: an issued asset via its
 Stellar Asset Contract id (e.g. USDC on testnet) or **native XLM** via its
 own SAC — the frontend's asset selector resolves the choice for you.
 
-Creating a stream requires a prior token approval: `token.approve(sender, <contract id>, deposit, exp)` — the UI checks the allowance and signs the approval only when it is short. All failures return typed `StreamError` codes (no panics) — see `contracts/streaming-payments/src/errors.rs`. Token-transfer failures carry their own codes (`DepositTransferFailed` 26, `TopUpTransferFailed` 27, `RecipientPayoutFailed` 28, `SenderRefundFailed` 29, `TreasuryPayoutFailed` 30): a token's own error numbers live in the same `Error(Contract, #N)` namespace and are never allowed to masquerade as StreamPay's.
+Creating a stream requires a prior token approval: `token.approve(sender, <contract id>, deposit, exp)` — the UI checks the allowance and signs the approval only when it is short. All failures return typed `StreamError` codes (no panics); the generated [error catalog](./docs/errors.md) is the authority for names and wire codes. Token-transfer failures are also listed there: a token's own error numbers live in the same `Error(Contract, #N)` namespace and are never allowed to masquerade as StreamPay's.
 
 ### Scheduled intents (keeper-executable cron)
 

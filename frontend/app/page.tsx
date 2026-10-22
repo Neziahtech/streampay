@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { isConnected, requestAccess } from "@stellar/freighter-api";
 import {
@@ -10,11 +10,18 @@ import {
   withdrawMaxFromStream,
   topUpStream,
   cancelStream,
+  bindPayout,
+  confirmPayout,
+  cancelPayout,
+  readPayoutAddress,
+  readLedgerTimestamp,
+  readPendingPayout,
   readStream,
   fetchStreamsFor,
   fetchAssetMeta,
   describeError,
   type StreamView,
+  type PayoutProposalView,
 } from "@/lib/stellar";
 import { loadStreamIds, saveStreamId } from "@/lib/storage";
 import { checkWalletNetwork } from "@/lib/network";
@@ -24,6 +31,14 @@ import BatchStreamForm from "@/components/BatchStreamForm";
 import StreamList from "@/components/StreamList";
 import { useToast } from "@/components/toast";
 
+function formatCountdown(seconds: number): string {
+  const days = Math.floor(seconds / 86_400);
+  const hours = Math.floor((seconds % 86_400) / 3_600);
+  const minutes = Math.floor((seconds % 3_600) / 60);
+  const remainder = seconds % 60;
+  return `${days}d ${hours}h ${minutes}m ${remainder}s`;
+}
+
 export default function Home() {
   const toast = useToast();
   const { t, formatToken } = useLocale();
@@ -31,6 +46,47 @@ export default function Home() {
   const [streams, setStreams] = useState<StreamView[]>([]);
   const [lookupId, setLookupId] = useState("");
   const [lookupLoading, setLookupLoading] = useState(false);
+  const [payoutAddress, setPayoutAddress] = useState<string | null>(null);
+  const [pendingPayout, setPendingPayout] =
+    useState<PayoutProposalView | null>(null);
+  const [payoutInput, setPayoutInput] = useState("");
+  const [payoutBusy, setPayoutBusy] = useState(false);
+  const [now, setNow] = useState(0);
+
+  useEffect(() => {
+    let ledgerTime = 0;
+    let syncedAt = 0;
+    let disposed = false;
+    const syncLedgerTime = async () => {
+      const timestamp = await readLedgerTimestamp();
+      if (disposed || timestamp === null) return;
+      ledgerTime = timestamp;
+      syncedAt = Date.now();
+      setNow(timestamp);
+    };
+    const tick = () => {
+      if (ledgerTime > 0) {
+        setNow(ledgerTime + Math.floor((Date.now() - syncedAt) / 1000));
+      }
+    };
+    void syncLedgerTime();
+    const timer = window.setInterval(tick, 1000);
+    const refresh = window.setInterval(() => void syncLedgerTime(), 30_000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+      window.clearInterval(refresh);
+    };
+  }, []);
+
+  async function refreshPayoutBinding(owner: string) {
+    const [active, pending] = await Promise.all([
+      readPayoutAddress(owner),
+      readPendingPayout(owner),
+    ]);
+    setPayoutAddress(active);
+    setPendingPayout(pending);
+  }
 
   async function connect() {
     try {
@@ -50,6 +106,7 @@ export default function Home() {
         return;
       }
       setAddress(address);
+      await refreshPayoutBinding(address);
       toast.success(t("home.connectedAs", { address: `${address.slice(0, 8)}…` }));
       // Surface a wallet/app network mismatch here instead of letting it
       // arrive later as an opaque signing error (issue #33).
@@ -216,6 +273,107 @@ export default function Home() {
           }
         }}
       />
+
+      <section className="card payout-routing">
+        <h2>Payout destination</h2>
+        <p className="muted">
+          Claims remain authorized by your connected address. A destination
+          change takes 24 hours and needs a second confirmation.
+        </p>
+        <p className="payout-current">
+          Active: <code>{payoutAddress ?? "Loading…"}</code>
+        </p>
+        <form
+          onSubmit={async (event) => {
+            event.preventDefault();
+            const destination = payoutInput.trim();
+            if (!destination) return;
+            setPayoutBusy(true);
+            try {
+              const activatesAt = await bindPayout(address, destination);
+              setPayoutInput("");
+              toast.success(
+                `Payout change proposed. Confirmation opens ${new Date(
+                  Number(activatesAt) * 1000
+                ).toLocaleString()}.`
+              );
+              await refreshPayoutBinding(address);
+            } catch (e) {
+              toast.error(describeError(e));
+            } finally {
+              setPayoutBusy(false);
+            }
+          }}
+        >
+          <label htmlFor="payout-address">New payout address</label>
+          <div className="row">
+            <input
+              id="payout-address"
+              type="text"
+              autoComplete="off"
+              placeholder="Stellar account address"
+              value={payoutInput}
+              onChange={(event) => setPayoutInput(event.target.value)}
+            />
+            <button type="submit" disabled={payoutBusy || !payoutInput.trim()}>
+              {payoutBusy ? "Submitting…" : "Propose destination"}
+            </button>
+          </div>
+        </form>
+        {pendingPayout && (
+          <div className="payout-pending" aria-live="polite">
+            <p>
+              Pending: <code>{pendingPayout.payoutAddress}</code>
+            </p>
+            <p className="muted">
+              {now && pendingPayout.activatesAt > now
+                ? `Confirm available in ${formatCountdown(
+                    pendingPayout.activatesAt - now
+                  )}`
+                : "Confirmation is available"}
+            </p>
+            <div className="row">
+              <button
+                type="button"
+                disabled={payoutBusy || !now || now < pendingPayout.activatesAt}
+                onClick={async () => {
+                  setPayoutBusy(true);
+                  try {
+                    await confirmPayout(address);
+                    toast.success("Payout destination activated.");
+                    await refreshPayoutBinding(address);
+                  } catch (e) {
+                    toast.error(describeError(e));
+                  } finally {
+                    setPayoutBusy(false);
+                  }
+                }}
+              >
+                Confirm destination
+              </button>
+              <button
+                type="button"
+                className="button-secondary"
+                disabled={payoutBusy}
+                onClick={async () => {
+                  setPayoutBusy(true);
+                  try {
+                    await cancelPayout(address);
+                    toast.success("Pending payout change cancelled.");
+                    await refreshPayoutBinding(address);
+                  } catch (e) {
+                    toast.error(describeError(e));
+                  } finally {
+                    setPayoutBusy(false);
+                  }
+                }}
+              >
+                Cancel proposal
+              </button>
+            </div>
+          </div>
+        )}
+      </section>
 
       <section className="card">
         <h2>{t("home.fetchById")}</h2>
