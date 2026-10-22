@@ -104,50 +104,101 @@ pub const MAX_SIGNERS: u32 = 10;
 /// days) of public notice to veto it.
 pub const ROTATION_WINDOW_MULTIPLIER: u64 = 4;
 
-/// Storage keys for the governance module. A dedicated enum keeps these from
-/// colliding with `DataKey` or `PolicyDataKey`.
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " Storage keys for the governance module. A dedicated enum keeps these from"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " colliding with `DataKey` or `PolicyDataKey`."
+)]
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum GovernanceDataKey {
-    /// The signer set (instance storage).
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The signer set (instance storage)."
+    )]
     Signers,
-    /// Configured veto window in seconds (instance storage).
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Configured veto window in seconds (instance storage)."
+    )]
     VetoWindow,
-    /// Last issued proposal id (instance storage).
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Last issued proposal id (instance storage)."
+    )]
     ProposalCount,
-    /// A proposal record (persistent storage).
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " A proposal record (persistent storage)."
+    )]
     Proposal(u64),
 }
 
-/// One admin action that may be proposed, timelocked and executed.
-///
-/// The payloads mirror the direct entry points exactly, so dispatch is a
-/// one-to-one call into the same internal helper rather than a second
-/// implementation of the same authority.
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " One admin action that may be proposed, timelocked and executed."
+)]
+#[cfg_attr(not(target_family = "wasm"), doc = "")]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " The payloads mirror the direct entry points exactly, so dispatch is a"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " one-to-one call into the same internal helper rather than a second"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " implementation of the same authority."
+)]
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum GovernanceAction {
-    /// `set_fee_bps`
+    #[cfg_attr(not(target_family = "wasm"), doc = " `set_fee_bps`")]
     SetFeeBps(u32),
-    /// `set_stream_policy`
+    #[cfg_attr(not(target_family = "wasm"), doc = " `set_stream_policy`")]
     SetStreamPolicy(Option<Address>, StreamPolicy),
-    /// `set_frozen` — unfreezing goes through the timelock; freezing does not.
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " `set_frozen` — unfreezing goes through the timelock; freezing does not."
+    )]
     SetFrozen(bool),
-    /// `withdraw_treasury(token, recipient, amount)`
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " `withdraw_treasury(token, recipient, amount)`"
+    )]
     WithdrawTreasury(Address, Address, i128),
-    /// `nominate_governor` — step one of the two-step rotation.
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " `nominate_governor` — step one of the two-step rotation."
+    )]
     NominateGovernor(Address),
-    /// `propose_upgrade(new_wasm_hash, delay_seconds)`
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " `propose_upgrade(new_wasm_hash, delay_seconds)`"
+    )]
     ProposeUpgrade(BytesN<32>, u64),
-    /// `execute_upgrade`
+    #[cfg_attr(not(target_family = "wasm"), doc = " `execute_upgrade`")]
     ExecuteUpgrade,
-    /// `migrate_storage(start_id, count)`
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " `migrate_storage(start_id, count)`"
+    )]
     MigrateStorage(u64, u32),
-    /// `set_oracle_config(publishers, threshold, max_stale_seconds)`
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " `set_oracle_config(publishers, threshold, max_stale_seconds)`"
+    )]
     SetOracleConfig(Vec<Address>, u32, u64),
-    /// Replace the signer set. A rotation of the keys that govern this contract.
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Replace the signer set. A rotation of the keys that govern this contract."
+    )]
     SetSigners(Vec<Address>),
-    /// Replace the veto window.
+    #[cfg_attr(not(target_family = "wasm"), doc = " Replace the veto window.")]
     SetVetoWindow(u64),
 }
 
@@ -159,7 +210,10 @@ impl GovernanceAction {
     }
 }
 
-/// A proposed admin action awaiting its veto window and signatures.
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " A proposed admin action awaiting its veto window and signatures."
+)]
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Proposal {
@@ -167,9 +221,15 @@ pub struct Proposal {
     pub action: GovernanceAction,
     pub proposed_by: Address,
     pub proposed_at: u64,
-    /// First ledger timestamp at which the proposal may execute.
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " First ledger timestamp at which the proposal may execute."
+    )]
     pub executable_at: u64,
-    /// Distinct signatures recorded so far, in signing order.
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Distinct signatures recorded so far, in signing order."
+    )]
     pub signers: Vec<Address>,
     pub vetoed: bool,
     pub executed: bool,

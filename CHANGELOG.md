@@ -213,6 +213,29 @@ interface: they are only ever appended to, never renumbered or reused.
   build`). Linked from the README and CONTRIBUTING.
 
 ### Changed
+- **Contract Wasm size (#58):** the deployed binary shrinks from 91,004 B to
+  60,386 B (59.0 KiB, under the new 60 KB CI budget). Doc comments on
+  interface items are no longer embedded into `contractspecv0` on-chain
+  (kept 1:1 for host rustdoc via `cfg_attr`), and the duplicated
+  stream-creation effects leg is consolidated into one helper. No storage,
+  event, error-code or signature change; the deploy digest and the
+  canonical interface hash do change — see `docs/WASM_SIZE.md` for the
+  operator notification procedure. Merged with `main` (ownership transfer)
+  the binary is 64,143 B: upstream's new interface adds 3,757 B on top of the
+  60,386 B this work reached, and every remaining non-interface lever was
+  measured at 0 B or negative. The CI budget is therefore raised deliberately
+  to the smallest whole KB the current interface fits (63 KB, 369 B of
+  headroom), with `docs/WASM_SIZE.md` recording why and naming the next
+  entrypoint addition as the trigger to revisit the contract split. Merging
+  the governance timelock then took the build to 84,682 B, because its new
+  interface items arrived with plain `///` docs again; re-applying Technique 1
+  with the new `scripts/gate_interface_docs.py` probe (55 doc groups, and four
+  entrypoints whose doc blocks the merge had duplicated) recovers 6,416 B and
+  lands the binary at **78,266 B**, 14,123 B of which is governance's code,
+  spec entries, event symbols and exports. The scan now runs as a CI step
+  ("Interface doc strings stay out of the Wasm spec") so the rule cannot regress
+  again, and the budget moves 63 → **77 KB** (582 B of headroom) under the same
+  rule.
 - **Deployment interface:** the contract now has a constructor. Deploy with
   the governor address as a constructor argument
   (`stellar contract deploy … -- --governor G…`); `scripts/deploy_testnet.sh`
