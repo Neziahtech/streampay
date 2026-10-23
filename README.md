@@ -3,6 +3,7 @@
 **Continuous, per-second payment streams for the Stellar network — Sablier-style money flow, native to Soroban.**
 
 [![CI](https://github.com/Neziahtech/streampay/actions/workflows/ci.yml/badge.svg)](./.github/workflows/ci.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Ijatuyi/streampay/badge)](https://scorecard.dev/viewer/?push_site=true&repo=github.com/Ijatuyi/streampay)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
 [![rustfmt + clippy](https://img.shields.io/badge/style-rustfmt%20%2B%20clippy-informational)](./.github/workflows/ci.yml)
 
@@ -375,6 +376,7 @@ docs/DEMO.md                    verified testnet walkthrough
 indexer/README.md               event indexer setup, configuration, and API
 docs/GOOD_FIRST_ISSUES.md       ready-to-file contributor tickets
 .github/workflows/ci.yml        test + fmt + clippy + coverage + wasm + lint/build/audit + supply chain
+.github/workflows/scorecard.yml OpenSSF Scorecard supply-chain security audit & gate policy
 .github/workflows/release.yml   tag-driven Wasm release with SHA-256 digests
 .github/workflows/fuzz.yml      scheduled fuzz sessions (non-blocking)
 .github/workflows/promote.yml   gated promotions (sandbox → testnet → mainnet canary)

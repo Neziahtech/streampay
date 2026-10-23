@@ -23,7 +23,9 @@
     "dev":         "cd frontend && npm run dev",
 
     "typecheck":   "cd frontend && npm run typecheck",
-    "audit":       "cd frontend && npm audit --omit=dev --audit-level=high",
+    "audit:frontend": "cd frontend && npm audit --omit=dev --audit-level=high",
+    "audit:scorecard": "node scripts/scorecard-gate.mjs",
+    "audit":       "npm run audit:frontend && npm run audit:scorecard",
 
     "generated:check": "bash scripts/check_generated.sh all",
     "generated:surface": "bash scripts/check_generated.sh surface",

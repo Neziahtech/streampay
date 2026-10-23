@@ -1,0 +1,49 @@
+# OpenSSF Scorecard CLI policy file
+# Docs: https://github.com/ossf/scorecard#policies
+version: 1
+policies:
+  Token-Permissions:
+    mode: enforced
+    score: 10
+  Maintained:
+    mode: enforced
+    score: 10
+  Packaging:
+    mode: enforced
+    score: 10
+  Dangerous-Workflow:
+    mode: enforced
+    score: 10
+  Binary-Artifacts:
+    mode: enforced
+    score: 10
+  Security-Policy:
+    mode: enforced
+    score: 10
+  License:
+    mode: enforced
+    score: 10
+  Dependency-Update-Tool:
+    mode: enforced
+    score: 10
+  Vulnerabilities:
+    mode: enforced
+    score: 10
+  Pinned-Dependencies:
+    mode: enforced
+    score: 8
+  CI-Tests:
+    mode: enforced
+    score: 10
+  Branch-Protection:
+    mode: disabled
+  Fuzzing:
+    mode: disabled
+  Signed-Releases:
+    mode: disabled
+  CII-Best-Practices:
+    mode: disabled
+  SAST:
+    mode: disabled
+  Code-Review:
+    mode: disabled

@@ -18,7 +18,7 @@ jobs:
     name: Differential Fuzz (Wasm vs Reference Model)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install nightly toolchain + cargo-fuzz
         run: |
@@ -34,6 +34,7 @@ jobs:
 
       - name: Persist failing seeds / crash artifacts
         if: always()
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4.3.3
         uses: actions/upload-artifact@v7
         with:
           name: differential-fuzz-artifacts
@@ -46,7 +47,7 @@ jobs:
     name: Value Conservation Fuzz (Multi-Token State Machine)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install nightly toolchain + cargo-fuzz
         run: |
@@ -62,6 +63,7 @@ jobs:
 
       - name: Persist failing seeds / crash artifacts
         if: always()
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4.3.3
         uses: actions/upload-artifact@v7
         with:
           name: conservation-fuzz-artifacts

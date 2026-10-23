@@ -6,6 +6,13 @@
 |---|---|
 | main branch | ✅ |
 
+## Supply chain security gates
+
+StreamPay enforces strict supply-chain security verification on every pull request and push:
+- **`cargo-deny`**: Audits Rust crates against RustSec vulnerability advisories, licenses, bans, and sources (`deny.toml`).
+- **`npm audit`**: Verifies frontend and indexer dependencies against known CVEs.
+- **OpenSSF Scorecard**: Enforces an immutable score floor of **`7.0 / 10.0`**, token permission hardening (`contents: read`), and action commit SHA pinning in CI. Detailed scoring, policy configuration, and written exemption justifications are documented in [`docs/SCORECARD.md`](docs/SCORECARD.md).
+
 ## Reporting a vulnerability
 
 StreamPay moves real funds. If you find a bug that could move funds
