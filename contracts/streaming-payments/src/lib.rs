@@ -17,18 +17,32 @@
 //! - [`StreamingPayments::cancel_stream`] — sender (or recipient, if the
 //!   stream is `cancelable`) closes the stream with a pro-rata split
 //! - [`StreamingPayments::top_up`] — add funds to a running stream
+//! - [`StreamingPayments::raise_dispute`] — recipient flags the stream
+//!   (wrong address, coerced creation) for a bond; cancel/top-up are frozen
+//!   until the sender resolves or the timelock expires
+//! - [`StreamingPayments::resolve_dispute`] — sender accepts (unwind +
+//!   refund bond) or rejects as bad-faith (bond slashed, stream resumes)
+//! - [`StreamingPayments::expire_dispute`] — anyone, after the timelock:
+//!   bond split, stream resumes
 //! - [`StreamingPayments::propose_ownership_transfer`] /
 //!   [`StreamingPayments::accept_ownership_transfer`] /
 //!   [`StreamingPayments::cancel_ownership_transfer`] — two-step handoff of
 //!   the sender (payer) or recipient (claimant) role
+//! - [`StreamingPayments::propose_rate_change`] /
+//!   [`StreamingPayments::accept_rate_change`] /
+//!   [`StreamingPayments::cancel_rate_change`] — two-step renegotiation of the
+//!   streaming rate, rebalancing the deposit at acceptance so neither party can
+//!   change what is owed alone
 //! - [`StreamingPayments::sponsored_withdraw`] — an operator relays a
-//!   recipient's claim and a sponsor absorbs the gas, guarded by a budget
+//!   recipient’s claim and a sponsor absorbs the gas, guarded by a budget
 //!   ledger and nonce replay protection (see the `sponsor` module docs)
 //! - [`StreamingPayments::register_sponsor`] /
 //!   [`StreamingPayments::enroll_beneficiary`] /
 //!   [`StreamingPayments::rotate_operator_key`] — sponsorship setup
 //! - [`StreamingPayments::get_stream`] / [`StreamingPayments::available`] /
 //!   [`StreamingPayments::pending_ownership_transfer`] — read-only views
+//! - [`StreamingPayments::get_dispute`] /
+//!   [`StreamingPayments::required_dispute_bond`] — dispute read-only views
 //! - [`StreamingPayments::recipient_streams`] /
 //!   [`StreamingPayments::sender_streams`] — paginated on-chain discovery
 //!   indexes per address
@@ -40,8 +54,10 @@
 //!
 //! - `0 <= withdrawn <= streamed <= deposit` for every stored stream.
 //! - The contract's token balance always covers `sum(deposit - withdrawn)`
-//!   over all streams plus `charged_total - withdrawn_total` over all
-//!   token treasuries (funds are only ever moved by these entry points).
+//!   over live (non-cancelled) streams, plus all outstanding dispute bonds,
+//!   plus `charged_total - withdrawn_total` over all token treasuries (funds
+//!   are only ever moved by these entry points; a cancelled stream holds
+//!   nothing once its split was paid).
 //! - All state changes happen *before* token transfers (checks-effects-
 //!   interactions), so reentrant token callbacks cannot over-withdraw.
 //! - Every token call goes through the SDK's fallible (`try_`) client and a
@@ -53,6 +69,8 @@
 //!   written before the transfer — rolls back atomically.
 //! - `treasury.charged_total == sum of FeeCharged events == sum of stored
 //!   per-stream fees`, provable from public reads (see `treasury.rs`).
+//! - A dispute freezes cancel/top-up only: accrual keeps running and the
+//!   recipient can always withdraw accrued funds, dispute or not.
 
 #[cfg(test)]
 extern crate std;
@@ -66,6 +84,8 @@ mod differential_harness;
 mod differential_test;
 #[cfg(test)]
 mod error_surface_test;
+
+mod dispute;
 mod errors;
 mod events;
 mod governance;
@@ -95,14 +115,19 @@ use soroban_sdk::{
 
 use surface::Branch;
 
+pub use dispute::{
+    bond_shares, required_bond, Dispute, DISPUTE_BOND_BPS, DISPUTE_TIMEOUT_SECONDS,
+    MIN_DISPUTE_BOND,
+};
 pub use errors::StreamError;
 pub use events::{
-    BeneficiaryEnrolled, ContractFrozenStateChanged, ContractUpgraded, FeeCharged, FeeWithdrawn,
-    GovernanceActionExecuted, GovernanceActionProposed, GovernanceActionSigned,
-    GovernanceActionVetoed, GovernanceSignersSet, OperatorKeyRotated, OracleConfigUpdated,
-    OracleStaleFallback, OracleTimeReported, OwnershipAccepted, OwnershipProposed,
-    PolicyAssetExecuted, PolicyAssetQueued, PolicyHandoffAccepted, PolicyHandoffCancelled,
-    PolicyHandoffProposed, PolicyInitialized, ScheduledIntentCancelled, ScheduledIntentExpired,
+    BeneficiaryEnrolled, ContractFrozenStateChanged, ContractUpgraded, DisputeExpired,
+    DisputeRaised, DisputeResolved, FeeCharged, FeeWithdrawn, GovernanceActionExecuted,
+    GovernanceActionProposed, GovernanceActionSigned, GovernanceActionVetoed, GovernanceSignersSet,
+    OperatorKeyRotated, OracleConfigUpdated, OracleStaleFallback, OracleTimeReported,
+    OwnershipAccepted, OwnershipProposed, PolicyAssetExecuted, PolicyAssetQueued,
+    PolicyHandoffAccepted, PolicyHandoffCancelled, PolicyHandoffProposed, PolicyInitialized,
+    RateChangeAccepted, RateChangeProposed, ScheduledIntentCancelled, ScheduledIntentExpired,
     ScheduledStreamExecuted, SponsorActiveSet, SponsorClaim, SponsorRegistered, StorageMigrated,
     StreamCancelled, StreamCreated, StreamPolicySet, StreamScheduled, StreamToppedUp,
     StreamsCreated, UpgradeCancelled, UpgradeProposed, Withdrawn,
@@ -112,16 +137,19 @@ pub use governance::{
     REQUIRED_SIGNATURES, ROTATION_WINDOW_MULTIPLIER,
 };
 pub use oracle::{OracleConfig, OracleReport, ResolvedTime, DEFAULT_MAX_STALE_SECONDS};
-pub use policy::{validate_stream_args, validate_top_up_args, QueuedAssetChange, StreamPolicy};
+pub use policy::{
+    validate_rate_args, validate_stream_args, validate_top_up_args, QueuedAssetChange, StreamPolicy,
+};
 pub use schedule::{IntentStatus, ScheduledIntent, MAX_OCCURRENCES};
 pub use sponsor::{PeriodSpend, SponsorConfig};
 // `streamed_at` is re-exported for the fuzz target and downstream rate
 // calculators: it is a pure function requiring no `Env`.
 pub use stream::{
-    streamed_at, BatchEntry, MigrationStatus, OwnershipRole, PendingOwnership, PendingUpgrade,
-    Stream, StreamStatus, INITIAL_SCHEMA_VERSION, MAX_BATCH, MAX_DURATION_SECONDS,
-    MAX_MIGRATION_BATCH_SIZE, MAX_PAGE_SIZE, MIN_BATCH, MIN_UPGRADE_DELAY_SECONDS,
-    OWNERSHIP_PROPOSAL_TTL_SECONDS, TARGET_SCHEMA_VERSION,
+    streamed_amount_at_segments, streamed_at, BatchEntry, MigrationStatus, OwnershipRole,
+    PendingOwnership, PendingRateChange, PendingUpgrade, RateSegment, Stream, StreamStatus,
+    INITIAL_SCHEMA_VERSION, MAX_BATCH, MAX_DURATION_SECONDS, MAX_MIGRATION_BATCH_SIZE,
+    MAX_PAGE_SIZE, MAX_RATE_SEGMENTS, MIN_BATCH, MIN_UPGRADE_DELAY_SECONDS,
+    OWNERSHIP_PROPOSAL_TTL_SECONDS, RATE_PROPOSAL_TTL_SECONDS, TARGET_SCHEMA_VERSION,
 };
 pub use treasury::{fee_amount, FeeScan, Treasury, TreasuryStatus, BPS_DENOMINATOR, MAX_FEE_BPS};
 
@@ -212,6 +240,7 @@ fn push_from(
         Branch::RecipientPayoutFailed => "transfer recipient payout",
         Branch::SenderRefundFailed => "transfer sender refund",
         Branch::TreasuryPayoutFailed => "transfer treasury payout",
+        Branch::RateRefundFailed => "transfer rate refund",
         _ => "transfer token",
     });
     let res = TokenClient::new(env, token).try_transfer(from, recipient, &amount);
@@ -958,7 +987,7 @@ impl StreamingPayments {
         let mut s = Self::authorize_withdrawal(&env, stream_id)?;
 
         let resolved = oracle::resolve_stream_time(&env, stream_id, s.use_oracle);
-        let available = stream::available_amount_at(&s, resolved.timestamp)?;
+        let available = stream::available_amount_with_plan(&env, &s, resolved.timestamp)?;
         if amount > available {
             return Err(surface::reject(Branch::WithdrawAmountExceedsAvailable));
         }
@@ -1009,7 +1038,7 @@ impl StreamingPayments {
         let mut s = Self::authorize_withdrawal(&env, stream_id)?;
 
         let resolved = oracle::resolve_stream_time(&env, stream_id, s.use_oracle);
-        let amount = stream::available_amount_at(&s, resolved.timestamp)?;
+        let amount = stream::available_amount_with_plan(&env, &s, resolved.timestamp)?;
         if amount <= 0 {
             return Err(surface::reject(Branch::WithdrawMaxNothingToWithdraw));
         }
@@ -1076,6 +1105,41 @@ impl StreamingPayments {
         )
     }
 
+    /// Cancels a stream: pays the recipient their accrued-but-unwithdrawn
+    /// balance and refunds the sender the unaccrued remainder, atomically.
+    ///
+    /// Callable by the sender always, and by the recipient only if the stream
+    /// was created with `cancelable = true`. Cancelling an already-cancelled
+    /// or depleted stream reverts with [`StreamError::StreamNotActive`];
+    /// cancelling while a dispute is open reverts with
+    /// [`StreamError::DisputeActive`] until the dispute is resolved or expires.
+    /// or depleted stream reverts with [`StreamError::StreamNotActive`].
+    ///
+    /// Each payout leg maps a token-side failure to its own code —
+    /// [`StreamError::RecipientPayoutFailed`] for the recipient's accrued
+    /// share and [`StreamError::SenderRefundFailed`] for the sender's refund —
+    /// and any failure rolls the whole cancellation back: the stream stays
+    /// `Active`, `withdrawn` is restored, and no event survives.
+    ///
+    /// # Ordering against `withdraw` (same-ledger race)
+    ///
+    /// The counterpart of the ordering documented on
+    /// [`StreamingPayments::withdraw`]: cancellation is atomic and sees the
+    /// `withdrawn` balance as of *its* execution point.
+    ///
+    /// * If the recipient's `withdraw` executes first, the cancel splits the
+    ///   remainder only (`streamed − withdrawn` to the recipient,
+    ///   `deposit − streamed` to the sender). If that withdrawal already
+    ///   drained the stream to `Depleted`, the cancel reverts with
+    ///   [`StreamError::StreamNotActive`] (code 5).
+    /// * If this cancel executes first, the stream is `Cancelled` and any
+    ///   later `withdraw` / `withdraw_max` reverts with
+    ///   [`StreamError::StreamNotActive`] (code 5).
+    ///
+    /// Last write wins in execution order; no interleaving exists within a
+    /// ledger, and the losing call leaves state and balances untouched.
+    /// Pinned by the `race_*` regression tests in `test.rs`; see
+    /// `docs/ARCHITECTURE.md` §6.1 for the race table.
     #[cfg_attr(
         not(target_family = "wasm"),
         doc = " Cancels a stream: pays the recipient their accrued-but-unwithdrawn"
@@ -1194,6 +1258,9 @@ impl StreamingPayments {
         if s.status != StreamStatus::Active {
             return Err(surface::reject(Branch::StreamNotActive));
         }
+        if dispute::get_dispute_opt(&env, stream_id).is_some() {
+            return Err(surface::reject(Branch::CancelDuringDispute));
+        }
         if caller != s.sender {
             if caller == s.recipient {
                 if !s.cancelable {
@@ -1205,7 +1272,8 @@ impl StreamingPayments {
         }
 
         let resolved = oracle::resolve_stream_time(&env, stream_id, s.use_oracle);
-        let (recipient_amount, sender_amount) = stream::cancel_amounts_at(&s, resolved.timestamp)?;
+        let (recipient_amount, sender_amount) =
+            stream::cancel_amounts_with_plan(&env, &s, resolved.timestamp)?;
 
         // Effects first (CEI): finalise state before moving tokens.
         s.status = StreamStatus::Cancelled;
@@ -1257,6 +1325,22 @@ impl StreamingPayments {
         Ok(())
     }
 
+    /// Adds funds to an existing active stream. The deposit grows and accrual
+    /// remains linear over the original window, so the recipient's accrued
+    /// amount increases pro-rata immediately (Sablier-v1 `increaseAmount`
+    /// semantics).
+    ///
+    /// Top-ups are rejected on cancelled or depleted streams, and frozen
+    /// ([`StreamError::DisputeActive`]) while a dispute is open. Topping up a
+    /// stream that has already passed `end_time` adds fully-accrued funds the
+    /// recipient can withdraw immediately.
+    ///
+    /// A token-side failure to pull the funds returns
+    /// [`StreamError::TopUpTransferFailed`] and leaves `deposit` unchanged.
+    ///
+    /// Note: extending `end_time` is intentionally not supported in v1 —
+    /// retroactively re-baselining accrual is lossy for the recipient; see
+    /// `docs/ARCHITECTURE.md` for the design considerations and roadmap.
     #[cfg_attr(
         not(target_family = "wasm"),
         doc = " Adds funds to an existing active stream. The deposit grows and accrual"
@@ -1315,12 +1399,25 @@ impl StreamingPayments {
             return Err(surface::reject(Branch::StreamNotActive));
         }
         s.sender.require_auth();
+        if dispute::get_dispute_opt(&env, stream_id).is_some() {
+            return Err(surface::reject(Branch::TopUpDuringDispute));
+        }
 
         let new_deposit = s
             .deposit
             .checked_add(amount)
             .ok_or_else(|| surface::reject(Branch::TopUpDepositOverflow))?;
-        stream::validate_capacity(new_deposit, s.duration())?;
+        // A renegotiated stream prices each window on its own terms, so its
+        // capacity check is per segment (`segments_after_topup`) and the added
+        // funds grow the window being streamed. An unrenegotiated stream needs
+        // the single-window check below instead.
+        let segments = stream::get_rate_segments(&env, stream_id);
+        let new_segments = if segments.is_empty() {
+            stream::validate_capacity(new_deposit, s.duration())?;
+            segments
+        } else {
+            stream::segments_after_topup(&segments, amount)?
+        };
 
         let stream_policy = policy::get_stream_policy(&env, Some(s.token.clone()));
         policy::validate_top_up_args(stream_policy.as_ref(), new_deposit, s.duration())?;
@@ -1339,6 +1436,9 @@ impl StreamingPayments {
         // Effects: record the new deposit and announce it.
         s.deposit = new_deposit;
         stream::put_stream(&env, &s);
+        if !new_segments.is_empty() {
+            stream::put_rate_segments(&env, stream_id, &new_segments);
+        }
 
         #[cfg(test)]
         cei_trace::record("event StreamToppedUp");
@@ -1349,6 +1449,274 @@ impl StreamingPayments {
             new_deposit,
         }
         .publish(&env);
+
+        Ok(())
+    }
+
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Recipient-initiated dispute: flags this stream (wrong address,"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " coerced creation) and freezes its cancel/top-up mutations until the"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " sender calls [`StreamingPayments::resolve_dispute`] or the timelock"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " elapses and anyone calls [`StreamingPayments::expire_dispute`]."
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = "")]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Only the stream's recipient can raise it (their authorization is"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " required), only on an active, undisputed stream. Anti-griefing: the"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " recipient posts a bond ([`StreamingPayments::required_dispute_bond`],"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " a share of the deposit that escalates with every dispute round on"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " the stream) via a prior token approval, held by the contract until"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " resolution. Accrual keeps running and accrued funds stay withdrawable"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " throughout — the freeze targets the stream's lifecycle, not the"
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = " recipient's earned balance.")]
+    #[cfg_attr(not(target_family = "wasm"), doc = "")]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Returns the recorded dispute (bond, window, expiry timestamp)."
+    )]
+    pub fn raise_dispute(env: Env, stream_id: u64) -> Result<Dispute, StreamError> {
+        let s = stream::get_stream(&env, stream_id)?;
+        if s.status != StreamStatus::Active {
+            return Err(surface::reject(Branch::StreamNotActive));
+        }
+        if dispute::get_dispute_opt(&env, stream_id).is_some() {
+            return Err(surface::reject(Branch::RaiseDisputeAlreadyActive));
+        }
+        s.recipient.require_auth();
+
+        let bond = dispute::required_bond(s.deposit, dispute::dispute_count(&env, stream_id))?;
+
+        // Interaction: pull the bond from the recipient (a prior approval is
+        // required, like `create_stream`'s deposit pull).
+        TokenClient::new(&env, &s.token).transfer_from(
+            &env.current_contract_address(),
+            &s.recipient,
+            &env.current_contract_address(),
+            &bond,
+        );
+
+        // Effects: open the dispute and record the round (escalating bond).
+        let now = env.ledger().timestamp();
+        let d = Dispute {
+            stream_id,
+            raised_by: s.recipient.clone(),
+            bond,
+            started_at: now,
+            expires_at: now.saturating_add(dispute::DISPUTE_TIMEOUT_SECONDS),
+        };
+        dispute::put_dispute(&env, &d);
+        dispute::bump_dispute_count(&env, stream_id);
+
+        DisputeRaised {
+            stream_id,
+            recipient: s.recipient,
+            bond,
+            expires_at: d.expires_at,
+        }
+        .publish(&env);
+
+        Ok(d)
+    }
+
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Sender-only resolution of an open dispute:"
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = "")]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " * `accept = true` — the dispute is legitimate: the bond is refunded"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = "   to the recipient and the stream is unwound with the standard"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = "   pro-rata cancel split (a `StreamCancelled` event accompanies the"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = "   `DisputeResolved`). If the stream already depleted during the"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = "   dispute (the recipient withdrew everything), only the bond is"
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = "   refunded.")]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " * `accept = false` — bad faith: the bond is slashed to the sender as"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = "   compensation for the frozen window, and the stream resumes normal"
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = "   operation immediately.")]
+    pub fn resolve_dispute(
+        env: Env,
+        caller: Address,
+        stream_id: u64,
+        accept: bool,
+    ) -> Result<(), StreamError> {
+        caller.require_auth();
+
+        let mut s = stream::get_stream(&env, stream_id)?;
+        let d = dispute::get_dispute(&env, stream_id)?;
+        if caller != s.sender {
+            return Err(surface::reject(Branch::ResolveCallerNotSender));
+        }
+
+        // Effects: close the dispute, then optionally unwind the stream.
+        dispute::delete_dispute(&env, stream_id);
+
+        let (recipient_settlement, sender_settlement) =
+            if accept && s.status == StreamStatus::Active {
+                let amounts = stream::cancel_amounts(&env, &s)?;
+                s.status = StreamStatus::Cancelled;
+                s.withdrawn = s
+                    .withdrawn
+                    .checked_add(amounts.0)
+                    .ok_or(StreamError::MathOverflow)?;
+                stream::put_stream(&env, &s);
+
+                StreamCancelled {
+                    stream_id,
+                    cancelled_by: caller.clone(),
+                    recipient_amount: amounts.0,
+                    sender_amount: amounts.1,
+                }
+                .publish(&env);
+                amounts
+            } else {
+                (0, 0)
+            };
+
+        DisputeResolved {
+            stream_id,
+            sender: s.sender.clone(),
+            accept,
+            bond: d.bond,
+        }
+        .publish(&env);
+
+        // Interactions last (CEI): bond refund/slash plus settlement.
+        let token = TokenClient::new(&env, &s.token);
+        let bond_to_recipient = if accept { d.bond } else { 0 };
+        let bond_to_sender = if accept { 0 } else { d.bond };
+        if bond_to_recipient + recipient_settlement > 0 {
+            token.transfer(
+                &env.current_contract_address(),
+                stream::muxed(&s.recipient),
+                &(bond_to_recipient + recipient_settlement),
+            );
+        }
+        if bond_to_sender + sender_settlement > 0 {
+            token.transfer(
+                &env.current_contract_address(),
+                stream::muxed(&s.sender),
+                &(bond_to_sender + sender_settlement),
+            );
+        }
+
+        Ok(())
+    }
+
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Closes a dispute whose timelock has fully elapsed: the bond is split"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " (sender receives the upper half as compensation for the frozen"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " window, the recipient the remainder) and the stream resumes normally."
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = "")]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Callable by anyone once `now >= expires_at` — no authorization is"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " involved and no funds ever move to the trigger. Reverting the split"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " to a full bond refund would make serial disputes free for a patient"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " griefer; see `docs/ARCHITECTURE.md` for the griefing-threshold math."
+    )]
+    pub fn expire_dispute(env: Env, stream_id: u64) -> Result<(), StreamError> {
+        let s = stream::get_stream(&env, stream_id)?;
+        let d = dispute::get_dispute(&env, stream_id)?;
+        if env.ledger().timestamp() < d.expires_at {
+            return Err(surface::reject(Branch::ExpireDisputeTooEarly));
+        }
+
+        // Effects: close the dispute; the stream entry was never touched.
+        dispute::delete_dispute(&env, stream_id);
+        let (sender_share, recipient_share) = dispute::bond_shares(d.bond);
+
+        DisputeExpired {
+            stream_id,
+            recipient: s.recipient.clone(),
+            bond: d.bond,
+            sender_share,
+            recipient_share,
+        }
+        .publish(&env);
+
+        // Interactions last (CEI).
+        let token = TokenClient::new(&env, &s.token);
+        if recipient_share > 0 {
+            token.transfer(
+                &env.current_contract_address(),
+                stream::muxed(&s.recipient),
+                &recipient_share,
+            );
+        }
+        if sender_share > 0 {
+            token.transfer(
+                &env.current_contract_address(),
+                stream::muxed(&s.sender),
+                &sender_share,
+            );
+        }
 
         Ok(())
     }
@@ -1651,12 +2019,504 @@ impl StreamingPayments {
         }
     }
 
+    // --------------------------------------------- rate renegotiation (#54) --
+    //
+    // The sender and the recipient can agree a new `amount_per_second` for the
+    // rest of a running stream. Neither can impose it alone: the change needs
+    // the counterparty's acceptance, and the funds movement it implies is
+    // computed from the stored schedule at the moment of acceptance, never at
+    // proposal time.
+
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Proposes a new streaming rate for `stream_id`. The change takes"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " effect only when the counterparty calls"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " [`StreamingPayments::accept_rate_change`], and only from that moment"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " onward: everything accrued before it is untouched."
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = "")]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " * Either party may propose; their authorization is required. A"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = "   stranger is rejected with [`StreamError::NotAuthorized`]."
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " * The stream must be `Active` and its window must not have elapsed:"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = "   a rate for a finished stream would be a no-op that still rebalances"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = "   funds, so it is rejected with [`StreamError::InvalidTimeRange`]."
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " * `amount_per_second` must be positive ([`StreamError::ZeroAmount`])."
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " * At most one unexpired proposal exists per stream. Proposing again"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = "   while one is pending reverts with"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = "   [`StreamError::RateProposalPending`]; an expired proposal is"
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = "   removed and replaced.")]
+    #[cfg_attr(not(target_family = "wasm"), doc = "")]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Governance policy for the *proposed* rate is checked at acceptance,"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " not here: the ceilings that bind are the ones in force when the"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " change becomes effective, and they can move during the acceptance"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " window. No tokens move and no accounting field changes at proposal"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " time; the offer is recorded under its own storage key with a"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " seven-day acceptance window ([`RATE_PROPOSAL_TTL_SECONDS`])."
+    )]
+    pub fn propose_rate_change(
+        env: Env,
+        caller: Address,
+        stream_id: u64,
+        amount_per_second: i128,
+    ) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
+        caller.require_auth();
+
+        let s = stream::get_stream(&env, stream_id)?;
+        if s.status != StreamStatus::Active {
+            return Err(surface::reject(Branch::StreamNotActive));
+        }
+        if amount_per_second <= 0 {
+            return Err(surface::reject(Branch::RateProposalAmountNonPositive));
+        }
+        let now = env.ledger().timestamp();
+        if now >= s.end_time {
+            return Err(surface::reject(Branch::RateProposalWindowElapsed));
+        }
+        let counterparty = if caller == s.sender {
+            s.recipient.clone()
+        } else if caller == s.recipient {
+            s.sender.clone()
+        } else {
+            return Err(surface::reject(Branch::RateProposeNotAuthorized));
+        };
+
+        if let Some(existing) = stream::get_pending_rate_change(&env, stream_id) {
+            if now < existing.expires_at {
+                return Err(surface::reject(Branch::RateProposalPending));
+            }
+            // Expired proposals are cleared lazily so a fresh offer needs no
+            // separate cleanup transaction.
+            stream::remove_pending_rate_change(&env, stream_id);
+        }
+
+        let pending = PendingRateChange {
+            stream_id,
+            proposed_by: caller.clone(),
+            counterparty: counterparty.clone(),
+            amount_per_second,
+            expires_at: now.saturating_add(RATE_PROPOSAL_TTL_SECONDS),
+        };
+        stream::put_pending_rate_change(&env, &pending);
+
+        #[cfg(test)]
+        cei_trace::record("event RateChangeProposed");
+        RateChangeProposed {
+            stream_id,
+            proposed_by: caller,
+            counterparty,
+            amount_per_second,
+            expires_at: pending.expires_at,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Accepts a pending rate change, rebalancing the deposit atomically."
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = "")]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Only the proposal's counterparty may accept, and their authorization"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " is required. The rate itself was fixed by the proposal; what acceptance"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " computes is what that rate now costs:"
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = "")]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " * `owed` — accrued at the change boundary `t` under the schedule that"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = "   was in force until now, i.e. `streamed` at `t`. It is carried into"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = "   the new schedule untouched, which is what makes the change unable to"
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = "   re-price the past.")]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " * `reserved` — `amount_per_second * (end_time - t)`, an exact integer"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = "   product, floored by nothing and rounded by nothing: the new segment"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = "   accrues that amount over exactly that window, so it is fully streamed"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = "   at `end_time` with no rounding residue."
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " * `adjustment` — `reserved - (deposit - owed)`. Positive means the"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = "   old reserve no longer covers the new rate and the sender tops up the"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = "   shortfall; negative means the sender is refunded the freed remainder."
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = "")]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The deposit becomes `owed + reserved`, so the accrual endpoint still"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " equals the deposit and the invariant `withdrawn <= streamed <= deposit`"
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = " holds across the whole change.")]
+    #[cfg_attr(not(target_family = "wasm"), doc = "")]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Funds movement follows the direction of the change: a top-up is pulled"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " *before* any effect is written (like `top_up`), so a token that refuses"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " the pull leaves the schedule and the deposit untouched; a refund is paid"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " *after* the effects (like `cancel_stream`), so a token that refuses the"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " refund rolls the whole acceptance back and the proposal survives for a"
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = " retry.")]
+    #[cfg_attr(not(target_family = "wasm"), doc = "")]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " An expired proposal cannot be accepted"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " ([`StreamError::RateProposalExpired`]), and neither can one whose parties"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " have moved on: if a role transferred after the offer was made, the"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " recorded proposer/counterparty pair is no longer the stream's sender and"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " recipient, and acceptance reverts with [`StreamError::NotAuthorized`]."
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The stale offer blocks nothing — its proposer can always cancel it."
+    )]
+    pub fn accept_rate_change(
+        env: Env,
+        caller: Address,
+        stream_id: u64,
+    ) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
+        caller.require_auth();
+
+        let pending = stream::get_pending_rate_change(&env, stream_id)
+            .ok_or_else(|| surface::reject(Branch::NoPendingRateChange))?;
+        if caller != pending.counterparty {
+            return Err(surface::reject(Branch::RateAcceptNotTarget));
+        }
+        if env.ledger().timestamp() >= pending.expires_at {
+            return Err(surface::reject(Branch::RateProposalExpired));
+        }
+
+        let mut s = stream::get_stream(&env, stream_id)?;
+        if s.status != StreamStatus::Active {
+            return Err(surface::reject(Branch::StreamNotActive));
+        }
+        // The recorded pair must still be exactly the stream's parties, in the
+        // same roles. A transfer of either role invalidates the offer rather
+        // than letting a change negotiated with an ex-party bind their
+        // successor's funds.
+        let still_negotiating = (caller == s.sender && pending.proposed_by == s.recipient)
+            || (caller == s.recipient && pending.proposed_by == s.sender);
+        if !still_negotiating {
+            return Err(surface::reject(Branch::RateAcceptStaleParties));
+        }
+
+        // The boundary is the stream's own clock (oracle-resolved like every
+        // other accrual read), clamped into the window: a proposal made before
+        // `start_time` starts the new rate at `start_time`, and one that outlives
+        // `end_time` has nothing left to re-rate.
+        let resolved = oracle::resolve_stream_time(&env, stream_id, s.use_oracle);
+        let boundary = resolved.timestamp.max(s.start_time);
+        if boundary >= s.end_time {
+            return Err(surface::reject(Branch::RateProposalWindowElapsed));
+        }
+        let remaining = (s.end_time - boundary) as i128;
+
+        policy::validate_rate_args(
+            policy::get_stream_policy(&env, Some(s.token.clone())).as_ref(),
+            pending.amount_per_second,
+        )?;
+
+        let segments = stream::get_rate_segments(&env, stream_id);
+        let owed = stream::streamed_amount_at_segments(&s, boundary, &segments)?;
+        // Exact by construction: the new segment's basis is its own window
+        // length, so `reserved` is what it streams, to the token.
+        let reserved = pending
+            .amount_per_second
+            .checked_mul(remaining)
+            .ok_or_else(|| surface::reject(Branch::RateReserveOverflow))?;
+        // `owed <= deposit` is the stream invariant, so the headroom check below
+        // can only fire on a corrupt entry; the reserve checks are real guards —
+        // a proposed rate is unbounded until the rebalancing is priced.
+        let headroom = s
+            .deposit
+            .checked_sub(owed)
+            .ok_or_else(|| surface::reject(Branch::RateHeadroomUnderflow))?;
+        let adjustment = reserved
+            .checked_sub(headroom)
+            .ok_or_else(|| surface::reject(Branch::RateReserveOverflow))?;
+        let new_deposit = s
+            .deposit
+            .checked_add(adjustment)
+            .ok_or_else(|| surface::reject(Branch::RateReserveOverflow))?;
+        stream::validate_capacity(reserved, remaining as u64)?;
+        let new_segments = stream::segments_after_change(&env, &s, &segments, boundary, reserved)?;
+
+        if adjustment > 0 {
+            // A recipient accepting an increase takes funds from the sender, who
+            // has not signed this call — so their authorization is required too.
+            s.sender.require_auth();
+            pull(
+                &env,
+                &s.token,
+                &s.sender,
+                adjustment,
+                Branch::RateTopUpTransferFailed,
+            )?;
+        }
+
+        // Effects: install the schedule, then the deposit it sums to, then clear
+        // the offer. `withdrawn` never moves, so nothing already claimed is
+        // re-priced or re-claimable.
+        s.deposit = new_deposit;
+        stream::put_stream(&env, &s);
+        stream::put_rate_segments(&env, stream_id, &new_segments);
+        stream::remove_pending_rate_change(&env, stream_id);
+
+        #[cfg(test)]
+        cei_trace::record("event RateChangeAccepted");
+        RateChangeAccepted {
+            stream_id,
+            accepted_by: caller,
+            new_amount_per_second: pending.amount_per_second,
+            effective_from: boundary,
+            owed_at_change: owed,
+            reserved_at_new_rate: reserved,
+            adjustment,
+            deposit: new_deposit,
+        }
+        .publish(&env);
+
+        if adjustment < 0 {
+            let refund = -adjustment;
+            push(
+                &env,
+                &s.token,
+                &stream::muxed(&s.sender),
+                refund,
+                Branch::RateRefundFailed,
+            )?;
+        }
+
+        Ok(())
+    }
+
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Cancels a pending rate proposal. Only the address that created it"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " may cancel, and its authorization is required."
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = "")]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Cancellation is allowed after the acceptance window elapsed (it simply"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " clears the stale entry) and on a stream that has since been cancelled"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " or depleted, which is what lets a proposer clean up after the fact."
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " It emits no event: the proposal never changed the stream, and"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " `RateChangeProposed` remains the permanent record that one existed."
+    )]
+    pub fn cancel_rate_change(
+        env: Env,
+        caller: Address,
+        stream_id: u64,
+    ) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
+        caller.require_auth();
+
+        let pending = stream::get_pending_rate_change(&env, stream_id)
+            .ok_or_else(|| surface::reject(Branch::NoPendingRateChange))?;
+        if caller != pending.proposed_by {
+            return Err(surface::reject(Branch::RateCancelNotProposer));
+        }
+        stream::remove_pending_rate_change(&env, stream_id);
+        Ok(())
+    }
+
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Read-only view of a stream's pending rate proposal, if any."
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Reading extends the proposal's storage TTL; unknown streams return"
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = " `None`.")]
+    pub fn pending_rate_change(env: Env, stream_id: u64) -> Option<PendingRateChange> {
+        stream::get_pending_rate_change(&env, stream_id)
+    }
+
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Read-only view of a stream's rate schedule. Empty means the stream"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " still accrues at its original rate over `[start_time, end_time)`: the"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " single-window formula, with no stored segment to consult."
+    )]
+    pub fn rate_segments(env: Env, stream_id: u64) -> Vec<RateSegment> {
+        stream::get_rate_segments(&env, stream_id)
+    }
+
     #[cfg_attr(
         not(target_family = "wasm"),
         doc = " Read-only view of a stream's full state."
     )]
     pub fn get_stream(env: Env, stream_id: u64) -> Result<Stream, StreamError> {
         stream::get_stream(&env, stream_id)
+    }
+
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Read-only view of a stream's open dispute. Reverts with"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " [`StreamError::DisputeNotFound`] when the stream is undisputed"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " (disputes exist only while open; resolution and expiry remove them)."
+    )]
+    pub fn get_dispute(env: Env, stream_id: u64) -> Result<Dispute, StreamError> {
+        dispute::get_dispute(&env, stream_id)
+    }
+
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The bond a recipient must post (and pre-approve) to raise the next"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " dispute on this stream: 5% of the deposit, multiplied by the number"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " of disputes already raised on it, floored at one token unit."
+    )]
+    pub fn required_dispute_bond(env: Env, stream_id: u64) -> Result<i128, StreamError> {
+        let s = stream::get_stream(&env, stream_id)?;
+        dispute::required_bond(s.deposit, dispute::dispute_count(&env, stream_id))
     }
 
     #[cfg_attr(
@@ -1674,7 +2534,7 @@ impl StreamingPayments {
     pub fn available(env: Env, stream_id: u64) -> Result<i128, StreamError> {
         let s = stream::get_stream(&env, stream_id)?;
         let resolved = oracle::resolve_stream_time(&env, stream_id, s.use_oracle);
-        stream::available_amount_at(&s, resolved.timestamp)
+        stream::available_amount_with_plan(&env, &s, resolved.timestamp)
     }
 
     #[cfg_attr(

@@ -468,3 +468,24 @@ pub fn validate_top_up_args(
     }
     Ok(())
 }
+
+/// Validation of an explicitly negotiated rate against the policy rate bounds.
+///
+/// A renegotiation states its rate directly (`amount_per_second`), so there is no
+/// deposit/duration quotient to derive it from, and the stream's window is
+/// unchanged, so the duration bounds are not re-checked. Only the rate floor and
+/// ceiling bind.
+pub fn validate_rate_args(
+    policy: Option<&StreamPolicy>,
+    amount_per_second: i128,
+) -> Result<(), StreamError> {
+    if let Some(p) = policy {
+        if p.min_rate > 0 && amount_per_second < p.min_rate {
+            return Err(surface::reject(Branch::RatePolicyBelowFloor));
+        }
+        if p.max_rate > 0 && amount_per_second > p.max_rate {
+            return Err(surface::reject(Branch::RatePolicyAboveCeiling));
+        }
+    }
+    Ok(())
+}

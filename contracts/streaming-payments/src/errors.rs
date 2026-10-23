@@ -491,6 +491,166 @@ pub enum StreamError {
     /// The action requires an executed governance proposal now that the signer
     /// set is bootstrapped; the direct entry point is closed.
     GovernanceTimelockRequired = 81,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " A governance entrypoint was called before the signer set was bootstrapped."
+    )]
+    GovernanceNotInitialized = 64,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " `governance_bootstrap` was called, but the signer set already exists."
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Bootstrap is one-time; later sets arrive as an executed `SetSigners`"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " proposal, so no key can re-establish governance over an existing one."
+    )]
+    GovernanceAlreadyInitialized = 65,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The caller is not a member of the governance signer set."
+    )]
+    NotGovernanceSigner = 66,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The proposed signer set lists the same address twice. Refused rather than"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " deduplicated: two slots held by one key are one key."
+    )]
+    GovernanceDuplicateSigner = 67,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The proposed signer set is empty."
+    )]
+    GovernanceSignerSetEmpty = 68,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The proposed signer set exceeds `MAX_SIGNERS`."
+    )]
+    GovernanceTooManySigners = 69,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The proposed signer set does not hold two distinct keys, so it could never"
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = " satisfy the two-signature rule.")]
+    GovernanceSignersNotDistinct = 70,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " No proposal is stored under the supplied id."
+    )]
+    GovernanceProposalNotFound = 71,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Execution was attempted while the veto window is still open."
+    )]
+    GovernanceVetoWindowOpen = 72,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " A veto was attempted after the window closed; the proposal is matured and"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " executable (execute-on-timeout), so the way to stop it now is to rotate"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " the keys it would act through, not to veto it."
+    )]
+    GovernanceVetoWindowClosed = 73,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The requested veto window is shorter than `MIN_VETO_WINDOW_SECONDS`."
+    )]
+    GovernanceVetoWindowTooShort = 74,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The proposal was vetoed and is therefore dead."
+    )]
+    GovernanceAlreadyVetoed = 75,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The proposal has already been executed."
+    )]
+    GovernanceAlreadyExecuted = 76,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " This address has already signed the proposal. Execution needs two"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " *distinct* signatures, so a second one from the same key is refused."
+    )]
+    GovernanceDuplicateSignature = 77,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Fewer than the required distinct, still-current signatures are recorded."
+    )]
+    GovernanceSignaturesInsufficient = 78,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The action requires an executed governance proposal now that the signer"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " set is bootstrapped; the direct entry point is closed."
+    )]
+    GovernanceTimelockRequired = 79,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " A dispute is open on the stream: `cancel_stream` and `top_up` are"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " frozen until the sender resolves it or the timelock expires."
+    )]
+    DisputeActive = 80,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " No open dispute exists on the stream."
+    )]
+    DisputeNotFound = 81,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The dispute's timelock has not elapsed yet."
+    )]
+    DisputeNotExpired = 82,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " No rate-change proposal is stored for this stream."
+    )]
+    NoPendingRateChange = 83,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The pending rate-change proposal's acceptance window has elapsed; the"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " rate must be proposed again by a stream party."
+    )]
+    RateProposalExpired = 84,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " An unexpired rate-change proposal already exists for this stream; cancel"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " or accept it before proposing another."
+    )]
+    RateProposalPending = 85,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The stream already carries the maximum number of rate segments"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " (`MAX_RATE_SEGMENTS`); cancel it or open a new stream instead."
+    )]
+    TooManyRateSegments = 86,
 }
 
 impl StreamError {
@@ -579,6 +739,13 @@ impl StreamError {
         StreamError::GovernanceDuplicateSignature,
         StreamError::GovernanceSignaturesInsufficient,
         StreamError::GovernanceTimelockRequired,
+        StreamError::DisputeActive,
+        StreamError::DisputeNotFound,
+        StreamError::DisputeNotExpired,
+        StreamError::NoPendingRateChange,
+        StreamError::RateProposalExpired,
+        StreamError::RateProposalPending,
+        StreamError::TooManyRateSegments,
     ];
 
     /// The stable numeric value carried across the contract boundary

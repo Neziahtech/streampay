@@ -354,6 +354,99 @@ pub struct FeeWithdrawn {
 
 #[cfg_attr(
     not(target_family = "wasm"),
+    doc = " Emitted when the recipient raises a dispute, freezing the stream's"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " cancel/top-up mutations until resolution or expiry. The bond (stream"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " token, held by the contract) accompanies the flag."
+)]
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisputeRaised {
+    #[topic]
+    pub stream_id: u64,
+    pub recipient: Address,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Bond pulled into the contract for the duration of the dispute."
+    )]
+    pub bond: i128,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " First ledger timestamp at which the dispute can be expired."
+    )]
+    pub expires_at: u64,
+}
+
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " Emitted when the sender resolves an open dispute. `accept = true`"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " refunds the bond to the recipient and unwinds the stream pro-rata"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " (a `StreamCancelled` event accompanies it); `accept = false` treats the"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " dispute as bad-faith and slashes the bond to the sender, resuming the"
+)]
+#[cfg_attr(not(target_family = "wasm"), doc = " stream normally.")]
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisputeResolved {
+    #[topic]
+    pub stream_id: u64,
+    pub sender: Address,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Whether the sender accepted the dispute as legitimate."
+    )]
+    pub accept: bool,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The bond at stake (paid to the recipient on accept, slashed to the"
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = " sender otherwise).")]
+    pub bond: i128,
+}
+
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " Emitted when a dispute's timelock expires without a verdict: the stream"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " resumes and the bond is split, `sender_share` rounding up."
+)]
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisputeExpired {
+    #[topic]
+    pub stream_id: u64,
+    pub recipient: Address,
+    pub bond: i128,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Half of the bond (rounded up) paid to the sender as compensation for"
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = " the frozen window.")]
+    pub sender_share: i128,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The remainder of the bond refunded to the recipient."
+    )]
+    pub recipient_share: i128,
+}
+#[cfg_attr(
+    not(target_family = "wasm"),
     doc = " Emitted when a sponsor registers (or reconfigures) a gas-sponsorship"
 )]
 #[cfg_attr(
@@ -710,6 +803,132 @@ pub struct OwnershipCancelled {
     pub stream_id: u64,
     pub role: OwnershipRole,
     pub proposed: Address,
+}
+
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " Emitted when the sender or recipient proposes a new streaming rate. The"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " change takes effect only when the counterparty accepts, and only from the"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " moment of acceptance: nothing accrues differently before it, and the"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " `RateChangeAccepted` event that follows carries the settled amounts."
+)]
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RateChangeProposed {
+    #[topic]
+    pub stream_id: u64,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The proposing party (the stream's sender or recipient)."
+    )]
+    pub proposed_by: Address,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The party whose acceptance the change requires."
+    )]
+    pub counterparty: Address,
+    pub amount_per_second: i128,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Ledger timestamp at or after which the proposal is stale."
+    )]
+    pub expires_at: u64,
+}
+
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " Emitted when a pending rate change is accepted and its rebalancing settles."
+)]
+#[cfg_attr(not(target_family = "wasm"), doc = "")]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " The four amounts are the whole funds-bug audit trail for one change, and"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " they are exact by construction: `reserved_at_new_rate` is an integer product"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " (`new_amount_per_second * window length`) and `deposit` is"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " `owed_at_change + reserved_at_new_rate`. `adjustment` is the signed"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " difference against the deposit before the change — positive means the sender"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " topped up that amount, negative means the sender was refunded its absolute"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " value, zero means the old reserve still covered the new rate exactly."
+)]
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RateChangeAccepted {
+    #[topic]
+    pub stream_id: u64,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The accepting counterparty (the address that authorized the change)."
+    )]
+    pub accepted_by: Address,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Rate in effect from `effective_from` (inclusive) to the stream's"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " `end_time`; the rate the proposal committed to."
+    )]
+    pub new_amount_per_second: i128,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " First timestamp accrued at the new rate."
+    )]
+    pub effective_from: u64,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Accrued at `effective_from` under the previous schedule. The change"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " cannot alter this amount — that is the property the segment split keeps."
+    )]
+    pub owed_at_change: i128,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Reserved for `[effective_from, end_time)` at the new rate."
+    )]
+    pub reserved_at_new_rate: i128,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Funds moved to settle the change (see the struct docs)."
+    )]
+    pub adjustment: i128,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Stream deposit after the adjustment; equals"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " `owed_at_change + reserved_at_new_rate`."
+    )]
+    pub deposit: i128,
 }
 
 // --------------------------------------------------------------- governance --
