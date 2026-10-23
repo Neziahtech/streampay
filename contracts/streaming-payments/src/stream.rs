@@ -360,6 +360,12 @@ pub struct Stream {
         doc = " If true, settles against external oracle time feed instead of ledger time."
     )]
     pub use_oracle: bool,
+    /// If true, accrual is frozen at `pause_offset` seconds of the window.
+    pub paused: bool,
+    /// Cumulative seconds of the stream window that were spent paused.
+    /// Accrual is computed against `elapsed - pause_offset`, so pausing
+    /// freezes the accrued amount and resuming continues from that point.
+    pub pause_offset: u64,
 }
 
 impl Stream {
@@ -367,6 +373,13 @@ impl Stream {
     /// (`create_stream` rejects `end_time <= start_time`).
     pub fn duration(&self) -> u64 {
         self.end_time - self.start_time
+    }
+
+    /// Effective elapsed seconds of the window at `now`, net of any time
+    /// spent paused. While paused, accrual is frozen at the pause point.
+    pub fn effective_elapsed_at(&self, now: u64) -> u64 {
+        let raw = elapsed_seconds_at(now, self.start_time, self.end_time);
+        raw.saturating_sub(self.pause_offset)
     }
 }
 
@@ -631,8 +644,11 @@ pub fn streamed_at(deposit: i128, duration: u64, elapsed: u64) -> Result<i128, S
 }
 
 /// Amount streamed (accrued) at reference timestamp `now`.
+///
+/// Pause-aware: the elapsed window is reduced by the stream's cumulative
+/// `pause_offset`, so a paused stream accrues nothing further until resumed.
 pub fn streamed_amount_at(stream: &Stream, now: u64) -> Result<i128, StreamError> {
-    let elapsed = elapsed_seconds_at(now, stream.start_time, stream.end_time);
+    let elapsed = stream.effective_elapsed_at(now);
     streamed_at(stream.deposit, stream.duration(), elapsed)
 }
 
