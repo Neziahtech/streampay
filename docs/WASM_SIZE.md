@@ -12,7 +12,9 @@ interface on top, and the follow-up probes in
 measure that the remaining 4,144 B exists only inside the public interface.
 Merging the governance timelock afterwards added a second, larger tranche —
 see [Second re-baseline](#second-re-baseline-merging-the-governance-timelock-64143-b--78266-b-gate-77-kb)
-— and the size gate now sits at **77 KB**.
+— and issue #54's rate-renegotiation interface a third: the size gate now sits
+at **83 KB**, see
+[Third re-baseline](#third-re-baseline-mid-stream-rate-renegotiation-78266-b--84613-b-gate-83-kb).
 
 All numbers below are built with the pinned release toolchain
 (`stellar-cli 28.1.0`, `rustc 1.99.1`, `wasm32v1-none`, `stellar contract build`
@@ -35,11 +37,12 @@ Final size: **60,386 bytes (59.0 KiB)** — under the 60 KB target, and 33.6 %
 smaller than the baseline this work started from (59.7 % of it). Measured
 against the 120 KB budget the size gate was set at (issue #35), the binary is
 now **under two thirds of that budget**; the budget was lowered to 60 KB here
-so any regression fails CI, and it now sits at **77 KB** on the merged tree for
+so any regression fails CI, and it now sits at **83 KB** on the merged tree for
 the reasons in
-[Size gate status](#size-gate-status-64143-b-is-the-measured-floor-of-this-interface)
+[Size gate status](#size-gate-status-64143-b-is-the-measured-floor-of-this-interface),
+[Second re-baseline](#second-re-baseline-merging-the-governance-timelock-64143-b--78266-b-gate-77-kb)
 and
-[Second re-baseline](#second-re-baseline-merging-the-governance-timelock-64143-b--78266-b-gate-77-kb).
+[Third re-baseline](#third-re-baseline-mid-stream-rate-renegotiation-78266-b--84613-b-gate-83-kb).
 
 > **These two rows were measured on the tree before `main` was merged in.**
 > After the merge the contract is 64,143 B — see
@@ -284,6 +287,67 @@ merits (the `code` section is 63 % of the binary and `governance_propose` is
 the single largest function in it), but it is out of scope for #58: this PR
 ships no behavior change.
 
+
+## Third re-baseline: mid-stream rate renegotiation (78,266 B → 84,613 B, gate 83 KB)
+
+Issue #54 adds the two-step rate change: `propose_rate_change`,
+`accept_rate_change` and `cancel_rate_change` plus the two read-only views
+(`pending_rate_change`, `rate_segments`), the `RateChangeProposed` /
+`RateChangeAccepted` events, the `RateSegment` and `PendingRateChange` stored
+types, error codes 80–83, and the piecewise accrual helpers in `stream.rs`
+that every existing read path now goes through.
+
+| Section | Merged with governance | Merged with rate renegotiation | Δ |
+|---|---|---|---|
+| `code` | 49,317 | 53,479 | +4,162 |
+| `contractspecv0` | 21,083 | 22,595 | +1,512 |
+| `data` | 4,999 | 5,536 | +537 |
+| `export` | 1,631 | 1,738 | +107 |
+| headers/meta/other | 1,236 | 1,265 | +29 |
+| **Total** | **78,266** | **84,613 (82.6 KiB)** | **+6,347** |
+
+Attribution: +4,162 B is compiled body — `accept_rate_change` alone is 1,499 B
+(the rebalancing math, the segment rewrite and the conditional top-up pull in
+one leg), and the rest is the proposal leg plus the segment-aware accrual and
+capacity helpers; +1,512 B is the *structural* spec entries of the 5
+entrypoints, 2 events, 2 stored structs and 4 error codes; +537 B is the new
+event/field symbols in `data`; +107 B the 5 new exports.
+
+Probes run on this tree before accepting the number:
+
+| Probe | Result |
+|---|---|
+| `gate_interface_docs.py --apply` on the merged tree | 33 doc groups gated (5 in `lib.rs`, 12 in `events.rs`, 12 in `stream.rs`, 4 in `errors.rs`); `--check` then reports 0. |
+| Residual doc prose in the artifact (`grep` of the built wasm for the new entrypoints' and structs' doc phrases) | **0 hits** — only the identifiers themselves (`accept_rate_change`, `RateSegment`, …) survive, as spec and export symbols. |
+| Reusing an existing leg instead of a new entrypoint | Rejected: a rate change cannot piggyback on `top_up` or `withdraw`, because both move funds unilaterally and the whole point of #54 is that neither party can impose a new rate alone. |
+| Dedup of the three rate legs (Technique 2 shape) | Not taken: `propose` and `accept` share only the load/auth preamble that `authorize_*` helpers already own; the arithmetic that follows is different in each direction (a proposal prices nothing, an acceptance prices the schedule and rebalances it). |
+
+**Gate decision.** `WASM_SIZE_BUDGET_KB` moves from 77 to **83**
+(84,992 B — 379 B of headroom over the measured 84,613 B), the same rule
+applied to the new interface. This is the entrypoint addition the 77 KB
+comment anticipated, so the split discussion belongs here rather than in a
+later cleanup:
+
+- The `code` section is still ~63 % of the binary, and the two largest
+  functions in it are `governance_propose` (2,195 B) and
+  `sponsored_withdraw` (1,590 B) — neither is streaming accounting.
+- The natural first cut is the governance module: its five entrypoints are
+  thin wrappers over `governance.rs` and its state is instance storage, so a
+  separate contract removes ~10 KB of code and most of the governance spec
+  entries. The cost is real, though: the governor would no longer be able to
+  freeze or upgrade the stream contract in the same transaction, cross-contract
+  calls add instructions to paths the footprint gate measures, and every
+  deployed instance would gain a second contract id to track in
+  `docs/FOOTPRINT.md`, the deploy scripts and the attestation digest flow.
+- Rate renegotiation itself cannot be the thing that moves out: its segments
+  are read on every accrual path (`available_amount_with_plan`,
+  `cancel_amounts_with_plan`, `streamed_amount_at_segments`), so a second
+  contract would put a cross-contract read on the hot path of every withdrawal.
+
+Recommendation: keep the single contract and the ratchet, and open the split as
+its own issue with the freeze/upgrade atomicity question answered first. #54
+ships its interface and moves the gate under the documented rule; cutting the
+feature to hold 77 KB would be a product decision made by a size knob.
 
 ## Categories investigated and rejected (with measurements)
 

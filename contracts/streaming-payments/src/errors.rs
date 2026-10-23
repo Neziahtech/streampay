@@ -507,6 +507,57 @@ pub enum StreamError {
     /// The action requires an executed governance proposal now that the signer
     /// set is bootstrapped; the direct entry point is closed.
     GovernanceTimelockRequired = 86,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " A dispute is open on the stream: `cancel_stream` and `top_up` are"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " frozen until the sender resolves it or the timelock expires."
+    )]
+    DisputeActive = 87,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " No open dispute exists on the stream."
+    )]
+    DisputeNotFound = 88,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The dispute's timelock has not elapsed yet."
+    )]
+    DisputeNotExpired = 89,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " No rate-change proposal is stored for this stream."
+    )]
+    NoPendingRateChange = 90,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The pending rate-change proposal's acceptance window has elapsed; the"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " rate must be proposed again by a stream party."
+    )]
+    RateProposalExpired = 91,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " An unexpired rate-change proposal already exists for this stream; cancel"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " or accept it before proposing another."
+    )]
+    RateProposalPending = 92,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The stream already carries the maximum number of rate segments"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " (`MAX_RATE_SEGMENTS`); cancel it or open a new stream instead."
+    )]
+    TooManyRateSegments = 93,
 }
 
 impl StreamError {
@@ -600,6 +651,13 @@ impl StreamError {
         StreamError::GovernanceDuplicateSignature,
         StreamError::GovernanceSignaturesInsufficient,
         StreamError::GovernanceTimelockRequired,
+        StreamError::DisputeActive,
+        StreamError::DisputeNotFound,
+        StreamError::DisputeNotExpired,
+        StreamError::NoPendingRateChange,
+        StreamError::RateProposalExpired,
+        StreamError::RateProposalPending,
+        StreamError::TooManyRateSegments,
     ];
 
     /// The stable numeric value carried across the contract boundary
