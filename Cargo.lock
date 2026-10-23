@@ -2596,6 +2596,9 @@ version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
  "proptest",
+ "serde",
+ "serde_json",
+ "soroban-ledger-snapshot",
  "serde_json",
  "soroban-sdk",
  "streampay-model",

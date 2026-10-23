@@ -98,6 +98,8 @@ mod policy;
 mod schedule;
 #[cfg(test)]
 mod schedule_test;
+#[cfg(test)]
+mod storage_golden;
 pub(crate) mod sponsor;
 #[cfg(test)]
 mod sponsor_test;
@@ -123,6 +125,18 @@ pub use dispute::{
 };
 pub use errors::StreamError;
 pub use events::{
+    ContractFrozenStateChanged, ContractUpgraded, FeeCharged, FeeWithdrawn, PolicyAssetExecuted,
+    PolicyAssetQueued, PolicyHandoffAccepted, PolicyHandoffCancelled, PolicyHandoffProposed,
+    PolicyInitialized, ScheduledIntentCancelled, ScheduledIntentExpired, ScheduledStreamExecuted,
+    StorageMigrated, StreamCancelled, StreamCreated, StreamPolicySet, StreamScheduled,
+    StreamToppedUp, StreamsCreated, UpgradeCancelled, UpgradeProposed, Withdrawn,
+};
+    BeneficiaryEnrolled, ContractFrozenStateChanged, ContractUpgraded, FeeCharged, FeeWithdrawn,
+    GovernanceActionExecuted, GovernanceActionProposed, GovernanceActionSigned,
+    GovernanceActionVetoed, GovernanceSignersSet, OperatorKeyRotated, OracleConfigUpdated,
+    OracleStaleFallback, OracleTimeReported, OwnershipAccepted, OwnershipProposed,
+    PolicyAssetExecuted, PolicyAssetQueued, PolicyHandoffAccepted, PolicyHandoffCancelled,
+    PolicyHandoffProposed, PolicyInitialized, ScheduledIntentCancelled, ScheduledIntentExpired,
     BeneficiaryEnrolled, ContractFrozenStateChanged, ContractUpgraded, DisputeExpired,
     DisputeRaised, DisputeResolved, FeeCharged, FeeWithdrawn, GovernanceActionExecuted,
     GovernanceActionProposed, GovernanceActionSigned, GovernanceActionVetoed, GovernanceSignersSet,
