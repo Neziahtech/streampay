@@ -19,6 +19,7 @@ Every event the contract emits, with its on-chain topic layout and decoded data 
 | `governance_action_signed` | `GovernanceActionSigned` | `proposal_id: u64` | `signer: Address`, `signature_count: u32` | `sha256:05a46601921…` |
 | `governance_action_vetoed` | `GovernanceActionVetoed` | `proposal_id: u64` | `vetoed_by: Address` | `sha256:fe6590a4870…` |
 | `governance_signers_set` | `GovernanceSignersSet` | `set_by: Address` | `signers: Vec<Address>`, `veto_window: u64` | `sha256:c80b3f90f26…` |
+| `metadata_attached` | `MetadataAttached` | `stream_id: u64` | `index: u32`, `attester: Address`, `content_hash: BytesN<32>`, `tag: String`, `timestamp: u64` | `sha256:39833b8e7e3…` |
 | `operator_key_rotated` | `OperatorKeyRotated` | `sponsor: Address`, `kind: Symbol` | `new_operator_key: BytesN<32>` | `sha256:e173c61697b…` |
 | `oracle_config_updated` | `OracleConfigUpdated` | — | `threshold: u32`, `max_stale_seconds: u64` | `sha256:91f894797f4…` |
 | `oracle_stale_fallback` | `OracleStaleFallback` | `stream_id: u64` | `ledger_time: u64` | `sha256:d1baed22ab3…` |

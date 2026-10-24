@@ -80,6 +80,12 @@
       "struct": "GovernanceSignersSet"
     },
     {
+      "event_key": "metadata_attached",
+      "fingerprint": "sha256:39833b8e7e3ff670a30c1836777e4eb09fdfea215e46c42dd99e139793bce9d2",
+      "schema": "events/metadata_attached.json",
+      "struct": "MetadataAttached"
+    },
+    {
       "event_key": "operator_key_rotated",
       "fingerprint": "sha256:e173c61697b4045d0fb1e94358fe8b4675bfca312369ac887f2ff23f21fb413b",
       "schema": "events/operator_key_rotated.json",

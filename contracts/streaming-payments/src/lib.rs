@@ -95,6 +95,9 @@ mod events;
 mod governance;
 #[cfg(test)]
 mod governance_test;
+mod metadata;
+#[cfg(test)]
+mod metadata_test;
 mod oracle;
 mod policy;
 mod schedule;
@@ -114,7 +117,7 @@ pub mod verification;
 
 use soroban_sdk::{
     contract, contractimpl, contracttype, token::TokenClient, Address, BytesN, ConversionError,
-    Env, Error as SorobanError, InvokeError, MuxedAddress, Vec,
+    Env, Error as SorobanError, InvokeError, MuxedAddress, String, Vec,
 };
 
 use surface::Branch;
@@ -128,18 +131,19 @@ pub use events::{
     BeneficiaryEnrolled, ContractFrozenStateChanged, ContractUpgraded, DisputeExpired,
     DisputeRaised, DisputeResolved, FeeCharged, FeeWithdrawn, GovernanceActionExecuted,
     GovernanceActionProposed, GovernanceActionSigned, GovernanceActionVetoed, GovernanceSignersSet,
-    OperatorKeyRotated, OracleConfigUpdated, OracleStaleFallback, OracleTimeReported,
-    OwnershipAccepted, OwnershipProposed, PolicyAssetExecuted, PolicyAssetQueued,
-    PolicyHandoffAccepted, PolicyHandoffCancelled, PolicyHandoffProposed, PolicyInitialized,
-    RateChangeAccepted, RateChangeProposed, ScheduledIntentCancelled, ScheduledIntentExpired,
-    ScheduledStreamExecuted, SponsorActiveSet, SponsorClaim, SponsorRegistered, StorageMigrated,
-    StreamCancelled, StreamCreated, StreamPolicySet, StreamScheduled, StreamToppedUp,
-    StreamsCreated, UpgradeCancelled, UpgradeProposed, Withdrawn,
+    MetadataAttached, OperatorKeyRotated, OracleConfigUpdated, OracleStaleFallback,
+    OracleTimeReported, OwnershipAccepted, OwnershipProposed, PolicyAssetExecuted,
+    PolicyAssetQueued, PolicyHandoffAccepted, PolicyHandoffCancelled, PolicyHandoffProposed,
+    PolicyInitialized, RateChangeAccepted, RateChangeProposed, ScheduledIntentCancelled,
+    ScheduledIntentExpired, ScheduledStreamExecuted, SponsorActiveSet, SponsorClaim,
+    SponsorRegistered, StorageMigrated, StreamCancelled, StreamCreated, StreamPolicySet,
+    StreamScheduled, StreamToppedUp, StreamsCreated, UpgradeCancelled, UpgradeProposed, Withdrawn,
 };
 pub use governance::{
     GovernanceAction, Proposal, DEFAULT_VETO_WINDOW_SECONDS, MAX_SIGNERS, MIN_VETO_WINDOW_SECONDS,
     REQUIRED_SIGNATURES, ROTATION_WINDOW_MULTIPLIER,
 };
+pub use metadata::{Attestation, AttestationRef, MAX_ATTESTATIONS_PER_STREAM, MAX_TAG_LEN};
 pub use oracle::{OracleConfig, OracleReport, ResolvedTime, DEFAULT_MAX_STALE_SECONDS};
 pub use policy::{
     validate_rate_args, validate_stream_args, validate_top_up_args, QueuedAssetChange, StreamPolicy,
@@ -2582,6 +2586,160 @@ impl StreamingPayments {
     )]
     pub fn sender_streams(env: Env, sender: Address, offset: u32, limit: u32) -> Vec<u64> {
         stream::page_stream_ids(&env, &stream::DataKey::SenderStreams(sender), offset, limit)
+    }
+
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Attaches a hash-linked metadata attestation to a stream."
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = "")]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Either party (sender or recipient) may call this; their authorization is"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " required. `content_hash` is a 32-byte digest (e.g. SHA-256) of an"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " external document the stream references — an invoice, a payslip, a"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " contract. `tag` is a short caller-chosen label (at most"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " [`MAX_TAG_LEN`](crate::MAX_TAG_LEN) bytes). Neither the document nor any"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " proof of it is stored: the contract only records *who claimed which hash"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " and when*, so third parties can later recompute the hash of the document"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " they hold and compare it against this on-chain claim."
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = "")]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Attestations are **append-only**: attaching again never overwrites an"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " existing entry, and each attach is recorded both in the stream's list"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " and in each party's index. The list is capped at"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " [`MAX_ATTESTATIONS_PER_STREAM`](crate::MAX_ATTESTATIONS_PER_STREAM)."
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = "")]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Returns the new attestation's index within the stream's list. A stream's"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " attestations are readable via [`StreamingPayments::stream_attestations`]"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " (or [`StreamingPayments::attestation_count`]); a party's attestations"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " across their streams via [`StreamingPayments::party_attestations`]."
+    )]
+    pub fn attach_metadata(
+        env: Env,
+        attester: Address,
+        stream_id: u64,
+        content_hash: BytesN<32>,
+        tag: String,
+    ) -> Result<u32, StreamError> {
+        attester.require_auth();
+
+        let s = stream::get_stream(&env, stream_id)?;
+        if attester != s.sender && attester != s.recipient {
+            return Err(surface::reject(Branch::AttachMetadataNotAuthorized));
+        }
+        if tag.len() > MAX_TAG_LEN {
+            return Err(surface::reject(Branch::AttachMetadataTagTooLong));
+        }
+
+        let timestamp = env.ledger().timestamp();
+        let index = metadata::append(&env, &s, &attester, &content_hash, &tag, timestamp)?;
+
+        MetadataAttached {
+            stream_id,
+            index,
+            attester,
+            content_hash,
+            tag,
+            timestamp,
+        }
+        .publish(&env);
+
+        Ok(index)
+    }
+
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " One page of a stream's attestations, oldest first. `limit` is clamped to"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " [`MAX_PAGE_SIZE`](crate::MAX_PAGE_SIZE); an offset past the end (or an"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " unknown stream) yields an empty page rather than an error."
+    )]
+    pub fn stream_attestations(
+        env: Env,
+        stream_id: u64,
+        offset: u32,
+        limit: u32,
+    ) -> Vec<Attestation> {
+        metadata::page_attestations(&env, stream_id, offset, limit)
+    }
+
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Number of attestations recorded for a stream (0 for an unknown stream)."
+    )]
+    pub fn attestation_count(env: Env, stream_id: u64) -> u32 {
+        metadata::attestation_count(&env, stream_id)
+    }
+
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " One page of the attestation references recorded under a party's address"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " (as sender or recipient), oldest first. Pagination and clamping match"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " [`StreamingPayments::recipient_streams`]."
+    )]
+    pub fn party_attestations(
+        env: Env,
+        party: Address,
+        offset: u32,
+        limit: u32,
+    ) -> Vec<AttestationRef> {
+        metadata::page_party_attestations(&env, &party, offset, limit)
     }
 
     // ------------------------------------------------- scheduled intents ----

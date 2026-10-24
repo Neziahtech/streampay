@@ -44,6 +44,7 @@ const TS_PRIMITIVES = {
   i128: "bigint",
   Address: "string",
   Symbol: "string",
+  String: "string",
   "BytesN<32>": "Uint8Array",
 };
 

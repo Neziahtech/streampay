@@ -3,8 +3,9 @@
 Minimal Next.js (App Router, TypeScript) UI for the StreamPay contract:
 connect Freighter, create streams, withdraw accrued funds (single amount,
 atomic **withdraw max**, or **claim for free** through a sponsor relay),
-top up, cancel — with on-chain discovery so the list survives reloads and
-shows streams you didn't create in this session.
+top up, cancel, attach hash-linked metadata attestations — with on-chain
+discovery so the list survives reloads and shows streams you didn't create in
+this session.
 
 It also ships **opt-in fee-aware claim scheduling**: a recipient can defer a
 claim and have StreamPay submit it when the Soroban inclusion fee drops under a
@@ -17,7 +18,7 @@ budget they set, with a hard deadline fallback. See
 | Route | What it does |
 |---|---|
 | `/` | Connect, create form, stream list with per-row actions and a **Discover on-chain** button (scans the contract's `recipient_streams` / `sender_streams` indexes for your address) |
-| `/stream/[id]` | Stream detail: progress bar, live `available` poll (15 s), withdraw form with over-withdrawal guard, **Withdraw max** (`withdraw_max`), **Claim for free** (gas-sponsored relay when a sponsor covers the stream's token), cancel. Read-only-safe without a wallet; contract errors decode to `StreamError` names |
+| `/stream/[id]` | Stream detail: progress bar, live `available` poll (15 s), withdraw form with over-withdrawal guard, **Withdraw max** (`withdraw_max`), **Claim for free** (gas-sponsored relay when a sponsor covers the stream's token), cancel, and a metadata attestation list plus an attach form for a connected party (`attach_metadata`). Read-only-safe without a wallet; contract errors decode to `StreamError` names |
 | `/stream/[id]` | Stream detail: progress bar, live `available` poll (15 s), withdraw form with over-withdrawal guard, **Withdraw max** (`withdraw_max`), cancel, and the fee-aware claim scheduler panel (recipients only). Read-only-safe without a wallet; contract errors decode to `StreamError` names |
 | `/` | Connect, single and CSV batch creation forms (asset selector: **native XLM** or an entered token contract id), stream list with per-row actions and a **Discover on-chain** button (scans the contract's `recipient_streams` / `sender_streams` indexes for your address) |
 | `/stream/[id]` | Stream detail: progress bar, live `available` poll (15 s) with on-demand refetch, dedicated withdrawal panel with auto-prefilled accrued balance, client-side over-withdrawal guard, **Withdraw max** (`withdraw_max`), cancel. Read-only-safe without a wallet; contract errors decode to human-readable `StreamError` names |
@@ -66,6 +67,12 @@ For a one-command deployed contract + demo stream, see
 - `npm test` runs the pure scheduler/fee-stats unit tests and the recorded
   fee-series replay simulation (vitest, node environment).
 - Every mutating call follows: build → simulate → Freighter sign → send → poll.
+- Read-only calls (`get_stream`, `available`, `stream_attestations`, the index
+  views) simulate against the RPC without signing.
+- Metadata attestations are append-only hash claims (e.g. a SHA-256 of an
+  invoice); the contract never stores the document. Verify a local file against
+  an attested hash with [`../scripts/verify_attestation.sh`](../scripts/verify_attestation.sh)
+  — see [`../docs/VERIFYING_ATTESTATIONS.md`](../docs/VERIFYING_ATTESTATIONS.md).
 - Create/top-up first read the token's `allowance` and ask Freighter to sign
   a `token.approve` **only when it is short** — so a first stream with a new
   asset costs one extra signature instead of failing at simulation.

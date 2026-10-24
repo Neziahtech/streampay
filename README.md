@@ -93,6 +93,19 @@ Metrics, alerting stack, and operational diagnosis: [`docs/RUNBOOK.md`](./docs/R
 | `rate_segments(stream_id) → Vec<RateSegment>` | — (read-only) | — | — |
 | `recipient_streams(address, offset, limit) → Vec<u64>` | — (read-only) | — | — |
 | `sender_streams(address, offset, limit) → Vec<u64>` | — (read-only) | — | — |
+| `attach_metadata(attester, stream_id, content_hash, tag) → u32` | sender or recipient | — | `MetadataAttached` |
+| `stream_attestations(stream_id, offset, limit) → Vec<Attestation>` | — (read-only) | — | — |
+| `attestation_count(stream_id) → u32` | — (read-only) | — | — |
+| `party_attestations(party, offset, limit) → Vec<AttestationRef>` | — (read-only) | — | — |
+
+`attach_metadata` lets either party attach a **content hash** (32 bytes, e.g.
+SHA-256) plus a short tag to a stream — an invoice, a payslip, a contract —
+without storing the document on-chain. Attestations are append-only, indexed by
+both parties, and size-bounded. This is *attestation*, not verification: the
+contract records who claimed which hash when; a third party recomputes the hash
+of the document they hold and compares. See
+[`docs/VERIFYING_ATTESTATIONS.md`](./docs/VERIFYING_ATTESTATIONS.md) and
+[`scripts/verify_attestation.sh`](./scripts/verify_attestation.sh).
 | `schedule_stream(sender, recipient, token, deposit, start, end, cancelable, interval, occurrences, fee_budget, execute_after, expires_at) → u64` | anyone (sender auth required) | pulls `(deposit+fee)×occurrences` in | `StreamScheduled` |
 | `execute_scheduled(intent_id, keeper) → u64` | anyone (keeper auth required) | pays keeper the fee | `StreamCreated`, `ScheduledStreamExecuted` |
 | `cancel_scheduled(sender, intent_id)` | intent sender, before the window | refunds outstanding escrow | `ScheduledIntentCancelled` |

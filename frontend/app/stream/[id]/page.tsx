@@ -4,10 +4,12 @@ import { useParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getAddress, isConnected } from "@stellar/freighter-api";
 import {
+  attachMetadata,
   cancelStream,
   describeError,
   enrollBeneficiary,
   isNativeXlm,
+  readAttestations,
   readAvailable,
   readBeneficiaryKey,
   readSponsor,
@@ -19,6 +21,7 @@ import {
   withdrawMaxFromStream,
   fetchAssetMeta,
   type AssetMeta,
+  type AttestationView,
   type SponsorView,
   type StreamView,
 } from "@/lib/stellar";
@@ -59,6 +62,9 @@ export default function StreamDetail() {
   const engineRef = useRef<LiveAccrual | null>(null);
   const [status, setStatus] = useState<string>("");
   const [error, setError] = useState<string>("");
+  const [attestations, setAttestations] = useState<AttestationView[]>([]);
+  const [hashInput, setHashInput] = useState<string>("");
+  const [tagInput, setTagInput] = useState<string>("");
   const [sponsor, setSponsor] = useState<SponsorView | null>(null);
   const [consentPub, setConsentPub] = useState<string>("");
   const [enrolledKey, setEnrolledKey] = useState<string | null>(null);
@@ -130,6 +136,21 @@ export default function StreamDetail() {
       }
     })();
   }, []);
+
+  const loadAttestations = useCallback(async () => {
+    if (!id) return;
+    try {
+      setAttestations(await readAttestations(id));
+    } catch (e) {
+      toast.error(describeError(e));
+    }
+  }, [id, toast]);
+
+  useEffect(() => {
+    void (async () => {
+      await loadAttestations();
+    })();
+  }, [loadAttestations]);
 
   const loadSponsorship = useCallback(async (beneficiary: string) => {
     if (!SPONSOR_ADDRESS) return;
@@ -308,6 +329,27 @@ export default function StreamDetail() {
       await cancelStream(address, stream!.id);
       toast.success("Stream cancelled.");
       await engineRef.current?.refresh();
+    } catch (e) {
+      toast.error(describeError(e));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function doAttach() {
+    if (!address) return;
+    setSubmitting(true);
+    try {
+      const index = await attachMetadata(
+        address,
+        stream!.id,
+        hashInput,
+        tagInput
+      );
+      toast.success(`Attestation #${index} recorded on-chain.`);
+      setHashInput("");
+      setTagInput("");
+      await loadAttestations();
     } catch (e) {
       toast.error(describeError(e));
     } finally {
@@ -577,6 +619,84 @@ export default function StreamDetail() {
             </button>
           </section>
         )}
+
+      <section className="card">
+        <h2>Metadata attestations</h2>
+        <p className="muted">
+          Hash-linked claims attached by either party — e.g. the SHA-256 of an
+          invoice this stream pays. The contract records who claimed which hash
+          and when; it never stores the document. Verify a document against a
+          hash with <code>scripts/verify_attestation.sh</code>.
+        </p>
+        {attestations.length === 0 ? (
+          <p className="muted">No attestations recorded.</p>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Attester</th>
+                <th>Tag</th>
+                <th>Content hash (SHA-256)</th>
+                <th>When</th>
+              </tr>
+            </thead>
+            <tbody>
+              {attestations.map((a) => (
+                <tr key={a.index}>
+                  <td className="mono">{a.index}</td>
+                  <td className="mono">
+                    {a.attester === stream.sender
+                      ? "sender "
+                      : a.attester === stream.recipient
+                        ? "recipient "
+                        : ""}
+                    {a.attester.slice(0, 8)}…
+                  </td>
+                  <td>{a.tag || "—"}</td>
+                  <td className="mono" title={a.contentHash}>
+                    {a.contentHash.slice(0, 16)}…
+                  </td>
+                  <td className="mono">
+                    {new Date(a.timestamp * 1000).toISOString()}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
+
+      {(isSender || isRecipient) && (
+        <section className="card">
+          <h2>Attach metadata</h2>
+          <p className="muted">
+            Attach a 32-byte content hash (64 hex characters) and a short tag,
+            e.g. for an invoice PDF. Attestations are append-only: attaching
+            again never overwrites an earlier entry.
+          </p>
+          <label htmlFor="hash">Content hash (SHA-256, hex)</label>
+          <input
+            id="hash"
+            type="text"
+            placeholder="64 hex characters"
+            value={hashInput}
+            onChange={(e) => setHashInput(e.target.value)}
+          />
+          <label htmlFor="tag">Tag (at most 32 bytes)</label>
+          <input
+            id="tag"
+            type="text"
+            maxLength={32}
+            placeholder="invoice-0042"
+            value={tagInput}
+            onChange={(e) => setTagInput(e.target.value)}
+          />
+          <button onClick={() => void doAttach()} disabled={submitting}>
+            {submitting ? "Attaching…" : "Attach attestation"}
+          </button>
+        </section>
+      )}
 
       {(isSender || isRecipient) && (
         <section className="card">

@@ -3,7 +3,7 @@
 //! Per-stream events are keyed by `stream_id`; `StreamsCreated` is keyed by
 //! sender and carries the batch ids. Non-topic fields are event data.
 
-use soroban_sdk::{contractevent, Address, BytesN, Vec};
+use soroban_sdk::{contractevent, Address, BytesN, String, Vec};
 
 use crate::stream::OwnershipRole;
 
@@ -94,6 +94,34 @@ pub struct StreamToppedUp {
     pub amount: i128,
     #[cfg_attr(not(target_family = "wasm"), doc = " Stream deposit after the top-up.")]
     pub new_deposit: i128,
+}
+
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " Emitted when a party attaches a hash-linked metadata attestation to a"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " stream. Append-only: this event is the durable record that"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " `attester` claimed `content_hash` (tagged `tag`) at `timestamp`."
+)]
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MetadataAttached {
+    #[topic]
+    pub stream_id: u64,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Position of the attestation in the stream's append-only list."
+    )]
+    pub index: u32,
+    pub attester: Address,
+    pub content_hash: BytesN<32>,
+    pub tag: String,
+    pub timestamp: u64,
 }
 
 #[cfg_attr(

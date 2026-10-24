@@ -446,6 +446,29 @@ pub enum DataKey {
     SenderStreams(Address),
     #[cfg_attr(
         not(target_family = "wasm"),
+        doc = " Append-only list of metadata attestations attached to a stream, in"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " attach order. Never rewritten in place — entries only ever grow."
+    )]
+    Attestations(u64),
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Append-only index of attestations on the streams where the given address"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " is a party (sender or recipient), so either side can enumerate them"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " without knowing the stream ids up front. Advisory, like the stream"
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = " indexes above.")]
+    PartyAttestations(Address),
+    #[cfg_attr(
+        not(target_family = "wasm"),
         doc = " Next scheduled-intent id to hand out; ids start at 1."
     )]
     NextIntentId,

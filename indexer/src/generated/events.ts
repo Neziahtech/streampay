@@ -144,6 +144,17 @@ export interface GovernanceSignersSetEvent {
   veto_window: bigint;
 }
 
+/** Emitted when a party attaches a hash-linked metadata attestation to a stream. Append-only: this event is the durable record that `attester` claimed `content_hash` (tagged `tag`) at `timestamp`. */
+/** Event key `metadata_attached` — fingerprint `sha256:39833b8e7e3ff670a30c1836777e4eb09fdfea215e46c42dd99e139793bce9d2`. */
+export interface MetadataAttachedEvent {
+  stream_id: bigint;
+  index: number;
+  attester: string;
+  content_hash: Uint8Array;
+  tag: string;
+  timestamp: bigint;
+}
+
 /** Emitted when a sponsor rotates its authorized operator (relayer) key. The previous operator key stops validating relay signatures immediately. */
 /** Event key `operator_key_rotated` — fingerprint `sha256:e173c61697b4045d0fb1e94358fe8b4675bfca312369ac887f2ff23f21fb413b`. */
 export interface OperatorKeyRotatedEvent {
@@ -426,6 +437,7 @@ export const EVENT_KEYS = {
   GovernanceActionSigned: "governance_action_signed",
   GovernanceActionVetoed: "governance_action_vetoed",
   GovernanceSignersSet: "governance_signers_set",
+  MetadataAttached: "metadata_attached",
   OperatorKeyRotated: "operator_key_rotated",
   OracleConfigUpdated: "oracle_config_updated",
   OracleStaleFallback: "oracle_stale_fallback",
@@ -462,7 +474,7 @@ export const EVENT_KEYS = {
 export type ContractEventName = (typeof EVENT_KEYS)[keyof typeof EVENT_KEYS];
 
 /** Every event this registry knows about, even if a consumer ignores it. */
-export const ALL_CONTRACT_EVENT_NAMES: readonly ContractEventName[] = ["beneficiary_enrolled", "contract_frozen_state_changed", "contract_upgraded", "dispute_expired", "dispute_raised", "dispute_resolved", "fee_charged", "fee_withdrawn", "governance_action_executed", "governance_action_proposed", "governance_action_signed", "governance_action_vetoed", "governance_signers_set", "operator_key_rotated", "oracle_config_updated", "oracle_stale_fallback", "oracle_time_reported", "ownership_accepted", "ownership_proposed", "policy_asset_executed", "policy_asset_queued", "policy_handoff_accepted", "policy_handoff_cancelled", "policy_handoff_proposed", "policy_initialized", "rate_change_accepted", "rate_change_proposed", "scheduled_intent_cancelled", "scheduled_intent_expired", "scheduled_stream_executed", "sponsor_active_set", "sponsor_claim", "sponsor_registered", "storage_migrated", "stream_cancelled", "stream_created", "stream_policy_set", "stream_scheduled", "stream_topped_up", "streams_created", "upgrade_cancelled", "upgrade_proposed", "withdrawn"] as const;
+export const ALL_CONTRACT_EVENT_NAMES: readonly ContractEventName[] = ["beneficiary_enrolled", "contract_frozen_state_changed", "contract_upgraded", "dispute_expired", "dispute_raised", "dispute_resolved", "fee_charged", "fee_withdrawn", "governance_action_executed", "governance_action_proposed", "governance_action_signed", "governance_action_vetoed", "governance_signers_set", "metadata_attached", "operator_key_rotated", "oracle_config_updated", "oracle_stale_fallback", "oracle_time_reported", "ownership_accepted", "ownership_proposed", "policy_asset_executed", "policy_asset_queued", "policy_handoff_accepted", "policy_handoff_cancelled", "policy_handoff_proposed", "policy_initialized", "rate_change_accepted", "rate_change_proposed", "scheduled_intent_cancelled", "scheduled_intent_expired", "scheduled_stream_executed", "sponsor_active_set", "sponsor_claim", "sponsor_registered", "storage_migrated", "stream_cancelled", "stream_created", "stream_policy_set", "stream_scheduled", "stream_topped_up", "streams_created", "upgrade_cancelled", "upgrade_proposed", "withdrawn"] as const;
 
 /** Narrow an arbitrary RPC event name to a registered contract event. */
 export function isContractEventName(name: string): name is ContractEventName {
@@ -484,6 +496,7 @@ export const EVENT_STRUCT_BY_KEY: Record<ContractEventName, string> = {
   "governance_action_signed": "GovernanceActionSigned",
   "governance_action_vetoed": "GovernanceActionVetoed",
   "governance_signers_set": "GovernanceSignersSet",
+  "metadata_attached": "MetadataAttached",
   "operator_key_rotated": "OperatorKeyRotated",
   "oracle_config_updated": "OracleConfigUpdated",
   "oracle_stale_fallback": "OracleStaleFallback",
@@ -548,6 +561,7 @@ export const EVENT_SHAPES: Record<ContractEventName, EventShape> = {
   "governance_action_signed": { struct: "GovernanceActionSigned", eventKey: "governance_action_signed", fingerprint: "sha256:05a46601921e524677a6b100a6b1d038f189fe1ab4e796b2ecf3cef374d94b4d", topics: [{"name":"proposal_id","type":"u64"}], data: [{"name":"signer","type":"Address"},{"name":"signature_count","type":"u32"}] },
   "governance_action_vetoed": { struct: "GovernanceActionVetoed", eventKey: "governance_action_vetoed", fingerprint: "sha256:fe6590a48703dc9d3f3f61e0e05c54467fc771245b0c63f546451909ad4230a7", topics: [{"name":"proposal_id","type":"u64"}], data: [{"name":"vetoed_by","type":"Address"}] },
   "governance_signers_set": { struct: "GovernanceSignersSet", eventKey: "governance_signers_set", fingerprint: "sha256:c80b3f90f2621ff7578044e47b82978b1f997300723831e782bc137d0ac33a16", topics: [{"name":"set_by","type":"Address"}], data: [{"name":"signers","type":"Vec<Address>"},{"name":"veto_window","type":"u64"}] },
+  "metadata_attached": { struct: "MetadataAttached", eventKey: "metadata_attached", fingerprint: "sha256:39833b8e7e3ff670a30c1836777e4eb09fdfea215e46c42dd99e139793bce9d2", topics: [{"name":"stream_id","type":"u64"}], data: [{"name":"index","type":"u32"},{"name":"attester","type":"Address"},{"name":"content_hash","type":"BytesN<32>"},{"name":"tag","type":"String"},{"name":"timestamp","type":"u64"}] },
   "operator_key_rotated": { struct: "OperatorKeyRotated", eventKey: "operator_key_rotated", fingerprint: "sha256:e173c61697b4045d0fb1e94358fe8b4675bfca312369ac887f2ff23f21fb413b", topics: [{"name":"sponsor","type":"Address"},{"name":"kind","type":"Symbol"}], data: [{"name":"new_operator_key","type":"BytesN<32>"}] },
   "oracle_config_updated": { struct: "OracleConfigUpdated", eventKey: "oracle_config_updated", fingerprint: "sha256:91f894797f41c1566560dd5c04581611fb8d29bd0ac48bfc022d0ab4de0e6099", topics: [], data: [{"name":"threshold","type":"u32"},{"name":"max_stale_seconds","type":"u64"}] },
   "oracle_stale_fallback": { struct: "OracleStaleFallback", eventKey: "oracle_stale_fallback", fingerprint: "sha256:d1baed22ab39c524cd1297b2a5f14d39eeec300ef27ce95583562f1e2e26dbec", topics: [{"name":"stream_id","type":"u64"}], data: [{"name":"ledger_time","type":"u64"}] },
@@ -595,6 +609,7 @@ export const EVENT_FINGERPRINTS: Record<string, string> = {
   "GovernanceActionSigned": "sha256:05a46601921e524677a6b100a6b1d038f189fe1ab4e796b2ecf3cef374d94b4d",
   "GovernanceActionVetoed": "sha256:fe6590a48703dc9d3f3f61e0e05c54467fc771245b0c63f546451909ad4230a7",
   "GovernanceSignersSet": "sha256:c80b3f90f2621ff7578044e47b82978b1f997300723831e782bc137d0ac33a16",
+  "MetadataAttached": "sha256:39833b8e7e3ff670a30c1836777e4eb09fdfea215e46c42dd99e139793bce9d2",
   "OperatorKeyRotated": "sha256:e173c61697b4045d0fb1e94358fe8b4675bfca312369ac887f2ff23f21fb413b",
   "OracleConfigUpdated": "sha256:91f894797f41c1566560dd5c04581611fb8d29bd0ac48bfc022d0ab4de0e6099",
   "OracleStaleFallback": "sha256:d1baed22ab39c524cd1297b2a5f14d39eeec300ef27ce95583562f1e2e26dbec",

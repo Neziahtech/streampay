@@ -17,19 +17,29 @@
 use std::vec::Vec;
 
 use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{Address, BytesN};
+use soroban_sdk::{Address, BytesN, String as SdkString};
 
 use crate::sponsor;
 use crate::stream::{streamed_at, DataKey};
 use crate::surface::{trace, Branch, Reachability, RETIRED_CODES};
 use crate::test::{Fixture, RefusingFixture};
 use crate::{
-    StreamError, MAX_DURATION_SECONDS, MAX_FEE_BPS, MAX_RATE_SEGMENTS,
-    OWNERSHIP_PROPOSAL_TTL_SECONDS, RATE_PROPOSAL_TTL_SECONDS,
+    StreamError, MAX_ATTESTATIONS_PER_STREAM, MAX_DURATION_SECONDS, MAX_FEE_BPS, MAX_RATE_SEGMENTS,
+    MAX_TAG_LEN, OWNERSHIP_PROPOSAL_TTL_SECONDS, RATE_PROPOSAL_TTL_SECONDS,
 };
 
 const DAY: u64 = 24 * 60 * 60;
 const DEPOSIT: i128 = 10_000_000_000;
+
+/// A 32-byte attestation hash filled with `byte`.
+fn attestation_hash(env: &soroban_sdk::Env, byte: u8) -> BytesN<32> {
+    BytesN::from_array(env, &[byte; 32])
+}
+
+/// A short attestation tag.
+fn attestation_tag(env: &soroban_sdk::Env, s: &str) -> SdkString {
+    SdkString::from_str(env, s)
+}
 
 /// `DEPOSIT` streamed evenly over ten days, floored to whole tokens. The rate a
 /// renegotiation repeats, so accepting it only ever frees a few tokens of escrow
@@ -295,7 +305,7 @@ fn probe(branch: Branch) -> Option<StreamError> {
         Branch::CancelStreamNotAuthorized => {
             let f = Fixture::setup_quiet();
             let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, true);
-            let stranger = soroban_sdk::Address::generate(&f.env);
+            let stranger = Address::generate(&f.env);
             Some(rejected!(f
                 .client
                 .mock_all_auths()
@@ -315,6 +325,49 @@ fn probe(branch: Branch) -> Option<StreamError> {
                 .client
                 .mock_all_auths()
                 .try_top_up(&id, &i128::MAX)))
+        }
+        // --------------------------------------------------- attach_metadata
+        Branch::AttachMetadataNotAuthorized => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            let stranger = Address::generate(&f.env);
+            Some(rejected!(f.client.mock_all_auths().try_attach_metadata(
+                &stranger,
+                &id,
+                &attestation_hash(&f.env, 0x01),
+                &attestation_tag(&f.env, "invoice-0042"),
+            )))
+        }
+        Branch::AttachMetadataTagTooLong => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            let too_long: std::string::String =
+                "a".repeat(usize::try_from(MAX_TAG_LEN).unwrap() + 1);
+            Some(rejected!(f.client.mock_all_auths().try_attach_metadata(
+                &f.sender,
+                &id,
+                &attestation_hash(&f.env, 0x02),
+                &SdkString::from_str(&f.env, &too_long),
+            )))
+        }
+        Branch::AttachMetadataLimitReached => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            // Fill the stream's append-only list to its cap, then attach once more.
+            for _ in 0..MAX_ATTESTATIONS_PER_STREAM {
+                f.client.mock_all_auths().attach_metadata(
+                    &f.sender,
+                    &id,
+                    &attestation_hash(&f.env, 0x0F),
+                    &attestation_tag(&f.env, "label"),
+                );
+            }
+            Some(rejected!(f.client.mock_all_auths().try_attach_metadata(
+                &f.sender,
+                &id,
+                &attestation_hash(&f.env, 0xFF),
+                &attestation_tag(&f.env, "one-too-many"),
+            )))
         }
         // ------------------------------------------------------------ disputes
         Branch::CancelDuringDispute => {
@@ -386,7 +439,7 @@ fn probe(branch: Branch) -> Option<StreamError> {
         }
         Branch::GovernorNotAllowed => {
             let f = Fixture::setup_quiet();
-            let stranger = soroban_sdk::Address::generate(&f.env);
+            let stranger = Address::generate(&f.env);
             Some(rejected!(f
                 .client
                 .mock_all_auths()
@@ -1022,7 +1075,7 @@ fn probe(branch: Branch) -> Option<StreamError> {
         Branch::ProposeNotAuthorized => {
             let f = Fixture::setup_quiet();
             let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
-            let stranger = soroban_sdk::Address::generate(&f.env);
+            let stranger = Address::generate(&f.env);
             let target = soroban_sdk::Address::generate(&f.env);
             Some(rejected!(f
                 .client
@@ -1054,7 +1107,7 @@ fn probe(branch: Branch) -> Option<StreamError> {
             let f = Fixture::setup_quiet();
             let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
             let target = soroban_sdk::Address::generate(&f.env);
-            let stranger = soroban_sdk::Address::generate(&f.env);
+            let stranger = Address::generate(&f.env);
             f.client
                 .mock_all_auths()
                 .propose_ownership_transfer(&f.sender, &id, &target);
@@ -1100,7 +1153,7 @@ fn probe(branch: Branch) -> Option<StreamError> {
         Branch::RateProposeNotAuthorized => {
             let f = Fixture::setup_quiet();
             let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
-            let stranger = soroban_sdk::Address::generate(&f.env);
+            let stranger = Address::generate(&f.env);
             Some(rejected!(f
                 .client
                 .mock_all_auths()
@@ -1144,7 +1197,7 @@ fn probe(branch: Branch) -> Option<StreamError> {
         Branch::RateAcceptNotTarget => {
             let f = Fixture::setup_quiet();
             let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
-            let stranger = soroban_sdk::Address::generate(&f.env);
+            let stranger = Address::generate(&f.env);
             f.client
                 .mock_all_auths()
                 .propose_rate_change(&f.sender, &id, &1);
@@ -1610,7 +1663,9 @@ fn stream_error_variant_list_is_exhaustive() {
             | StreamError::MathOverflow
             | StreamError::NotAuthorized
             | StreamError::NothingToWithdraw
-            | StreamError::FeeRateTooHigh
+            | StreamError::MetadataTagTooLong
+            | StreamError::MetadataLimitReached => StreamError::ALL.contains(&e),
+            StreamError::FeeRateTooHigh
             | StreamError::NotGovernor
             | StreamError::NoPendingGovernor
             | StreamError::InsufficientTreasuryBalance

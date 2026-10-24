@@ -6,6 +6,15 @@ be mentioned here — by event struct name and field name — before the PR can
 merge. Breaking changes are rejected outright; they need a governed
 v1 → v2 migration (see [README.md](README.md#versioning-v1--v2-coexistence)).
 
+## Unreleased — `MetadataAttached` (hash-linked stream attestations, #81)
+
+- `MetadataAttached`: added event (key `metadata_attached`, positional topic
+  `stream_id:u64`, data `index`, `attester`, `content_hash`, `tag`, `timestamp`)
+  — emitted by `attach_metadata` each time a party appends an attestation.
+  `tag` is the registry's first `String` field: the JSON Schema maps it to
+  `{"type": "string"}` and the generated TypeScript to `string`. No existing
+  event changed shape.
+
 ## v1.0.1 — 2026-10-24 (registry regenerated from main `44b2049`)
 
 Five events that `contracts/streaming-payments/src/events.rs` already declares

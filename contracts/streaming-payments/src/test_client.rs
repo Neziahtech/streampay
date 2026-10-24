@@ -8,12 +8,12 @@
 //! implementation without building Wasm.
 #![cfg(any(test, feature = "testutils"))]
 
-use soroban_sdk::{contractclient, Address, BytesN, Env, Vec};
+use soroban_sdk::{contractclient, Address, BytesN, Env, String, Vec};
 
 use crate::{
-    BatchEntry, Dispute, FeeScan, GovernanceAction, MigrationStatus, PendingOwnership,
-    PendingRateChange, PendingUpgrade, PeriodSpend, Proposal, RateSegment, ScheduledIntent,
-    SponsorConfig, Stream, StreamError, StreamInput, StreamPolicy, TreasuryStatus,
+    Attestation, AttestationRef, BatchEntry, Dispute, FeeScan, GovernanceAction, MigrationStatus,
+    PendingOwnership, PendingRateChange, PendingUpgrade, PeriodSpend, Proposal, RateSegment,
+    ScheduledIntent, SponsorConfig, Stream, StreamError, StreamInput, StreamPolicy, TreasuryStatus,
 };
 
 /// Interface of the StreamPay streaming-payments contract.
@@ -98,6 +98,18 @@ pub trait StreamingPaymentsApi {
     fn available(env: Env, stream_id: u64) -> Result<i128, StreamError>;
     fn recipient_streams(env: Env, recipient: Address, offset: u32, limit: u32) -> Vec<u64>;
     fn sender_streams(env: Env, sender: Address, offset: u32, limit: u32) -> Vec<u64>;
+    fn attach_metadata(
+        env: Env,
+        attester: Address,
+        stream_id: u64,
+        content_hash: BytesN<32>,
+        tag: String,
+    ) -> Result<u32, StreamError>;
+    fn stream_attestations(env: Env, stream_id: u64, offset: u32, limit: u32) -> Vec<Attestation>;
+    fn attestation_count(env: Env, stream_id: u64) -> u32;
+    fn party_attestations(env: Env, party: Address, offset: u32, limit: u32)
+        -> Vec<AttestationRef>;
+
     // ---------------------------------------------------------- treasury surface
 
     // --- scheduled intents ---

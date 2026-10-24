@@ -56,6 +56,15 @@ pub enum Branch {
     // --------------------------------------------------------------- top_up
     TopUpAmountNonPositive,
     TopUpDepositOverflow,
+    // ------------------------------------------------------ attach_metadata
+    /// `attach_metadata`: the caller is neither the stream's sender nor its
+    /// recipient.
+    AttachMetadataNotAuthorized,
+    /// `attach_metadata`: the tag is longer than `MAX_TAG_LEN` bytes.
+    AttachMetadataTagTooLong,
+    /// `attach_metadata`: the stream already holds
+    /// `MAX_ATTESTATIONS_PER_STREAM` attestations.
+    AttachMetadataLimitReached,
     // ------------------------------------------------------------- disputes
     CancelDuringDispute,
     TopUpDuringDispute,
@@ -289,7 +298,7 @@ impl Branch {
     /// Every branch, in declaration order. The matrix test walks this list and
     /// the coverage test requires each [`StreamError`] variant to be produced by
     /// one of these (or retired).
-    pub const ALL: [Branch; 116] = [
+    pub const ALL: [Branch; 119] = [
         Branch::CreateDepositNonPositive,
         Branch::CreateStartTimeInPast,
         Branch::CreateInvalidTimeRange,
@@ -301,6 +310,9 @@ impl Branch {
         Branch::CancelStreamNotAuthorized,
         Branch::TopUpAmountNonPositive,
         Branch::TopUpDepositOverflow,
+        Branch::AttachMetadataNotAuthorized,
+        Branch::AttachMetadataTagTooLong,
+        Branch::AttachMetadataLimitReached,
         Branch::CancelDuringDispute,
         Branch::TopUpDuringDispute,
         Branch::RaiseDisputeAlreadyActive,
@@ -426,6 +438,9 @@ impl Branch {
                 &["cancel_stream"]
             }
             Branch::TopUpAmountNonPositive | Branch::TopUpDepositOverflow => &["top_up"],
+            Branch::AttachMetadataNotAuthorized
+            | Branch::AttachMetadataTagTooLong
+            | Branch::AttachMetadataLimitReached => &["attach_metadata"],
             Branch::CancelDuringDispute => &["cancel_stream"],
             Branch::TopUpDuringDispute => &["top_up"],
             Branch::RaiseDisputeAlreadyActive => &["raise_dispute"],
@@ -667,6 +682,9 @@ impl Branch {
             Branch::CancelStreamNotAuthorized => StreamError::NotAuthorized,
             Branch::TopUpAmountNonPositive => StreamError::ZeroAmount,
             Branch::TopUpDepositOverflow => StreamError::MathOverflow,
+            Branch::AttachMetadataNotAuthorized => StreamError::NotAuthorized,
+            Branch::AttachMetadataTagTooLong => StreamError::MetadataTagTooLong,
+            Branch::AttachMetadataLimitReached => StreamError::MetadataLimitReached,
             Branch::CancelDuringDispute => StreamError::DisputeActive,
             Branch::TopUpDuringDispute => StreamError::DisputeActive,
             Branch::RaiseDisputeAlreadyActive => StreamError::DisputeActive,
@@ -804,6 +822,13 @@ impl Branch {
             }
             Branch::TopUpAmountNonPositive => "top-up amount is zero or negative",
             Branch::TopUpDepositOverflow => "deposit + amount would overflow i128",
+            Branch::AttachMetadataNotAuthorized => {
+                "the attester is neither the stream's sender nor its recipient"
+            }
+            Branch::AttachMetadataTagTooLong => "the tag exceeds MAX_TAG_LEN (32) bytes",
+            Branch::AttachMetadataLimitReached => {
+                "the stream already holds MAX_ATTESTATIONS_PER_STREAM (32) attestations"
+            }
             Branch::CancelDuringDispute => "an open dispute freezes cancel_stream",
             Branch::TopUpDuringDispute => "an open dispute freezes top_up",
             Branch::RaiseDisputeAlreadyActive => "raise_dispute called while a dispute is open",

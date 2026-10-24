@@ -734,6 +734,39 @@
         }
       ]
     },
+    "MetadataAttached": {
+      "canonical": "streampay-event/v1|MetadataAttached|key=metadata_attached|topics=[stream_id:u64],data=[attester:Address,content_hash:BytesN<32>,index:u32,tag:String,timestamp:u64]",
+      "data": [
+        {
+          "name": "index",
+          "type": "u32"
+        },
+        {
+          "name": "attester",
+          "type": "Address"
+        },
+        {
+          "name": "content_hash",
+          "type": "BytesN<32>"
+        },
+        {
+          "name": "tag",
+          "type": "String"
+        },
+        {
+          "name": "timestamp",
+          "type": "u64"
+        }
+      ],
+      "event_key": "metadata_attached",
+      "fingerprint": "sha256:39833b8e7e3ff670a30c1836777e4eb09fdfea215e46c42dd99e139793bce9d2",
+      "topics": [
+        {
+          "name": "stream_id",
+          "type": "u64"
+        }
+      ]
+    },
     "OperatorKeyRotated": {
       "canonical": "streampay-event/v1|OperatorKeyRotated|key=operator_key_rotated|topics=[sponsor:Address,kind:Symbol],data=[new_operator_key:BytesN<32>]",
       "data": [
@@ -1482,6 +1515,7 @@
     "GovernanceActionSigned": "sha256:05a46601921e524677a6b100a6b1d038f189fe1ab4e796b2ecf3cef374d94b4d",
     "GovernanceActionVetoed": "sha256:fe6590a48703dc9d3f3f61e0e05c54467fc771245b0c63f546451909ad4230a7",
     "GovernanceSignersSet": "sha256:c80b3f90f2621ff7578044e47b82978b1f997300723831e782bc137d0ac33a16",
+    "MetadataAttached": "sha256:39833b8e7e3ff670a30c1836777e4eb09fdfea215e46c42dd99e139793bce9d2",
     "OperatorKeyRotated": "sha256:e173c61697b4045d0fb1e94358fe8b4675bfca312369ac887f2ff23f21fb413b",
     "OracleConfigUpdated": "sha256:91f894797f41c1566560dd5c04581611fb8d29bd0ac48bfc022d0ab4de0e6099",
     "OracleStaleFallback": "sha256:d1baed22ab39c524cd1297b2a5f14d39eeec300ef27ce95583562f1e2e26dbec",

@@ -607,6 +607,16 @@ pub enum StreamError {
         doc = " (`MAX_RATE_SEGMENTS`); cancel it or open a new stream instead."
     )]
     TooManyRateSegments = 86,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " A metadata attestation tag exceeds `MAX_TAG_LEN` bytes."
+    )]
+    MetadataTagTooLong = 87,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " A stream has reached `MAX_ATTESTATIONS_PER_STREAM` attestations."
+    )]
+    MetadataLimitReached = 88,
 }
 
 impl StreamError {
@@ -700,6 +710,8 @@ impl StreamError {
         StreamError::RateProposalExpired,
         StreamError::RateProposalPending,
         StreamError::TooManyRateSegments,
+        StreamError::MetadataTagTooLong,
+        StreamError::MetadataLimitReached,
     ];
 
     /// The stable numeric value carried across the contract boundary

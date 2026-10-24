@@ -627,6 +627,11 @@ fn json_schema_for(
             "description": "32-byte hash, base64-encoded on the registry surface.",
             "x-soroban-type": "BytesN<32>",
         }),
+        "String" => json!({
+            "type": "string",
+            "description": "Soroban string (UTF-8 bytes; contract-bounded length).",
+            "x-soroban-type": "String",
+        }),
         "Symbol" => json!({
             "type": "string",
             "description": "Soroban symbol (a short upper-/lower-case tag, not free text).",
