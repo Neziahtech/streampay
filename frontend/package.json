@@ -2,7 +2,7 @@
   "name": "streampay-frontend",
   "version": "0.1.0",
   "private": true,
-  "description": "Minimal StreamPay UI: create streams, withdraw accrued funds, top up or cancel — Next.js + Freighter.",
+  "description": "Minimal StreamPay UI: create streams, withdraw accrued funds, top up or cancel \u2014 Next.js + Freighter.",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
