@@ -35,4 +35,10 @@ streampay-model = { version = "0.1.0", path = "../../model" }
 syn = { version = "2", features = ["full", "extra-traits", "visit"] }
 quote = "1"
 sha2 = "0.10"
+# Golden storage-layout fixture suite (`src/storage_golden/`): manifest
+# serialization and ledger-snapshot dumps. Both crates are already in the
+# workspace lock graph via soroban-sdk's testutils dependency (`serde_json` is
+# declared above), so `--locked` CI is unaffected. Dev-only, like the suite.
+serde = { version = "1.0", features = ["derive"] }
+soroban-ledger-snapshot = "29.0.1"
 
