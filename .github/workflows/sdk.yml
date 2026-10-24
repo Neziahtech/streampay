@@ -1,0 +1,80 @@
+name: SDKs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "sdks/**"
+      - "contracts/streaming-payments/src/**"
+      - "frontend/lib/errors.ts"
+      - ".github/workflows/sdk.yml"
+  pull_request:
+    paths:
+      - "sdks/**"
+      - "contracts/streaming-payments/src/**"
+      - "frontend/lib/errors.ts"
+      - ".github/workflows/sdk.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  spec:
+    name: Spec — schema guard / coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      # Fails when any contract entrypoint is missing from the spec, including
+      # the entrypoints named by surface.rs, and when the spec fingerprint is
+      # stale. Error codes come from the canonical catalog, not from the spec.
+      - name: Spec matches the contract surface
+        run: python3 sdks/generator/check_contract_surface.py
+
+      - name: Spec coverage tests
+        run: python3 -m unittest discover -s sdks/generator -p "test_*.py" -v
+
+  typescript:
+    name: TypeScript SDK — typecheck / test / pack
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdks/typescript
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: sdks/typescript/package-lock.json
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - run: npm ci
+
+      - name: Generated client is up to date
+        working-directory: .
+        run: python3 sdks/generator/generate.py --check
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build + tests
+        run: npm test
+
+      - name: Fixture regeneration is deterministic
+        run: |
+          node scripts/build-fixtures.mjs
+          git diff --exit-code ../vectors
+
+      - name: npm pack dry run
+        run: npm pack --dry-run

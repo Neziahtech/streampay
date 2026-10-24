@@ -52,6 +52,10 @@ fuzz/target/
 fuzz/corpus/
 fuzz/artifacts/
 fuzz/Cargo.lock
+
+# SDK build artifacts
+sdks/typescript/dist/
+sdks/typescript/*.tgz
 # Campaign output and triage bundles: per-run, versioned on the fuzz-corpus
 # branch instead (see docs/FUZZ_CAMPAIGN.md). fuzz/known/ and
 # fuzz/regressions/ are tracked.

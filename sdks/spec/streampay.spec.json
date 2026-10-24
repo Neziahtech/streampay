@@ -1,0 +1,2751 @@
+{
+  "schema": "streampay-spec/v2",
+  "generator": "sdks/generator/generate.py",
+  "contract": {
+    "name": "StreamingPayments",
+    "crate": "streampay-contract",
+    "version": "0.3.0",
+    "description": "Continuous, linear streaming payments on Stellar (Soroban)."
+  },
+  "constants": {
+    "BPS_DENOMINATOR": {
+      "value": 10000,
+      "type": "u32"
+    },
+    "DEFAULT_MAX_STALE_SECONDS": {
+      "value": 3600,
+      "type": "u64"
+    },
+    "DEFAULT_TIMELOCK_DELAY": {
+      "value": 172800,
+      "type": "u64"
+    },
+    "INITIAL_SCHEMA_VERSION": {
+      "value": 1,
+      "type": "u32"
+    },
+    "MAX_BATCH": {
+      "value": 25,
+      "type": "u32"
+    },
+    "MAX_DURATION_SECONDS": {
+      "value": 3155760000,
+      "type": "u64"
+    },
+    "MAX_FEE_BPS": {
+      "value": 100,
+      "type": "u32"
+    },
+    "MAX_MIGRATION_BATCH_SIZE": {
+      "value": 50,
+      "type": "u32"
+    },
+    "MAX_OCCURRENCES": {
+      "value": 1000,
+      "type": "u32"
+    },
+    "MAX_PAGE_SIZE": {
+      "value": 50,
+      "type": "u32"
+    },
+    "MIN_BATCH": {
+      "value": 1,
+      "type": "u32"
+    },
+    "MIN_UPGRADE_DELAY_SECONDS": {
+      "value": 86400,
+      "type": "u64"
+    },
+    "MIN_WINDOW_SECONDS": {
+      "value": 1,
+      "type": "u64"
+    },
+    "OWNERSHIP_PROPOSAL_TTL_SECONDS": {
+      "value": 604800,
+      "type": "u64"
+    },
+    "TARGET_SCHEMA_VERSION": {
+      "value": 2,
+      "type": "u32"
+    }
+  },
+  "functions": [
+    {
+      "name": "create_stream",
+      "doc": "Creates a linear payment stream and pulls `deposit_amount` of `token`\nfrom `sender` into this contract.\n\nThe sender must first approve this contract as a spender on `token`\n(`token.approve(sender, streaming_contract, deposit_amount, ...)`).\nWhen a protocol fee is configured, the approval (and the pull) cover\n`deposit_amount + fee`, where `fee = deposit_amount * fee_bps / 10_000`\nis charged once, here at the deposit boundary — never during\naccrual or payout. At `fee_bps == 0` the call is identical to the\nfee-less contract: same pull, same events, same state.\n\n* `start_time` must not be in the past (UIs pass the current time to\nstart streaming immediately).\n* `end_time` must be strictly after `start_time` (zero-duration streams\nare rejected) and at most `MAX_DURATION_SECONDS` long.\n* `cancelable` controls whether the recipient may also call\n`cancel_stream` to reclaim their accrued balance.\n\nReturns the new stream id (monotonically increasing, starting at 1).\n\nThe deposit pull is mapped to [`StreamError::DepositTransferFailed`]\n(missing balance/allowance, or an asset that refuses the transfer);\nnothing is persisted when it fails, so no stream id is consumed.",
+      "args": [
+        {
+          "name": "sender",
+          "type": "address"
+        },
+        {
+          "name": "recipient",
+          "type": "address"
+        },
+        {
+          "name": "token",
+          "type": "address"
+        },
+        {
+          "name": "deposit_amount",
+          "type": "i128"
+        },
+        {
+          "name": "start_time",
+          "type": "u64"
+        },
+        {
+          "name": "end_time",
+          "type": "u64"
+        },
+        {
+          "name": "cancelable",
+          "type": "bool"
+        }
+      ],
+      "returns": "u64",
+      "error": "StreamError",
+      "mutating": true
+    },
+    {
+      "name": "create_stream_with_oracle",
+      "doc": "Creates a payment stream with optional oracle reference time source.",
+      "args": [
+        {
+          "name": "sender",
+          "type": "address"
+        },
+        {
+          "name": "recipient",
+          "type": "address"
+        },
+        {
+          "name": "token",
+          "type": "address"
+        },
+        {
+          "name": "deposit_amount",
+          "type": "i128"
+        },
+        {
+          "name": "start_time",
+          "type": "u64"
+        },
+        {
+          "name": "end_time",
+          "type": "u64"
+        },
+        {
+          "name": "cancelable",
+          "type": "bool"
+        },
+        {
+          "name": "use_oracle",
+          "type": "bool"
+        }
+      ],
+      "returns": "u64",
+      "error": "StreamError",
+      "mutating": true
+    },
+    {
+      "name": "create_streams",
+      "doc": "Creates multiple streams atomically, authorizing the sender once and\ngrouping deposits into one token pull per token. Every item uses the\nsame validation and fee rules as `create_stream`; if any item is\ninvalid, the entire transaction (including transfers and state writes)\nis rolled back. An empty input returns an empty vector without auth.\n\nEmits one `StreamsCreated` event containing all ids; individual\n`FeeCharged` events are still emitted when fees apply.",
+      "args": [
+        {
+          "name": "sender",
+          "type": "address"
+        },
+        {
+          "name": "inputs",
+          "type": {
+            "vec": "StreamInput"
+          }
+        }
+      ],
+      "returns": {
+        "vec": "u64"
+      },
+      "error": "StreamError",
+      "mutating": true
+    },
+    {
+      "name": "create_streams_batch",
+      "doc": "Creates a batch of payment streams in a single transaction.\n\nSemantics are all-or-nothing per entry but best-effort across the batch:\neach entry validates its parameters and attempts its own deposit pull.\nFailures are reported per-entry in the returned vector without aborting\nor rolling back successfully created sibling streams.\n\nThe entire batch call reverts if `entries` is empty ([`StreamError::BatchEmpty`])\nor exceeds [`MAX_BATCH`] ([`StreamError::BatchTooLarge`]).",
+      "args": [
+        {
+          "name": "entries",
+          "type": {
+            "vec": "BatchEntry"
+          }
+        }
+      ],
+      "returns": {
+        "vec": {
+          "result": {
+            "ok": "u64",
+            "err": "StreamError"
+          }
+        }
+      },
+      "error": "StreamError",
+      "mutating": true
+    },
+    {
+      "name": "withdraw",
+      "doc": "Withdraws up to `amount` of the accrued-but-unwithdrawn balance and\npays it to the stream recipient. Only the recipient can call this\n(their authorization is required).\n\nReverts with [`StreamError::AmountExceedsAvailable`] if `amount`\nexceeds what has accrued so far; before `start_time` nothing has\naccrued, at or after `end_time` the full remainder is available.\n\nA token-side failure to deliver the payout returns\n[`StreamError::RecipientPayoutFailed`] and rolls the recorded\n`withdrawn` update back with it.\n\n# Ordering against `cancel_stream` (same-ledger race)\n\n`withdraw` and `cancel_stream` are strictly serial: each invocation\nruns to completion — including its CEI state writes — before the next\nbegins, even when both land in the same ledger. There is no\ninterleaving and no partial application; whichever call executes\nfirst wins, and the loser observes the post-write state:\n\n* If `cancel_stream` executes first, the stream is already `Cancelled`\nwhen `withdraw` runs, so it reverts with\n[`StreamError::StreamNotActive`] (code 5) without moving tokens.\n* If `withdraw` executes first, a subsequent `cancel_stream` splits\nonly the *remaining* balance (`streamed − withdrawn`). If this\nwithdrawal drained the stream (`withdrawn == deposit`, status\n`Depleted`), the cancel instead reverts with\n[`StreamError::StreamNotActive`] (code 5).\n\nThe losing call never mutates state, so the funds-conservation\noutcome is identical to the serial composition: the recipient\nreceives exactly the amount accrued at the later call and the sender\nis refunded the unaccrued remainder. Regression tests pin these\nsequences in `test.rs` (`race_*`); the race table lives in\n`docs/ARCHITECTURE.md` §6.1.",
+      "args": [
+        {
+          "name": "stream_id",
+          "type": "u64"
+        },
+        {
+          "name": "amount",
+          "type": "i128"
+        }
+      ],
+      "returns": "void",
+      "error": "StreamError",
+      "mutating": true
+    },
+    {
+      "name": "withdraw_max",
+      "doc": "Withdraws the entire accrued-but-unwithdrawn balance in one call and\nreturns the amount paid. Only the recipient can call this (their\nauthorization is required).\n\nThis is the atomic form of \"read `available`, then `withdraw` it\":\nclients never risk a stale amount between the two calls. Reverts with\n[`StreamError::NothingToWithdraw`] when nothing has accrued yet (or\neverything accrued has already been withdrawn), with\n[`StreamError::StreamNotActive`] on cancelled or depleted streams, and\nwith [`StreamError::RecipientPayoutFailed`] if the token refuses the\npayout (state rolls back unchanged).",
+      "args": [
+        {
+          "name": "stream_id",
+          "type": "u64"
+        }
+      ],
+      "returns": "i128",
+      "error": "StreamError",
+      "mutating": true
+    },
+    {
+      "name": "cancel_stream",
+      "doc": "Cancels a stream: pays the recipient their accrued-but-unwithdrawn\nbalance and refunds the sender the unaccrued remainder, atomically.\n\nCallable by the sender always, and by the recipient only if the stream\nwas created with `cancelable = true`. Cancelling an already-cancelled\nor depleted stream reverts with [`StreamError::StreamNotActive`].\n\nEach payout leg maps a token-side failure to its own code —\n[`StreamError::RecipientPayoutFailed`] for the recipient's accrued\nshare and [`StreamError::SenderRefundFailed`] for the sender's refund —\nand any failure rolls the whole cancellation back: the stream stays\n`Active`, `withdrawn` is restored, and no event survives.\n\n# Ordering against `withdraw` (same-ledger race)\n\nThe counterpart of the ordering documented on\n[`StreamingPayments::withdraw`]: cancellation is atomic and sees the\n`withdrawn` balance as of *its* execution point.\n\n* If the recipient's `withdraw` executes first, the cancel splits the\nremainder only (`streamed − withdrawn` to the recipient,\n`deposit − streamed` to the sender). If that withdrawal already\ndrained the stream to `Depleted`, the cancel reverts with\n[`StreamError::StreamNotActive`] (code 5).\n* If this cancel executes first, the stream is `Cancelled` and any\nlater `withdraw` / `withdraw_max` reverts with\n[`StreamError::StreamNotActive`] (code 5).\n\nLast write wins in execution order; no interleaving exists within a\nledger, and the losing call leaves state and balances untouched.\nPinned by the `race_*` regression tests in `test.rs`; see\n`docs/ARCHITECTURE.md` §6.1 for the race table.",
+      "args": [
+        {
+          "name": "caller",
+          "type": "address"
+        },
+        {
+          "name": "stream_id",
+          "type": "u64"
+        }
+      ],
+      "returns": "void",
+      "error": "StreamError",
+      "mutating": true
+    },
+    {
+      "name": "top_up",
+      "doc": "Adds funds to an existing active stream. The deposit grows and accrual\nremains linear over the original window, so the recipient's accrued\namount increases pro-rata immediately (Sablier-v1 `increaseAmount`\nsemantics).\n\nTop-ups are rejected on cancelled or depleted streams. Topping up a\nstream that has already passed `end_time` adds fully-accrued funds the\nrecipient can withdraw immediately.\n\nA token-side failure to pull the funds returns\n[`StreamError::TopUpTransferFailed`] and leaves `deposit` unchanged.\n\nNote: extending `end_time` is intentionally not supported in v1 —\nretroactively re-baselining accrual is lossy for the recipient; see\n`docs/ARCHITECTURE.md` for the design considerations and roadmap.",
+      "args": [
+        {
+          "name": "stream_id",
+          "type": "u64"
+        },
+        {
+          "name": "amount",
+          "type": "i128"
+        }
+      ],
+      "returns": "void",
+      "error": "StreamError",
+      "mutating": true
+    },
+    {
+      "name": "propose_ownership_transfer",
+      "doc": "Proposes handing the caller's stream role (sender or recipient) to\n`new_owner`. The role does not move until `new_owner` calls\n[`StreamingPayments::accept_ownership_transfer`].\n\n* Only the current sender or recipient may propose; their authorization\nis required. A stranger is rejected with [`StreamError::NotAuthorized`].\n* The stream must be `Active`: ownership of a cancelled or depleted\nstream has no future claims and cannot be transferred.\n* Proposing to the current holder of the same role is rejected with\n[`StreamError::InvalidTransferTarget`].\n* At most one unexpired proposal exists per stream. Proposing again\nwhile one is pending reverts with\n[`StreamError::OwnershipProposalPending`]; an expired proposal is\nremoved and replaced.\n\nNo tokens move and no accounting field changes at proposal time. The\ntarget is recorded under its own storage key with a seven-day\nacceptance window ([`OWNERSHIP_PROPOSAL_TTL_SECONDS`]).",
+      "args": [
+        {
+          "name": "caller",
+          "type": "address"
+        },
+        {
+          "name": "stream_id",
+          "type": "u64"
+        },
+        {
+          "name": "new_owner",
+          "type": "address"
+        }
+      ],
+      "returns": "void",
+      "error": "StreamError",
+      "mutating": true
+    },
+    {
+      "name": "accept_ownership_transfer",
+      "doc": "Accepts a pending ownership proposal. Only the proposal's `new_owner`\nmay call this, and their authorization is required.\n\nOn success the sender or recipient role moves to the caller. The\nstream's accounting fields (`deposit`, `withdrawn`, `start_time`,\n`end_time`, `token`, `status`, `use_oracle`) are untouched, so accrual\nand the `0 <= withdrawn <= streamed <= deposit` invariant are unchanged:\nwhat moves is the right to future payouts (recipient) or future top-ups\n/ cancellation refunds (sender). The stream id is appended to the new\nholder's discovery index; the previous holder's append-only index keeps\nits historical entry.\n\nExpired proposals cannot be accepted: the call reverts with\n[`StreamError::OwnershipProposalExpired`]. Reverts roll back storage\nwrites, so the stale entry stays stored but is ignored forever after\nits window; a later proposal replaces it (see\n[`StreamingPayments::propose_ownership_transfer`]).",
+      "args": [
+        {
+          "name": "caller",
+          "type": "address"
+        },
+        {
+          "name": "stream_id",
+          "type": "u64"
+        }
+      ],
+      "returns": "void",
+      "error": "StreamError",
+      "mutating": true
+    },
+    {
+      "name": "cancel_ownership_transfer",
+      "doc": "Cancels a pending ownership proposal. Only the current role holder that\ncreated the proposal may cancel it; their authorization is required.\n\nCancelling is allowed after the proposal's acceptance window has\nelapsed (it simply clears the stale entry). It emits no event: the\nproposal never changed the stream, and `OwnershipProposed` remains the\npermanent record that a proposal once existed.",
+      "args": [
+        {
+          "name": "caller",
+          "type": "address"
+        },
+        {
+          "name": "stream_id",
+          "type": "u64"
+        }
+      ],
+      "returns": "void",
+      "error": "StreamError",
+      "mutating": true
+    },
+    {
+      "name": "pending_ownership_transfer",
+      "doc": "Read-only view of a stream's pending ownership proposal, if any.\nReading extends the proposal's storage TTL; unknown streams simply\nreturn `None`.",
+      "args": [
+        {
+          "name": "stream_id",
+          "type": "u64"
+        }
+      ],
+      "returns": {
+        "option": "PendingOwnership"
+      },
+      "error": null,
+      "mutating": false
+    },
+    {
+      "name": "get_stream",
+      "doc": "Read-only view of a stream's full state.",
+      "args": [
+        {
+          "name": "stream_id",
+          "type": "u64"
+        }
+      ],
+      "returns": "Stream",
+      "error": "StreamError",
+      "mutating": false
+    },
+    {
+      "name": "available",
+      "doc": "Read-only view of the accrued-but-unwithdrawn balance at the current\nledger time. Zero before `start_time` and for cancelled streams; the\nfull remainder at or after `end_time`.",
+      "args": [
+        {
+          "name": "stream_id",
+          "type": "u64"
+        }
+      ],
+      "returns": "i128",
+      "error": "StreamError",
+      "mutating": false
+    },
+    {
+      "name": "recipient_streams",
+      "doc": "A page of stream ids where `recipient` is the recipient, in creation\norder (oldest first). `limit` is clamped to `MAX_PAGE_SIZE`; paginate\nby advancing `offset`. Unknown addresses yield an empty page.\n\nDiscovery view only: it does not authorize anything and terminal\n(cancelled/depleted) streams keep their ids — read each stream's\n`status` for lifecycle state.",
+      "args": [
+        {
+          "name": "recipient",
+          "type": "address"
+        },
+        {
+          "name": "offset",
+          "type": "u32"
+        },
+        {
+          "name": "limit",
+          "type": "u32"
+        }
+      ],
+      "returns": {
+        "vec": "u64"
+      },
+      "error": null,
+      "mutating": false
+    },
+    {
+      "name": "sender_streams",
+      "doc": "A page of stream ids created by `sender`, in creation order. Same\npagination and advisory semantics as [`StreamingPayments::recipient_streams`].",
+      "args": [
+        {
+          "name": "sender",
+          "type": "address"
+        },
+        {
+          "name": "offset",
+          "type": "u32"
+        },
+        {
+          "name": "limit",
+          "type": "u32"
+        }
+      ],
+      "returns": {
+        "vec": "u64"
+      },
+      "error": null,
+      "mutating": false
+    },
+    {
+      "name": "schedule_stream",
+      "doc": "Pre-authorizes the creation of one or more streams at a future time and\nescrows the up-front cost.\n\n`sender` must authorize this call (their signature over the invocation\nis verified by the host). The contract escrows\n`(deposit_amount + fee_budget) * occurrences` of `token`:\n`deposit_amount` per occurrence funds the stream, and `fee_budget` per\noccurrence is the reward paid to whichever keeper later executes it.\n\n* A **one-shot** intent is scheduled with `occurrences = 1` and\n`interval = 0`.\n* A **recurring** intent is scheduled with `occurrences > 1` and a\nstrictly positive `interval` (seconds between occurrence starts). The\n`i`-th occurrence's stream window is `[start_time + i*interval,\nend_time + i*interval)`.\n\nTiming constraints: `execute_after <= start_time`, `now <= execute_after`\nand `start_time` must be strictly in the future; `expires_at >\nexecute_after` bounds the execution window. The exact parameters are\ncommitted into the intent's `params_hash`.\n\nReturns the new intent id (monotonically increasing, starting at 1).",
+      "args": [
+        {
+          "name": "sender",
+          "type": "address"
+        },
+        {
+          "name": "recipient",
+          "type": "address"
+        },
+        {
+          "name": "token",
+          "type": "address"
+        },
+        {
+          "name": "deposit_amount",
+          "type": "i128"
+        },
+        {
+          "name": "start_time",
+          "type": "u64"
+        },
+        {
+          "name": "end_time",
+          "type": "u64"
+        },
+        {
+          "name": "cancelable",
+          "type": "bool"
+        },
+        {
+          "name": "interval",
+          "type": "u64"
+        },
+        {
+          "name": "occurrences",
+          "type": "u32"
+        },
+        {
+          "name": "fee_budget",
+          "type": "i128"
+        },
+        {
+          "name": "execute_after",
+          "type": "u64"
+        },
+        {
+          "name": "expires_at",
+          "type": "u64"
+        }
+      ],
+      "returns": "u64",
+      "error": "StreamError",
+      "mutating": true
+    },
+    {
+      "name": "execute_scheduled",
+      "doc": "Executes the next due occurrence of a scheduled intent, creating the\nstream and paying `keeper` the escrowed per-occurrence fee.\n\n**Permissionless**: any address may call as `keeper`, but `keeper` must\nauthorize the call (so the fee cannot be front-run and redirected to a\ncopycat). The contract enforces that the intent is pending, is within its\n`[execute_after, expires_at)` window for the next occurrence, and that\nits stored parameters still match the scheduling commitment.\n\nExecution is **once per occurrence**: each call decrements\n`occurrences_remaining`, and a second call for an already-executed\noccurrence (or a completed one-shot) reverts with\n[`StreamError::IntentNotPending`]. Returns the created stream id.",
+      "args": [
+        {
+          "name": "intent_id",
+          "type": "u64"
+        },
+        {
+          "name": "keeper",
+          "type": "address"
+        }
+      ],
+      "returns": "u64",
+      "error": "StreamError",
+      "mutating": true
+    },
+    {
+      "name": "cancel_scheduled",
+      "doc": "Cancels a pending scheduled intent and refunds the sender the escrow for\nevery outstanding occurrence.\n\nOnly the intent's sender may cancel (their authorization is required),\nand only **before the execution window opens** (`now < execute_after`).\nOnce the window is open, keepers may execute and cancellation is\ndisallowed ([`StreamError::IntentNotCancellable`]) to remove a\ncancel/execute race that would otherwise burn keeper gas. After\n`expires_at`, use [`StreamingPayments::reclaim_expired`] instead.",
+      "args": [
+        {
+          "name": "sender",
+          "type": "address"
+        },
+        {
+          "name": "intent_id",
+          "type": "u64"
+        }
+      ],
+      "returns": "void",
+      "error": "StreamError",
+      "mutating": true
+    },
+    {
+      "name": "reclaim_expired",
+      "doc": "Reclaims a pending intent that passed `expires_at` without being fully\nexecuted, refunding the sender the escrow for every outstanding\noccurrence.\n\n**Permissionless**: anyone may trigger the refund (the funds always go\nto the sender), so abandoned intents cannot lock capital indefinitely.\nReverts with [`StreamError::IntentExpired`]-style semantics via\n[`StreamError::IntentNotExpired`] if called too early, and with\n[`StreamError::IntentNotPending`] if the intent is terminal.",
+      "args": [
+        {
+          "name": "intent_id",
+          "type": "u64"
+        }
+      ],
+      "returns": "void",
+      "error": "StreamError",
+      "mutating": true
+    },
+    {
+      "name": "get_intent",
+      "doc": "Read-only view of a scheduled intent's full state.",
+      "args": [
+        {
+          "name": "intent_id",
+          "type": "u64"
+        }
+      ],
+      "returns": "ScheduledIntent",
+      "error": "StreamError",
+      "mutating": false
+    },
+    {
+      "name": "sender_intents",
+      "doc": "A page of scheduled-intent ids created by `sender`, in creation order.\nSame pagination and advisory semantics as\n[`StreamingPayments::sender_streams`].",
+      "args": [
+        {
+          "name": "sender",
+          "type": "address"
+        },
+        {
+          "name": "offset",
+          "type": "u32"
+        },
+        {
+          "name": "limit",
+          "type": "u32"
+        }
+      ],
+      "returns": {
+        "vec": "u64"
+      },
+      "error": null,
+      "mutating": false
+    },
+    {
+      "name": "set_fee_bps",
+      "doc": "Sets the protocol fee rate (basis points on each new stream's\ndeposit, charged once at creation). Governor-only. Reverts with\n[`StreamError::FeeRateTooHigh`] above [`MAX_FEE_BPS`] (the protocol\ncap) and with [`StreamError::NotGovernor`] for any other caller.\n\nChanges apply only to streams created afterwards: fees are a\nproperty of the deposit boundary a stream actually crossed, never\nretroactively.",
+      "args": [
+        {
+          "name": "caller",
+          "type": "address"
+        },
+        {
+          "name": "new_fee_bps",
+          "type": "u32"
+        }
+      ],
+      "returns": "void",
+      "error": "StreamError",
+      "mutating": true
+    },
+    {
+      "name": "nominate_governor",
+      "doc": "Nominates `new_governor` as the next treasury governor (governor-only,\nstep 1 of a two-step rotation). Two steps mean a typo'd address can\nnever irreversibly strand the treasury: only an address that can\nprove control (`accept_governor`) ever becomes governor.",
+      "args": [
+        {
+          "name": "caller",
+          "type": "address"
+        },
+        {
+          "name": "new_governor",
+          "type": "address"
+        }
+      ],
+      "returns": "void",
+      "error": "StreamError",
+      "mutating": true
+    },
+    {
+      "name": "accept_governor",
+      "doc": "Completes a governor rotation (step 2): the nominated address proves\ncontrol by authorizing this call and becomes the governor. Reverts\nwith [`StreamError::NoPendingGovernor`] when nothing is pending and\n[`StreamError::NotGovernor`] for a caller who is not the nominee.",
+      "args": [
+        {
+          "name": "caller",
+          "type": "address"
+        }
+      ],
+      "returns": "void",
+      "error": "StreamError",
+      "mutating": true
+    },
+    {
+      "name": "withdraw_treasury",
+      "doc": "Withdraws accumulated protocol fees for `token` to `recipient`.\nGovernor-only; bounded by fees collected minus fees already\nwithdrawn ([`StreamError::InsufficientTreasuryBalance`]).\n\nEffects-interactions ordered: `FeeWithdrawn` is emitted and the\naccounting persisted *before* the token transfer. A token-side failure\nto pay out returns [`StreamError::TreasuryPayoutFailed`], rolling the\nrecorded withdrawal and the event back with it.",
+      "args": [
+        {
+          "name": "caller",
+          "type": "address"
+        },
+        {
+          "name": "token",
+          "type": "address"
+        },
+        {
+          "name": "recipient",
+          "type": "address"
+        },
+        {
+          "name": "amount",
+          "type": "i128"
+        }
+      ],
+      "returns": "void",
+      "error": "StreamError",
+      "mutating": true
+    },
+    {
+      "name": "treasury_status",
+      "doc": "One-call treasury snapshot for `token`: governor, pending nominee,\ncurrent fee configuration, and the fee ledger totals that must\nreconcile with the `FeeCharged` / `FeeWithdrawn` event streams.\nPublic, read-only, no auth.",
+      "args": [
+        {
+          "name": "token",
+          "type": "address"
+        }
+      ],
+      "returns": "TreasuryStatus",
+      "error": null,
+      "mutating": false
+    },
+    {
+      "name": "stream_fee",
+      "doc": "The protocol fee charged for `stream_id` at creation, in smallest\ntoken units. Zero for streams created while fees were disabled (or\nwhose fee rounded to zero). Reverts with\n[`StreamError::StreamNotFound`] for unknown ids.",
+      "args": [
+        {
+          "name": "stream_id",
+          "type": "u64"
+        }
+      ],
+      "returns": "i128",
+      "error": "StreamError",
+      "mutating": false
+    },
+    {
+      "name": "verify_treasury",
+      "doc": "One bounded page of the fee verification scan: sums stored\nper-stream fees for `token` over a window of the stream-id space\n(`count` clamped to [`MAX_PAGE_SIZE`]). Page from id 1 until `done`\nis true; the summed `fees_in_range` values must equal\n`treasury_status(token).charged_total` — and both must equal the\namounts in the contract's `FeeCharged` events. That three-way\nequality is the treasury invariant, verifiable by anyone from\npublic reads alone (see `scripts/verify-fees.ts`).",
+      "args": [
+        {
+          "name": "token",
+          "type": "address"
+        },
+        {
+          "name": "start_id",
+          "type": "u64"
+        },
+        {
+          "name": "count",
+          "type": "u32"
+        }
+      ],
+      "returns": "FeeScan",
+      "error": null,
+      "mutating": false
+    },
+    {
+      "name": "total_streams",
+      "doc": "Number of streams ever created (ids are `1..=total_streams()`).\nPublic convenience for verifiers to know the scan range.",
+      "args": [],
+      "returns": "u64",
+      "error": null,
+      "mutating": false
+    },
+    {
+      "name": "register_sponsor",
+      "doc": "Registers (or reconfigures) a sponsor budget and its authorized operator\n(relayer) key. See [`sponsor`].",
+      "args": [
+        {
+          "name": "sponsor",
+          "type": "address"
+        },
+        {
+          "name": "token",
+          "type": "address"
+        },
+        {
+          "name": "per_period_limit",
+          "type": "i128"
+        },
+        {
+          "name": "per_beneficiary_limit",
+          "type": "i128"
+        },
+        {
+          "name": "window_seconds",
+          "type": "u64"
+        },
+        {
+          "name": "operator_key",
+          "type": "bytes32"
+        }
+      ],
+      "returns": "void",
+      "error": "StreamError",
+      "mutating": true
+    },
+    {
+      "name": "set_sponsor_active",
+      "doc": "Pauses or resumes a sponsor's budget.",
+      "args": [
+        {
+          "name": "sponsor",
+          "type": "address"
+        },
+        {
+          "name": "active",
+          "type": "bool"
+        }
+      ],
+      "returns": "void",
+      "error": "StreamError",
+      "mutating": true
+    },
+    {
+      "name": "rotate_operator_key",
+      "doc": "Rotates a sponsor's authorized operator (relayer) key.",
+      "args": [
+        {
+          "name": "sponsor",
+          "type": "address"
+        },
+        {
+          "name": "new_operator_key",
+          "type": "bytes32"
+        }
+      ],
+      "returns": "void",
+      "error": "StreamError",
+      "mutating": true
+    },
+    {
+      "name": "enroll_beneficiary",
+      "doc": "Binds (or rotates) a beneficiary's ed25519 consent key.",
+      "args": [
+        {
+          "name": "beneficiary",
+          "type": "address"
+        },
+        {
+          "name": "public_key",
+          "type": "bytes32"
+        }
+      ],
+      "returns": "void",
+      "error": "StreamError",
+      "mutating": true
+    },
+    {
+      "name": "sponsored_withdraw",
+      "doc": "Relays a beneficiary's withdrawal with a sponsor absorbing the gas. See\n[`sponsor`] for the inner-authorization and budget semantics.",
+      "args": [
+        {
+          "name": "sponsor",
+          "type": "address"
+        },
+        {
+          "name": "beneficiary",
+          "type": "address"
+        },
+        {
+          "name": "stream_id",
+          "type": "u64"
+        },
+        {
+          "name": "amount",
+          "type": "i128"
+        },
+        {
+          "name": "nonce",
+          "type": "u64"
+        },
+        {
+          "name": "deadline",
+          "type": "u64"
+        },
+        {
+          "name": "operator_sig",
+          "type": "bytes64"
+        },
+        {
+          "name": "beneficiary_sig",
+          "type": "bytes64"
+        }
+      ],
+      "returns": "void",
+      "error": "StreamError",
+      "mutating": true
+    },
+    {
+      "name": "get_sponsor",
+      "doc": "Reads a sponsor's budget configuration, if any.",
+      "args": [
+        {
+          "name": "sponsor",
+          "type": "address"
+        }
+      ],
+      "returns": {
+        "option": "SponsorConfig"
+      },
+      "error": null,
+      "mutating": false
+    },
+    {
+      "name": "get_beneficiary_public_key",
+      "doc": "Reads a beneficiary's enrolled consent key, if any.",
+      "args": [
+        {
+          "name": "beneficiary",
+          "type": "address"
+        }
+      ],
+      "returns": {
+        "option": "bytes32"
+      },
+      "error": null,
+      "mutating": false
+    },
+    {
+      "name": "sponsor_period_spend",
+      "doc": "The sponsor's current-window spend.",
+      "args": [
+        {
+          "name": "sponsor",
+          "type": "address"
+        }
+      ],
+      "returns": "PeriodSpend",
+      "error": null,
+      "mutating": false
+    },
+    {
+      "name": "beneficiary_spend",
+      "doc": "A beneficiary's spend within a sponsor's current window.",
+      "args": [
+        {
+          "name": "sponsor",
+          "type": "address"
+        },
+        {
+          "name": "beneficiary",
+          "type": "address"
+        }
+      ],
+      "returns": "PeriodSpend",
+      "error": null,
+      "mutating": false
+    },
+    {
+      "name": "policy_init",
+      "doc": "Initializes the policy module with `admin`. Callable once only; panics\nif called again. Admin authorization is required.",
+      "args": [
+        {
+          "name": "admin",
+          "type": "address"
+        }
+      ],
+      "returns": "void",
+      "error": null,
+      "mutating": true
+    },
+    {
+      "name": "policy_propose_asset",
+      "doc": "Queues an allowlist mutation (adding or removing `asset`) with a\ntimelock delay. Callable only by the current admin.",
+      "args": [
+        {
+          "name": "asset",
+          "type": "address"
+        },
+        {
+          "name": "allowed",
+          "type": "bool"
+        }
+      ],
+      "returns": "void",
+      "error": "StreamError",
+      "mutating": true
+    },
+    {
+      "name": "policy_execute_asset",
+      "doc": "Executes a queued asset allowlist change after the timelock has elapsed.\n\nCallable by anyone: once a change has been vetted by the admin and the\npublic timelock delay has expired, execution is permissionless so it\ncannot be stalled or held hostage by an absent admin.",
+      "args": [
+        {
+          "name": "asset",
+          "type": "address"
+        }
+      ],
+      "returns": "void",
+      "error": "StreamError",
+      "mutating": true
+    },
+    {
+      "name": "policy_propose_handoff",
+      "doc": "Proposes a new admin for the two-step handoff (admin-only).",
+      "args": [
+        {
+          "name": "new_admin",
+          "type": "address"
+        }
+      ],
+      "returns": "void",
+      "error": "StreamError",
+      "mutating": true
+    },
+    {
+      "name": "policy_accept_handoff",
+      "doc": "Accepts the pending admin handoff. Callable only by the proposed new\nadmin, consuming their authorization and clearing the proposal.",
+      "args": [],
+      "returns": "void",
+      "error": "StreamError",
+      "mutating": true
+    },
+    {
+      "name": "policy_cancel_handoff",
+      "doc": "Cancels a pending admin handoff (admin-only).",
+      "args": [],
+      "returns": "void",
+      "error": "StreamError",
+      "mutating": true
+    },
+    {
+      "name": "policy_admin",
+      "doc": "Returns the current policy admin, if initialized.",
+      "args": [],
+      "returns": {
+        "option": "address"
+      },
+      "error": null,
+      "mutating": false
+    },
+    {
+      "name": "policy_pending_admin",
+      "doc": "Returns the pending policy admin nominee, if any.",
+      "args": [],
+      "returns": {
+        "option": "address"
+      },
+      "error": null,
+      "mutating": false
+    },
+    {
+      "name": "policy_timelock_delay",
+      "doc": "Returns the on-chain timelock delay in seconds.",
+      "args": [],
+      "returns": "u64",
+      "error": null,
+      "mutating": false
+    },
+    {
+      "name": "policy_set_timelock_delay",
+      "doc": "Sets the timelock delay in seconds (admin-only).",
+      "args": [
+        {
+          "name": "delay",
+          "type": "u64"
+        }
+      ],
+      "returns": "void",
+      "error": "StreamError",
+      "mutating": true
+    },
+    {
+      "name": "policy_is_asset_allowed",
+      "doc": "Read-only check whether `asset` is currently allowed for new streams.",
+      "args": [
+        {
+          "name": "asset",
+          "type": "address"
+        }
+      ],
+      "returns": "bool",
+      "error": null,
+      "mutating": false
+    },
+    {
+      "name": "policy_get_queued_asset",
+      "doc": "Returns the queued allowlist change for `asset`, if any.",
+      "args": [
+        {
+          "name": "asset",
+          "type": "address"
+        }
+      ],
+      "returns": {
+        "option": "QueuedAssetChange"
+      },
+      "error": null,
+      "mutating": false
+    },
+    {
+      "name": "set_stream_policy",
+      "doc": "Sets governance policy floors and ceilings for streams of `token`, or global default if `token` is None.\nGovernor-only.\n\nGovernance timelock hook: this setter gates via `treasury::require_governor` and will route\nthrough the timelocked proposal queue once governance timelocks are enabled across all operations.",
+      "args": [
+        {
+          "name": "caller",
+          "type": "address"
+        },
+        {
+          "name": "token",
+          "type": {
+            "option": "address"
+          }
+        },
+        {
+          "name": "policy",
+          "type": "StreamPolicy"
+        }
+      ],
+      "returns": "void",
+      "error": "StreamError",
+      "mutating": true
+    },
+    {
+      "name": "get_stream_policy",
+      "doc": "Queries the effective stream policy for `token` (falling back to global policy if unset).",
+      "args": [
+        {
+          "name": "token",
+          "type": {
+            "option": "address"
+          }
+        }
+      ],
+      "returns": {
+        "option": "StreamPolicy"
+      },
+      "error": null,
+      "mutating": false
+    },
+    {
+      "name": "schema_version",
+      "doc": "Returns the current schema version of stored contract state.",
+      "args": [],
+      "returns": "u32",
+      "error": null,
+      "mutating": false
+    },
+    {
+      "name": "is_frozen",
+      "doc": "Returns whether mutating contract operations are currently frozen.",
+      "args": [],
+      "returns": "bool",
+      "error": null,
+      "mutating": false
+    },
+    {
+      "name": "set_frozen",
+      "doc": "Sets the freeze state of the contract. Governor-only.\n\nWhen frozen, mutating stream entrypoints (create, withdraw, withdraw_max,\ncancel, top_up) revert with [`StreamError::ContractFrozen`], but read views\nremain accessible.",
+      "args": [
+        {
+          "name": "caller",
+          "type": "address"
+        },
+        {
+          "name": "frozen",
+          "type": "bool"
+        }
+      ],
+      "returns": "void",
+      "error": "StreamError",
+      "mutating": true
+    },
+    {
+      "name": "propose_upgrade",
+      "doc": "Proposes a Wasm bytecode upgrade with an enforced timelock delay. Governor-only.\n\n`delay_seconds` must be at least [`MIN_UPGRADE_DELAY_SECONDS`] (24 hours).\nOverwrites any existing proposal.",
+      "args": [
+        {
+          "name": "caller",
+          "type": "address"
+        },
+        {
+          "name": "new_wasm_hash",
+          "type": "bytes32"
+        },
+        {
+          "name": "delay_seconds",
+          "type": "u64"
+        }
+      ],
+      "returns": "void",
+      "error": "StreamError",
+      "mutating": true
+    },
+    {
+      "name": "cancel_upgrade",
+      "doc": "Cancels a pending upgrade proposal. Governor-only.\n\nReverts with [`StreamError::NoPendingUpgrade`] if no proposal is pending.",
+      "args": [
+        {
+          "name": "caller",
+          "type": "address"
+        }
+      ],
+      "returns": "void",
+      "error": "StreamError",
+      "mutating": true
+    },
+    {
+      "name": "execute_upgrade",
+      "doc": "Executes a pending upgrade proposal once its timelock delay has elapsed. Governor-only.\n\nUpdates the contract executable via [`env.deployer().update_current_contract_wasm`]\nand clears the pending upgrade.",
+      "args": [
+        {
+          "name": "caller",
+          "type": "address"
+        }
+      ],
+      "returns": "void",
+      "error": "StreamError",
+      "mutating": true
+    },
+    {
+      "name": "pending_upgrade",
+      "doc": "Read-only view of any pending upgrade proposal.",
+      "args": [],
+      "returns": {
+        "option": "PendingUpgrade"
+      },
+      "error": null,
+      "mutating": false
+    },
+    {
+      "name": "migrate_storage",
+      "doc": "Migrates a batch of streams from schema v1 to schema v2. Governor-only.\n\nRequires the contract to be frozen ([`StreamError::ContractNotFrozen`]).\n`count` is clamped to [`MAX_MIGRATION_BATCH_SIZE`] (50 streams per call).\nIf `start_id == 0`, migration resumes from `migration_cursor + 1`.\nWhen the cursor reaches `total_streams`, the schema version is bumped to v2.\nCalling this after migration is complete reverts with [`StreamError::AlreadyMigrated`].",
+      "args": [
+        {
+          "name": "caller",
+          "type": "address"
+        },
+        {
+          "name": "start_id",
+          "type": "u64"
+        },
+        {
+          "name": "count",
+          "type": "u32"
+        }
+      ],
+      "returns": "MigrationStatus",
+      "error": "StreamError",
+      "mutating": true
+    },
+    {
+      "name": "migration_progress",
+      "doc": "Read-only snapshot of storage migration progress.",
+      "args": [],
+      "returns": "MigrationStatus",
+      "error": null,
+      "mutating": false
+    },
+    {
+      "name": "set_oracle_config",
+      "doc": "Configures the oracle publisher set, threshold, and staleness bound.\nAuthorized by the treasury governor.",
+      "args": [
+        {
+          "name": "caller",
+          "type": "address"
+        },
+        {
+          "name": "publishers",
+          "type": {
+            "vec": "address"
+          }
+        },
+        {
+          "name": "threshold",
+          "type": "u32"
+        },
+        {
+          "name": "max_stale_seconds",
+          "type": "u64"
+        }
+      ],
+      "returns": "void",
+      "error": "StreamError",
+      "mutating": true
+    },
+    {
+      "name": "submit_oracle_time",
+      "doc": "Records an authorized external time feed report.",
+      "args": [
+        {
+          "name": "publisher",
+          "type": "address"
+        },
+        {
+          "name": "timestamp",
+          "type": "u64"
+        }
+      ],
+      "returns": "void",
+      "error": "StreamError",
+      "mutating": true
+    },
+    {
+      "name": "resolve_time",
+      "doc": "Resolves reference timestamp for a given stream id and oracle flag.",
+      "args": [
+        {
+          "name": "stream_id",
+          "type": "u64"
+        },
+        {
+          "name": "use_oracle",
+          "type": "bool"
+        }
+      ],
+      "returns": "ResolvedTime",
+      "error": null,
+      "mutating": false
+    },
+    {
+      "name": "oracle_config",
+      "doc": "Reads current oracle configuration.",
+      "args": [],
+      "returns": {
+        "option": "OracleConfig"
+      },
+      "error": null,
+      "mutating": false
+    },
+    {
+      "name": "oracle_report",
+      "doc": "Reads latest report from a publisher.",
+      "args": [
+        {
+          "name": "publisher",
+          "type": "address"
+        }
+      ],
+      "returns": {
+        "option": "OracleReport"
+      },
+      "error": null,
+      "mutating": false
+    }
+  ],
+  "structs": [
+    {
+      "name": "StreamInput",
+      "doc": "Parameters for one stream in a [`StreamingPayments::create_streams`] call.",
+      "fields": [
+        {
+          "name": "recipient",
+          "type": "address",
+          "doc": ""
+        },
+        {
+          "name": "token",
+          "type": "address",
+          "doc": ""
+        },
+        {
+          "name": "deposit_amount",
+          "type": "i128",
+          "doc": ""
+        },
+        {
+          "name": "start_time",
+          "type": "u64",
+          "doc": ""
+        },
+        {
+          "name": "end_time",
+          "type": "u64",
+          "doc": ""
+        },
+        {
+          "name": "cancelable",
+          "type": "bool",
+          "doc": ""
+        }
+      ]
+    },
+    {
+      "name": "PendingOwnership",
+      "doc": "A pending two-step ownership proposal for one stream.\n\nProposals live under their own storage key ([`DataKey::PendingOwnership`])\nrather than inside [`Stream`], so accepting or cancelling one leaves the\nstream's accounting fields untouched and the dedicated key can be given its\nown TTL treatment.",
+      "fields": [
+        {
+          "name": "stream_id",
+          "type": "u64",
+          "doc": ""
+        },
+        {
+          "name": "proposed_by",
+          "type": "address",
+          "doc": "The current role holder that created the proposal (and the only address\nallowed to cancel it)."
+        },
+        {
+          "name": "new_owner",
+          "type": "address",
+          "doc": "The address that must accept the role before it takes effect."
+        },
+        {
+          "name": "role",
+          "type": "OwnershipRole",
+          "doc": ""
+        },
+        {
+          "name": "expires_at",
+          "type": "u64",
+          "doc": "Ledger timestamp at or after which the proposal is stale."
+        }
+      ]
+    },
+    {
+      "name": "Stream",
+      "doc": "Full state of a payment stream.",
+      "fields": [
+        {
+          "name": "id",
+          "type": "u64",
+          "doc": ""
+        },
+        {
+          "name": "sender",
+          "type": "address",
+          "doc": ""
+        },
+        {
+          "name": "recipient",
+          "type": "address",
+          "doc": ""
+        },
+        {
+          "name": "token",
+          "type": "address",
+          "doc": ""
+        },
+        {
+          "name": "deposit",
+          "type": "i128",
+          "doc": "Total amount funded into the stream (original deposit + top-ups)."
+        },
+        {
+          "name": "withdrawn",
+          "type": "i128",
+          "doc": "Total amount paid to the recipient so far (withdrawals + cancel payout)."
+        },
+        {
+          "name": "start_time",
+          "type": "u64",
+          "doc": ""
+        },
+        {
+          "name": "end_time",
+          "type": "u64",
+          "doc": ""
+        },
+        {
+          "name": "cancelable",
+          "type": "bool",
+          "doc": "If true, the recipient may also cancel and reclaim their accrued balance."
+        },
+        {
+          "name": "status",
+          "type": "StreamStatus",
+          "doc": ""
+        },
+        {
+          "name": "use_oracle",
+          "type": "bool",
+          "doc": "If true, settles against external oracle time feed instead of ledger time."
+        }
+      ]
+    },
+    {
+      "name": "BatchEntry",
+      "doc": "Parameters for creating a single stream within a batch creation call.",
+      "fields": [
+        {
+          "name": "sender",
+          "type": "address",
+          "doc": ""
+        },
+        {
+          "name": "recipient",
+          "type": "address",
+          "doc": ""
+        },
+        {
+          "name": "token",
+          "type": "address",
+          "doc": ""
+        },
+        {
+          "name": "deposit",
+          "type": "i128",
+          "doc": ""
+        },
+        {
+          "name": "start_time",
+          "type": "u64",
+          "doc": ""
+        },
+        {
+          "name": "end_time",
+          "type": "u64",
+          "doc": ""
+        },
+        {
+          "name": "cancelable",
+          "type": "bool",
+          "doc": ""
+        }
+      ]
+    },
+    {
+      "name": "PendingUpgrade",
+      "doc": "Proposed contract upgrade pending timelock expiration.",
+      "fields": [
+        {
+          "name": "new_wasm_hash",
+          "type": "bytes32",
+          "doc": ""
+        },
+        {
+          "name": "unlock_time",
+          "type": "u64",
+          "doc": ""
+        }
+      ]
+    },
+    {
+      "name": "MigrationStatus",
+      "doc": "Progress report for on-chain storage migration.",
+      "fields": [
+        {
+          "name": "current_version",
+          "type": "u32",
+          "doc": ""
+        },
+        {
+          "name": "target_version",
+          "type": "u32",
+          "doc": ""
+        },
+        {
+          "name": "cursor",
+          "type": "u64",
+          "doc": ""
+        },
+        {
+          "name": "total_streams",
+          "type": "u64",
+          "doc": ""
+        },
+        {
+          "name": "is_complete",
+          "type": "bool",
+          "doc": ""
+        }
+      ]
+    },
+    {
+      "name": "ScheduledIntent",
+      "doc": "A sender-authorized, keeper-executable intent to create one or more streams.\n\n`deposit` and `fee_budget` are *per occurrence*: the sender escrows\n`(deposit + fee_budget) * occurrences_total` at scheduling time. Each\nexecution creates one stream and pays the keeper one `fee_budget`.",
+      "fields": [
+        {
+          "name": "id",
+          "type": "u64",
+          "doc": ""
+        },
+        {
+          "name": "sender",
+          "type": "address",
+          "doc": ""
+        },
+        {
+          "name": "recipient",
+          "type": "address",
+          "doc": ""
+        },
+        {
+          "name": "token",
+          "type": "address",
+          "doc": ""
+        },
+        {
+          "name": "deposit",
+          "type": "i128",
+          "doc": "Deposit escrowed for *each* occurrence."
+        },
+        {
+          "name": "start_time",
+          "type": "u64",
+          "doc": "Scheduled start of the first occurrence."
+        },
+        {
+          "name": "end_time",
+          "type": "u64",
+          "doc": "Scheduled end of the first occurrence (`end_time > start_time`)."
+        },
+        {
+          "name": "cancelable",
+          "type": "bool",
+          "doc": "Whether created streams may be cancelled by their recipient."
+        },
+        {
+          "name": "interval",
+          "type": "u64",
+          "doc": "Seconds between occurrence starts; `0` for a one-shot intent."
+        },
+        {
+          "name": "occurrences_total",
+          "type": "u32",
+          "doc": "Total occurrences this intent will ever create (`>= 1`)."
+        },
+        {
+          "name": "occurrences_remaining",
+          "type": "u32",
+          "doc": "Occurrences not yet materialized."
+        },
+        {
+          "name": "fee_budget",
+          "type": "i128",
+          "doc": "Keeper fee escrowed for *each* occurrence (`>= 0`)."
+        },
+        {
+          "name": "execute_after",
+          "type": "u64",
+          "doc": "Earliest time the first occurrence may be executed."
+        },
+        {
+          "name": "expires_at",
+          "type": "u64",
+          "doc": "After this time no occurrence may be executed."
+        },
+        {
+          "name": "params_hash",
+          "type": "bytes32",
+          "doc": "SHA-256 commitment over every immutable scheduling parameter."
+        },
+        {
+          "name": "status",
+          "type": "IntentStatus",
+          "doc": ""
+        }
+      ]
+    },
+    {
+      "name": "SponsorConfig",
+      "doc": "A sponsor's budget policy. The sponsor address is the map key, so it is not\nrepeated here.",
+      "fields": [
+        {
+          "name": "token",
+          "type": "address",
+          "doc": "The single token this sponsor will fund claims against. A claim whose\nstream uses any other token is rejected: caps are per-token, otherwise a\nsponsor capping cheap tokens could be drained on expensive ones."
+        },
+        {
+          "name": "per_period_limit",
+          "type": "i128",
+          "doc": "Maximum total payout the sponsor will absorb per `window_seconds`."
+        },
+        {
+          "name": "per_beneficiary_limit",
+          "type": "i128",
+          "doc": "Maximum payout to a single beneficiary per `window_seconds`."
+        },
+        {
+          "name": "window_seconds",
+          "type": "u64",
+          "doc": "Budget period length in seconds. Spend counters reset when the ledger\ntimestamp crosses `period_start + window_seconds`."
+        },
+        {
+          "name": "active",
+          "type": "bool",
+          "doc": "When false, all claims against this sponsor are rejected. Lets a sponsor\nstop the bleeding without deleting (or losing) its budget state."
+        }
+      ]
+    },
+    {
+      "name": "PeriodSpend",
+      "doc": "Spend accumulated within one budget window. Reused for both the\nsponsor-global and the per-beneficiary counters.",
+      "fields": [
+        {
+          "name": "period_start",
+          "type": "u64",
+          "doc": "Ledger timestamp at which the current window began."
+        },
+        {
+          "name": "spend",
+          "type": "i128",
+          "doc": "Total payout absorbed in the current window."
+        }
+      ]
+    },
+    {
+      "name": "TreasuryStatus",
+      "doc": "One call snapshot of the treasury state for a token: governance, current\nfee configuration, and the fee ledger totals that verifiers reconcile\nagainst events and per-stream fees.",
+      "fields": [
+        {
+          "name": "token",
+          "type": "address",
+          "doc": "The token this accounting belongs to."
+        },
+        {
+          "name": "governor",
+          "type": "address",
+          "doc": "Current treasury governor."
+        },
+        {
+          "name": "pending_governor",
+          "type": {
+            "option": "address"
+          },
+          "doc": "Pending governor nominee, if a rotation is awaiting acceptance."
+        },
+        {
+          "name": "fee_bps",
+          "type": "u32",
+          "doc": "Currently configured fee rate in basis points (0 = fees disabled)."
+        },
+        {
+          "name": "max_fee_bps",
+          "type": "u32",
+          "doc": "The protocol cap on `fee_bps` (published so clients need no constant)."
+        },
+        {
+          "name": "charged_total",
+          "type": "i128",
+          "doc": "Total fees ever charged for this token (Σ `FeeCharged` events)."
+        },
+        {
+          "name": "withdrawn_total",
+          "type": "i128",
+          "doc": "Total fees ever withdrawn for this token (Σ `FeeWithdrawn` events)."
+        },
+        {
+          "name": "collectible",
+          "type": "i128",
+          "doc": "Fees currently held: `charged_total - withdrawn_total`."
+        }
+      ]
+    },
+    {
+      "name": "FeeScan",
+      "doc": "Result of one bounded verification scan over the stream-id space\n(see [`crate::StreamingPayments::verify_treasury`]).",
+      "fields": [
+        {
+          "name": "token",
+          "type": "address",
+          "doc": "Token whose fees were scanned."
+        },
+        {
+          "name": "start_id",
+          "type": "u64",
+          "doc": "First stream id of the scan window."
+        },
+        {
+          "name": "scanned_count",
+          "type": "u32",
+          "doc": "Number of stream ids actually examined (window may be shorter than\nrequested near the end of the id space)."
+        },
+        {
+          "name": "fees_in_range",
+          "type": "i128",
+          "doc": "Sum of per-stream stored fees within the window."
+        },
+        {
+          "name": "next_start",
+          "type": "u64",
+          "doc": "Where the next scan window starts (scan is finished when\n`done` is true)."
+        },
+        {
+          "name": "done",
+          "type": "bool",
+          "doc": "True when the window reached the end of the id space — paging from\nid 1 until `done` visits every stream exactly once."
+        }
+      ]
+    },
+    {
+      "name": "StreamPolicy",
+      "doc": "Governance-managed policy floors and ceilings for streams.",
+      "fields": [
+        {
+          "name": "min_rate",
+          "type": "i128",
+          "doc": ""
+        },
+        {
+          "name": "max_rate",
+          "type": "i128",
+          "doc": ""
+        },
+        {
+          "name": "min_duration",
+          "type": "u64",
+          "doc": ""
+        },
+        {
+          "name": "max_duration",
+          "type": "u64",
+          "doc": ""
+        },
+        {
+          "name": "min_deposit",
+          "type": "i128",
+          "doc": ""
+        }
+      ]
+    },
+    {
+      "name": "QueuedAssetChange",
+      "doc": "Queued policy change for an asset awaiting timelock expiry.",
+      "fields": [
+        {
+          "name": "allowed",
+          "type": "bool",
+          "doc": "Desired allowlist state (true = allowed, false = removed)."
+        },
+        {
+          "name": "queued_at",
+          "type": "u64",
+          "doc": "Timestamp when the change was queued."
+        },
+        {
+          "name": "executable_after",
+          "type": "u64",
+          "doc": "Ledger timestamp at or after which the change can be executed."
+        }
+      ]
+    },
+    {
+      "name": "OracleConfig",
+      "doc": "Oracle configuration stored in instance storage.",
+      "fields": [
+        {
+          "name": "publishers",
+          "type": {
+            "vec": "address"
+          },
+          "doc": "Authorized oracle publishers."
+        },
+        {
+          "name": "threshold",
+          "type": "u32",
+          "doc": "Minimum number of fresh publisher reports required for quorum."
+        },
+        {
+          "name": "max_stale_seconds",
+          "type": "u64",
+          "doc": "Maximum staleness in seconds before a report is considered stale."
+        }
+      ]
+    },
+    {
+      "name": "OracleReport",
+      "doc": "An individual report from an authorized publisher.",
+      "fields": [
+        {
+          "name": "reported_time",
+          "type": "u64",
+          "doc": "The external reference timestamp."
+        },
+        {
+          "name": "ledger_time",
+          "type": "u64",
+          "doc": "Ledger timestamp when the report was recorded on-chain."
+        }
+      ]
+    },
+    {
+      "name": "ResolvedTime",
+      "doc": "Result of resolving reference time for a stream.",
+      "fields": [
+        {
+          "name": "timestamp",
+          "type": "u64",
+          "doc": "The resolved reference timestamp."
+        },
+        {
+          "name": "is_oracle",
+          "type": "bool",
+          "doc": "Whether the timestamp came from oracle aggregation (`true`) or ledger fallback (`false`)."
+        }
+      ]
+    }
+  ],
+  "enums": [
+    {
+      "name": "OwnershipRole",
+      "doc": "The role being handed over by a two-step ownership transfer.",
+      "cases": [
+        {
+          "name": "Sender",
+          "value": 0,
+          "doc": "The payer: may top up and cancel, and receives cancellation refunds."
+        },
+        {
+          "name": "Recipient",
+          "value": 1,
+          "doc": "The claimant: may withdraw accrued funds."
+        }
+      ]
+    },
+    {
+      "name": "StreamStatus",
+      "doc": "Lifecycle state of a stream.",
+      "cases": [
+        {
+          "name": "Active",
+          "value": 0,
+          "doc": "Running; funds accrue and can be withdrawn or topped up."
+        },
+        {
+          "name": "Cancelled",
+          "value": 1,
+          "doc": "Cancelled; remaining funds were split at cancellation. Terminal."
+        },
+        {
+          "name": "Depleted",
+          "value": 2,
+          "doc": "Fully streamed and fully withdrawn. Terminal."
+        }
+      ]
+    },
+    {
+      "name": "IntentStatus",
+      "doc": "Lifecycle state of a scheduled intent.",
+      "cases": [
+        {
+          "name": "Pending",
+          "value": 0,
+          "doc": "Authorized and (partially) executable; some occurrences remain."
+        },
+        {
+          "name": "Executed",
+          "value": 1,
+          "doc": "Every occurrence has been materialized into a stream. Terminal."
+        },
+        {
+          "name": "Cancelled",
+          "value": 2,
+          "doc": "Cancelled by the sender before the execution window opened. Terminal."
+        },
+        {
+          "name": "Expired",
+          "value": 3,
+          "doc": "Passed `expires_at` with occurrences outstanding; escrow refunded.\nTerminal."
+        }
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "StreamCreated",
+      "topic": "stream_created",
+      "doc": "Emitted when a new stream is created and its deposit pulled in.",
+      "topicFields": [
+        {
+          "name": "stream_id",
+          "type": "u64",
+          "doc": ""
+        }
+      ],
+      "dataFields": [
+        {
+          "name": "sender",
+          "type": "address",
+          "doc": ""
+        },
+        {
+          "name": "recipient",
+          "type": "address",
+          "doc": ""
+        },
+        {
+          "name": "token",
+          "type": "address",
+          "doc": ""
+        },
+        {
+          "name": "deposit",
+          "type": "i128",
+          "doc": ""
+        },
+        {
+          "name": "start_time",
+          "type": "u64",
+          "doc": ""
+        },
+        {
+          "name": "end_time",
+          "type": "u64",
+          "doc": ""
+        },
+        {
+          "name": "cancelable",
+          "type": "bool",
+          "doc": ""
+        }
+      ]
+    },
+    {
+      "name": "StreamsCreated",
+      "topic": "streams_created",
+      "doc": "Emitted once after an atomic batch creates its streams.",
+      "topicFields": [
+        {
+          "name": "sender",
+          "type": "address",
+          "doc": ""
+        }
+      ],
+      "dataFields": [
+        {
+          "name": "stream_ids",
+          "type": {
+            "vec": "u64"
+          },
+          "doc": ""
+        }
+      ]
+    },
+    {
+      "name": "Withdrawn",
+      "topic": "withdrawn",
+      "doc": "Emitted when the recipient withdraws accrued funds.",
+      "topicFields": [
+        {
+          "name": "stream_id",
+          "type": "u64",
+          "doc": ""
+        }
+      ],
+      "dataFields": [
+        {
+          "name": "recipient",
+          "type": "address",
+          "doc": ""
+        },
+        {
+          "name": "amount",
+          "type": "i128",
+          "doc": ""
+        },
+        {
+          "name": "withdrawn_total",
+          "type": "i128",
+          "doc": "Total withdrawn from the stream after this withdrawal."
+        }
+      ]
+    },
+    {
+      "name": "StreamCancelled",
+      "topic": "stream_cancelled",
+      "doc": "Emitted when a stream is cancelled. The recipient's accrued balance and\nthe sender's refund are both paid atomically in the same transaction.",
+      "topicFields": [
+        {
+          "name": "stream_id",
+          "type": "u64",
+          "doc": ""
+        }
+      ],
+      "dataFields": [
+        {
+          "name": "cancelled_by",
+          "type": "address",
+          "doc": ""
+        },
+        {
+          "name": "recipient_amount",
+          "type": "i128",
+          "doc": "Amount paid out to the recipient at cancellation."
+        },
+        {
+          "name": "sender_amount",
+          "type": "i128",
+          "doc": "Amount refunded to the sender at cancellation."
+        }
+      ]
+    },
+    {
+      "name": "StreamToppedUp",
+      "topic": "stream_topped_up",
+      "doc": "Emitted when the sender adds funds to an existing stream.",
+      "topicFields": [
+        {
+          "name": "stream_id",
+          "type": "u64",
+          "doc": ""
+        }
+      ],
+      "dataFields": [
+        {
+          "name": "sender",
+          "type": "address",
+          "doc": ""
+        },
+        {
+          "name": "amount",
+          "type": "i128",
+          "doc": ""
+        },
+        {
+          "name": "new_deposit",
+          "type": "i128",
+          "doc": "Stream deposit after the top-up."
+        }
+      ]
+    },
+    {
+      "name": "StreamScheduled",
+      "topic": "stream_scheduled",
+      "doc": "Emitted when a sender pre-authorizes a future (optionally recurring)\nstream creation and escrows the deposit plus keeper fee budget.",
+      "topicFields": [
+        {
+          "name": "intent_id",
+          "type": "u64",
+          "doc": ""
+        }
+      ],
+      "dataFields": [
+        {
+          "name": "sender",
+          "type": "address",
+          "doc": ""
+        },
+        {
+          "name": "recipient",
+          "type": "address",
+          "doc": ""
+        },
+        {
+          "name": "token",
+          "type": "address",
+          "doc": ""
+        },
+        {
+          "name": "deposit",
+          "type": "i128",
+          "doc": "Deposit escrowed for *each* occurrence."
+        },
+        {
+          "name": "start_time",
+          "type": "u64",
+          "doc": "Scheduled start of the first occurrence (later occurrences are shifted\nby `interval`)."
+        },
+        {
+          "name": "end_time",
+          "type": "u64",
+          "doc": "Scheduled end of the first occurrence."
+        },
+        {
+          "name": "cancelable",
+          "type": "bool",
+          "doc": ""
+        },
+        {
+          "name": "interval",
+          "type": "u64",
+          "doc": "Seconds between occurrence starts; `0` for a one-shot intent."
+        },
+        {
+          "name": "occurrences",
+          "type": "u32",
+          "doc": "Total number of streams this intent will create."
+        },
+        {
+          "name": "fee_budget",
+          "type": "i128",
+          "doc": "Keeper fee escrowed for *each* occurrence."
+        },
+        {
+          "name": "execute_after",
+          "type": "u64",
+          "doc": "Earliest time the first occurrence may be executed."
+        },
+        {
+          "name": "expires_at",
+          "type": "u64",
+          "doc": "After this time no occurrence may be executed; the escrow is reclaimable."
+        }
+      ]
+    },
+    {
+      "name": "ScheduledStreamExecuted",
+      "topic": "scheduled_stream_executed",
+      "doc": "Emitted when a keeper executes one occurrence of a scheduled intent,\ncreating the stream and paying itself the escrowed per-occurrence fee.",
+      "topicFields": [
+        {
+          "name": "intent_id",
+          "type": "u64",
+          "doc": ""
+        }
+      ],
+      "dataFields": [
+        {
+          "name": "keeper",
+          "type": "address",
+          "doc": ""
+        },
+        {
+          "name": "stream_id",
+          "type": "u64",
+          "doc": "The newly created stream id."
+        },
+        {
+          "name": "occurrence_index",
+          "type": "u32",
+          "doc": "Zero-based index of the occurrence just executed."
+        },
+        {
+          "name": "occurrences_remaining",
+          "type": "u32",
+          "doc": "Occurrences still outstanding after this execution."
+        },
+        {
+          "name": "fee_paid",
+          "type": "i128",
+          "doc": "Fee paid to the keeper for this execution."
+        }
+      ]
+    },
+    {
+      "name": "ScheduledIntentCancelled",
+      "topic": "scheduled_intent_cancelled",
+      "doc": "Emitted when a sender cancels a not-yet-executable intent and is refunded\nthe escrow for all outstanding occurrences.",
+      "topicFields": [
+        {
+          "name": "intent_id",
+          "type": "u64",
+          "doc": ""
+        }
+      ],
+      "dataFields": [
+        {
+          "name": "sender",
+          "type": "address",
+          "doc": ""
+        },
+        {
+          "name": "refund",
+          "type": "i128",
+          "doc": "Total refunded (deposit + fee budget for every outstanding occurrence)."
+        }
+      ]
+    },
+    {
+      "name": "ScheduledIntentExpired",
+      "topic": "scheduled_intent_expired",
+      "doc": "Emitted when an intent passed `expires_at` with occurrences outstanding and\nits escrow was returned to the sender.",
+      "topicFields": [
+        {
+          "name": "intent_id",
+          "type": "u64",
+          "doc": ""
+        }
+      ],
+      "dataFields": [
+        {
+          "name": "sender",
+          "type": "address",
+          "doc": ""
+        },
+        {
+          "name": "refund",
+          "type": "i128",
+          "doc": "Total refunded for the outstanding occurrences."
+        }
+      ]
+    },
+    {
+      "name": "FeeCharged",
+      "topic": "fee_charged",
+      "doc": "Emitted exactly once per funded stream that owes a protocol fee, in the\nsame transaction as (and immediately after) `StreamCreated`. Keyed by\n`stream_id` so fee history is auditable per stream; the stream's stored\nfee (`stream_fee` read) and the token's `treasury_status` totals must\nalways reconcile with the sum of these events — that reconciliation is\nthe treasury invariant, checkable by anyone via `verify_treasury` and\n`scripts/verify-fees.ts`.",
+      "topicFields": [
+        {
+          "name": "stream_id",
+          "type": "u64",
+          "doc": ""
+        }
+      ],
+      "dataFields": [
+        {
+          "name": "token",
+          "type": "address",
+          "doc": ""
+        },
+        {
+          "name": "payer",
+          "type": "address",
+          "doc": "The sender who paid the fee on top of the deposit."
+        },
+        {
+          "name": "amount",
+          "type": "i128",
+          "doc": "Fee amount in smallest token units (deposit * fee_bps / 10_000, floored)."
+        },
+        {
+          "name": "fee_bps",
+          "type": "u32",
+          "doc": "The fee rate in basis points that produced this amount."
+        }
+      ]
+    },
+    {
+      "name": "FeeWithdrawn",
+      "topic": "fee_withdrawn",
+      "doc": "Emitted when the treasury governor withdraws accumulated protocol fees for\none token. Keyed by `token` (treasury accounting is per token);\n`withdrawn_total` carries the cumulative withdrawn amount so event\nconsumers can reconcile against `treasury_status` without reading state.",
+      "topicFields": [
+        {
+          "name": "token",
+          "type": "address",
+          "doc": ""
+        }
+      ],
+      "dataFields": [
+        {
+          "name": "governor",
+          "type": "address",
+          "doc": "The governor who authorized the withdrawal."
+        },
+        {
+          "name": "recipient",
+          "type": "address",
+          "doc": "Where the withdrawn fees were sent."
+        },
+        {
+          "name": "amount",
+          "type": "i128",
+          "doc": ""
+        },
+        {
+          "name": "withdrawn_total",
+          "type": "i128",
+          "doc": "Total fees withdrawn for this token after this withdrawal."
+        }
+      ]
+    },
+    {
+      "name": "SponsorRegistered",
+      "topic": "sponsor_registered",
+      "doc": "Emitted when a sponsor registers (or reconfigures) a gas-sponsorship\nbudget. Keyed by the sponsor address; the `registered` symbol lets indexers\nseparate budget setup from sponsored claims.",
+      "topicFields": [
+        {
+          "name": "sponsor",
+          "type": "address",
+          "doc": ""
+        },
+        {
+          "name": "kind",
+          "type": "symbol",
+          "doc": ""
+        }
+      ],
+      "dataFields": [
+        {
+          "name": "token",
+          "type": "address",
+          "doc": ""
+        },
+        {
+          "name": "per_period_limit",
+          "type": "i128",
+          "doc": ""
+        },
+        {
+          "name": "per_beneficiary_limit",
+          "type": "i128",
+          "doc": ""
+        },
+        {
+          "name": "window_seconds",
+          "type": "u64",
+          "doc": ""
+        }
+      ]
+    },
+    {
+      "name": "SponsorActiveSet",
+      "topic": "sponsor_active_set",
+      "doc": "Emitted when a sponsor pauses or resumes its budget.",
+      "topicFields": [
+        {
+          "name": "sponsor",
+          "type": "address",
+          "doc": ""
+        },
+        {
+          "name": "kind",
+          "type": "symbol",
+          "doc": ""
+        }
+      ],
+      "dataFields": [
+        {
+          "name": "active",
+          "type": "bool",
+          "doc": ""
+        }
+      ]
+    },
+    {
+      "name": "BeneficiaryEnrolled",
+      "topic": "beneficiary_enrolled",
+      "doc": "Emitted when a beneficiary binds an ed25519 consent key, and again whenever\nthey rotate it. Keyed by the beneficiary address.",
+      "topicFields": [
+        {
+          "name": "beneficiary",
+          "type": "address",
+          "doc": ""
+        },
+        {
+          "name": "kind",
+          "type": "symbol",
+          "doc": ""
+        }
+      ],
+      "dataFields": [
+        {
+          "name": "public_key",
+          "type": "bytes32",
+          "doc": ""
+        }
+      ]
+    },
+    {
+      "name": "OperatorKeyRotated",
+      "topic": "operator_key_rotated",
+      "doc": "Emitted when a sponsor rotates its authorized operator (relayer) key. The\nprevious operator key stops validating relay signatures immediately.",
+      "topicFields": [
+        {
+          "name": "sponsor",
+          "type": "address",
+          "doc": ""
+        },
+        {
+          "name": "kind",
+          "type": "symbol",
+          "doc": ""
+        }
+      ],
+      "dataFields": [
+        {
+          "name": "new_operator_key",
+          "type": "bytes32",
+          "doc": ""
+        }
+      ]
+    },
+    {
+      "name": "SponsorClaim",
+      "topic": "sponsor_claim",
+      "doc": "Emitted when a claim is sponsored and paid out: the operator relayed the\nbeneficiary's withdrawal and the sponsor's budget absorbed the gas. The\npayout still flows from the stream, exactly as in an unsponsored withdraw.",
+      "topicFields": [
+        {
+          "name": "sponsor",
+          "type": "address",
+          "doc": ""
+        },
+        {
+          "name": "kind",
+          "type": "symbol",
+          "doc": ""
+        },
+        {
+          "name": "stream_id",
+          "type": "u64",
+          "doc": ""
+        }
+      ],
+      "dataFields": [
+        {
+          "name": "beneficiary",
+          "type": "address",
+          "doc": ""
+        },
+        {
+          "name": "amount",
+          "type": "i128",
+          "doc": ""
+        },
+        {
+          "name": "nonce",
+          "type": "u64",
+          "doc": ""
+        }
+      ]
+    },
+    {
+      "name": "PolicyInitialized",
+      "topic": "policy_initialized",
+      "doc": "Emitted when the policy module is initialized with its initial admin.",
+      "topicFields": [],
+      "dataFields": [
+        {
+          "name": "admin",
+          "type": "address",
+          "doc": ""
+        }
+      ]
+    },
+    {
+      "name": "PolicyAssetQueued",
+      "topic": "policy_asset_queued",
+      "doc": "Emitted when an asset allowlist mutation is proposed and queued under timelock.",
+      "topicFields": [
+        {
+          "name": "asset",
+          "type": "address",
+          "doc": ""
+        }
+      ],
+      "dataFields": [
+        {
+          "name": "allowed",
+          "type": "bool",
+          "doc": ""
+        },
+        {
+          "name": "executable_after",
+          "type": "u64",
+          "doc": ""
+        }
+      ]
+    },
+    {
+      "name": "PolicyAssetExecuted",
+      "topic": "policy_asset_executed",
+      "doc": "Emitted when a queued asset allowlist change is executed after timelock expiry.",
+      "topicFields": [
+        {
+          "name": "asset",
+          "type": "address",
+          "doc": ""
+        }
+      ],
+      "dataFields": [
+        {
+          "name": "allowed",
+          "type": "bool",
+          "doc": ""
+        }
+      ]
+    },
+    {
+      "name": "PolicyHandoffProposed",
+      "topic": "policy_handoff_proposed",
+      "doc": "Emitted when the admin proposes a new admin in step 1 of the two-step handoff.",
+      "topicFields": [
+        {
+          "name": "current_admin",
+          "type": "address",
+          "doc": ""
+        }
+      ],
+      "dataFields": [
+        {
+          "name": "proposed_admin",
+          "type": "address",
+          "doc": ""
+        }
+      ]
+    },
+    {
+      "name": "PolicyHandoffAccepted",
+      "topic": "policy_handoff_accepted",
+      "doc": "Emitted when the proposed admin accepts the handoff in step 2.",
+      "topicFields": [
+        {
+          "name": "new_admin",
+          "type": "address",
+          "doc": ""
+        }
+      ],
+      "dataFields": []
+    },
+    {
+      "name": "PolicyHandoffCancelled",
+      "topic": "policy_handoff_cancelled",
+      "doc": "Emitted when a pending admin handoff is cancelled by the current admin.",
+      "topicFields": [
+        {
+          "name": "proposed_admin",
+          "type": "address",
+          "doc": ""
+        }
+      ],
+      "dataFields": []
+    },
+    {
+      "name": "UpgradeProposed",
+      "topic": "upgrade_proposed",
+      "doc": "Emitted when a contract upgrade is proposed with a timelock delay.",
+      "topicFields": [
+        {
+          "name": "new_wasm_hash",
+          "type": "bytes32",
+          "doc": ""
+        }
+      ],
+      "dataFields": [
+        {
+          "name": "unlock_time",
+          "type": "u64",
+          "doc": ""
+        },
+        {
+          "name": "proposer",
+          "type": "address",
+          "doc": ""
+        }
+      ]
+    },
+    {
+      "name": "UpgradeCancelled",
+      "topic": "upgrade_cancelled",
+      "doc": "Emitted when a pending contract upgrade is cancelled by the governor.",
+      "topicFields": [
+        {
+          "name": "new_wasm_hash",
+          "type": "bytes32",
+          "doc": ""
+        }
+      ],
+      "dataFields": [
+        {
+          "name": "cancelled_by",
+          "type": "address",
+          "doc": ""
+        }
+      ]
+    },
+    {
+      "name": "ContractUpgraded",
+      "topic": "contract_upgraded",
+      "doc": "Emitted when a contract upgrade is executed after its timelock has elapsed.",
+      "topicFields": [
+        {
+          "name": "new_wasm_hash",
+          "type": "bytes32",
+          "doc": ""
+        }
+      ],
+      "dataFields": [
+        {
+          "name": "executed_by",
+          "type": "address",
+          "doc": ""
+        }
+      ]
+    },
+    {
+      "name": "ContractFrozenStateChanged",
+      "topic": "contract_frozen_state_changed",
+      "doc": "Emitted when the contract freeze state is toggled by the governor.",
+      "topicFields": [
+        {
+          "name": "frozen",
+          "type": "bool",
+          "doc": ""
+        }
+      ],
+      "dataFields": [
+        {
+          "name": "changed_by",
+          "type": "address",
+          "doc": ""
+        }
+      ]
+    },
+    {
+      "name": "StorageMigrated",
+      "topic": "storage_migrated",
+      "doc": "Emitted when a batch of streams is migrated to a new storage schema version.",
+      "topicFields": [
+        {
+          "name": "from_version",
+          "type": "u32",
+          "doc": ""
+        },
+        {
+          "name": "to_version",
+          "type": "u32",
+          "doc": ""
+        }
+      ],
+      "dataFields": [
+        {
+          "name": "start_id",
+          "type": "u64",
+          "doc": ""
+        },
+        {
+          "name": "end_id",
+          "type": "u64",
+          "doc": ""
+        },
+        {
+          "name": "is_complete",
+          "type": "bool",
+          "doc": ""
+        }
+      ]
+    },
+    {
+      "name": "StreamPolicySet",
+      "topic": "stream_policy_set",
+      "doc": "Emitted when a stream policy floor/ceiling configuration is updated.",
+      "topicFields": [],
+      "dataFields": [
+        {
+          "name": "token",
+          "type": {
+            "option": "address"
+          },
+          "doc": ""
+        },
+        {
+          "name": "old_policy",
+          "type": {
+            "option": "StreamPolicy"
+          },
+          "doc": ""
+        },
+        {
+          "name": "new_policy",
+          "type": "StreamPolicy",
+          "doc": ""
+        }
+      ]
+    },
+    {
+      "name": "OracleConfigUpdated",
+      "topic": "oracle_config_updated",
+      "doc": "Emitted when the oracle configuration is updated by governance.",
+      "topicFields": [],
+      "dataFields": [
+        {
+          "name": "threshold",
+          "type": "u32",
+          "doc": ""
+        },
+        {
+          "name": "max_stale_seconds",
+          "type": "u64",
+          "doc": ""
+        }
+      ]
+    },
+    {
+      "name": "OracleTimeReported",
+      "topic": "oracle_time_reported",
+      "doc": "Emitted when an authorized oracle publisher reports a reference timestamp.",
+      "topicFields": [
+        {
+          "name": "publisher",
+          "type": "address",
+          "doc": ""
+        }
+      ],
+      "dataFields": [
+        {
+          "name": "reported_time",
+          "type": "u64",
+          "doc": ""
+        },
+        {
+          "name": "ledger_time",
+          "type": "u64",
+          "doc": ""
+        }
+      ]
+    },
+    {
+      "name": "OracleStaleFallback",
+      "topic": "oracle_stale_fallback",
+      "doc": "Emitted when oracle time resolution falls back to native ledger time due to\nstale feed, insufficient reports, or unconfigured registry.",
+      "topicFields": [
+        {
+          "name": "stream_id",
+          "type": "u64",
+          "doc": ""
+        }
+      ],
+      "dataFields": [
+        {
+          "name": "ledger_time",
+          "type": "u64",
+          "doc": ""
+        }
+      ]
+    },
+    {
+      "name": "OwnershipProposed",
+      "topic": "ownership_proposed",
+      "doc": "Emitted when a current sender or recipient proposes handing their role to a\nnew address. The handoff takes effect only when the target accepts.",
+      "topicFields": [
+        {
+          "name": "stream_id",
+          "type": "u64",
+          "doc": ""
+        }
+      ],
+      "dataFields": [
+        {
+          "name": "current_owner",
+          "type": "address",
+          "doc": "The current role holder (must be the stream's sender or recipient)."
+        },
+        {
+          "name": "new_owner",
+          "type": "address",
+          "doc": "Address that must accept before the role moves."
+        },
+        {
+          "name": "role",
+          "type": "OwnershipRole",
+          "doc": ""
+        },
+        {
+          "name": "expires_at",
+          "type": "u64",
+          "doc": "Ledger timestamp at or after which the proposal is stale."
+        }
+      ]
+    },
+    {
+      "name": "OwnershipAccepted",
+      "topic": "ownership_accepted",
+      "doc": "Emitted when a proposed ownership handoff is accepted by its target. The\nstream's accounting fields (`deposit`, `withdrawn`, time window) are\nunchanged; only the role address moves.",
+      "topicFields": [
+        {
+          "name": "stream_id",
+          "type": "u64",
+          "doc": ""
+        }
+      ],
+      "dataFields": [
+        {
+          "name": "previous_owner",
+          "type": "address",
+          "doc": "The role holder before the transfer."
+        },
+        {
+          "name": "new_owner",
+          "type": "address",
+          "doc": "The new role holder (the accepting address)."
+        },
+        {
+          "name": "role",
+          "type": "OwnershipRole",
+          "doc": ""
+        }
+      ]
+    }
+  ]
+}
