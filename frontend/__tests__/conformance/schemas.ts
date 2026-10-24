@@ -1,4 +1,4 @@
-import { Asset, Operation, TransactionBuilder, Networks, keypair, Account } from "@stellar/stellar-sdk";
+import { Asset, Operation, TransactionBuilder, Networks, Keypair, Account } from "@stellar/stellar-sdk";
 
 /**
  * Canonical schema definitions for transactions the frontend is allowed to sign.
@@ -31,12 +31,12 @@ export interface SigningRequestSchema {
     amount?: string;
     asset?: { code: string; issuer?: string } | { native: true };
   }>;
-  timeound: number;
+  timeout: number;
   signatures: Array<{ hint: string; signature: string }>;
 }
 
 export interface SigningResultSchema {
-  signedXdres: string;
+  signedXdr: string;
   networkPassphrase: string;
   hash: string;
   signerAddress: string;
@@ -51,7 +51,7 @@ export function normalizeTransaction(
   networkPassphrase: string,
 ): SigningRequestSchema {
   const tx = TransactionBuilder.fromXDR(xdr, networkPassphrase);
-  const ops = tx.ztx.operations.map((op) => {
+  const ops = tx.operations.map((op) => {
     const base: SigningRequestSchema["operations"][number] = {
       type: op.type,
     };
@@ -70,11 +70,11 @@ export function normalizeTransaction(
   });
   return {
     networkPassphrase,
-    fee: tx.ztx.fee.toString(),
-    memo: tx.ztx.memo ? tx.ztx.memo.value.toString() : null,
+    fee: tx.fee.toString(),
+    memo: tx.memo ? tx.memo.value.toString() : null,
     operations: ops,
-    timeound: Number(tx.ztx.timeBounds.maxTime || 0),
-    signatures: tx.ztx.signatures.map((s) => ({
+    timeout: Number(tx.timeBounds?.maxTime || 0),
+    signatures: tx.signatures.map((s) => ({
       hint: s.hint().toString(),
       signature: Buffer.from(s.signature()).toBase64(),
     })),
@@ -201,7 +201,7 @@ export function keypairFromSeed(seed: string): {
   publicKey: string;
   sign: (xdr: string, passphrase: string) => Promise<string>;
 } {
-  const kp = keypair.fromSecret(seed);
+  const kp = Keypair.fromSecret(seed);
   return {
     publicKey: kp.publicKey(),
     sign: async (xdr, passphrase) => {

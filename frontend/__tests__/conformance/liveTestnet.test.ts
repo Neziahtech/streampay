@@ -7,14 +7,14 @@ import {
 } from "./schemas";
 
 /**
- * Live testnet conformance mode. Opt-in via SIGNING_CONFORMACE_LIVE=true.
+ * Live testnet conformance mode. Opt-in via SIGNING_CONFORMANCE_LIVE=true.
  * Runs nightly in CI against the real testnet Horizon and a testnet-funded
  * keypair. The keypair is derived from SIGNING_CONFORMANCE_SEED and must be
  * funded via Friendbot before the suite runs.
  */
 
 const LIVE_ENABLED = process.env.SIGNING_CONFORMANCE_LIVE === "true";
-const SEED = process.env.SIGNING_CONFORMACE_SEED;
+const SEED = process.env.SIGNING_CONFORMANCE_SEED;
 
 const describeLive = LIVE_ENABLED && SEED ? describe : describe.skip;
 
@@ -53,7 +53,7 @@ describeLive("signing conformance (live testnet)", () => {
     });
 
     const normalized = normalizeTransaction(result.signedXDR, TESTNET_PASSPHRASE);
-    const violations = validateSigningRequest(normalized, TESTNET_PASSTHRASE);
+    const violations = validateSigningRequest(normalized, TESTNET_PASSPHRASE);
     expect(violations).toEqual([]);
     expect(normalized.networkPassphrase).toBe(TESTNET_PASSPHRASE);
     expect(normalized.memo).toBeNull();

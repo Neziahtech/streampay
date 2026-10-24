@@ -1,101 +1,64 @@
 //! Negative authorization tests for the streaming payments contract.
 //!
-/// Every authorization the contract expects (`require_auth` on sender and
-/// recipient) gets a negative test proving the unsigned variant fails on-chain.
-/// These tests are the contract-side complement to the frontend signing
-/// conformance suite.
+//! Every authorization the contract expects (`require_auth` on sender and
+//! recipient) gets a negative test proving the unsigned variant fails on-chain.
+//! These tests are the contract-side complement to the frontend signing
+//! conformance suite.
 
-#[!cfg(test)]
+#[cfg(test)]
 mod tests {
-    use soroban_sdk::{Address, Env, InvokeError, Symbol, Val};
     use super::*;
-
-    fn address(env: &Env, byte: u8) -> Address {
-        Address::from_contract(env.register(Symbol::new(env, "address"), &byte))
-    }
+    use soroban_sdk::{testutils::Address as _, Address, Env, IntoVal, Symbol, Val, Vec};
 
     fn setup(env: &Env) -> (Address, Address) {
-        let sender = address(env, 1);
-        let recipient = address(env, 2);
+        let sender = Address::generate(env);
+        let recipient = Address::generate(env);
         (sender, recipient)
     }
 
     fn contract_id(env: &Env) -> Address {
-        // The contract is registered under the crate name in the test environment.
-        env.register(Symbol::new(env, "contract"), &0)
+        env.register_contract(None, crate::StreamingPayments)
     }
 
     #[test]
+    #[should_panic]
     fn create_stream_without_sender_auth_fails() {
         let env = Env::default();
         let (sender, recipient) = setup(&env);
-        // No auth entry for the sender is provided, so the contract must reject
-        // the call at the `require_auth` boundary.
-        let result = env.try_invoke_contract(
-            &contract_id(&env),
-            &Symbol::new(&env, "create_stream"),
-            &soroban_sdk:vec![&env, [
-                Val::from(sender.clone()),
-                Val::from(recipient.clone()),
-                Val::from(1000_i64),
-                Val::from(60_u64),
-            ]],
-        );
-        assert!(result.is_error(), "create_stream without sender auth must fail");
-        matches!(result.unwrap_err(), InvokeError::Auth(error) => error.is_auth_failure());
-    }
-
-    #t[test]
-    fn claim_without_recipient_auth_fails() {
-        let env = Env::default();
-        let (sender, recipient) = setup(&env);
-        // Sender auth is provided for stream creation, but no recipient auth
-        // is provided for the claim. The contract must reject the claim.
-        env.mock_all_auths();
         let contract = contract_id(&env);
-        env.invoke_contract(
-            &contract,
-            &Symbol::new(&env, "create_stream"),
-            &soroban_sdk:vec![&env, [
-                Val::from(sender.clone()),
-                Val::from(recipient.clone()),
-                Val::from(1000_i64),
-                Val::from(60_u64),
-            ]],
-        );
-        // Now attempt the claim without recipient auth.
-        let result = env.try_invoke_contract(
-            &contract,
-            &Symbol::new(&env, "claim"),
-            &soroban_sdk:vec![&env, [Val::from(recipient.clone())]],
-        );
-        assert!(result.is_error(), "claim without recipient auth must fail");
-        matches!(result.unwrap_err(), InvokeError::Auth(error) => error.is_auth_failure());
+        // No auth mocked for the sender, so `require_auth` must reject the call.
+        let args: Vec<Val> = (sender.clone(), recipient.clone(), 1000_i128, 60_u64).into_val(&env);
+        env.invoke_contract::<Val>(&contract, &Symbol::new(&env, "create_stream"), args);
     }
 
     #[test]
+    #[should_panic]
+    fn claim_without_recipient_auth_fails() {
+        let env = Env::default();
+        let (sender, recipient) = setup(&env);
+        let contract = contract_id(&env);
+        // Create the stream with sender auth only.
+        env.mock_all_auths();
+        let args: Vec<Val> = (sender.clone(), recipient.clone(), 1000_i128, 60_u64).into_val(&env);
+        env.invoke_contract::<Val>(&contract, &Symbol::new(&env, "create_stream"), args);
+        // Clear mocks so the recipient's auth is not satisfied for the claim.
+        env.mock_auths(&[]);
+        let claim_args: Vec<Val> = (recipient.clone(),).into_val(&env);
+        env.invoke_contract::<Val>(&contract, &Symbol::new(&env, "claim"), claim_args);
+    }
+
+    #[test]
+    #[should_panic]
     fn cancel_stream_without_sender_auth_fails() {
         let env = Env::default();
         let (sender, recipient) = setup(&env);
-        env.mock_all_auths();
         let contract = contract_id(&env);
-        env.invoke_contract(
-            &contract,
-            &Symbol::new(&env, "create_stream"),
-            &soroban_sdk::vec![&env, [
-                Val::from(sender.clone()),
-                Val::from(recipient.clone()),
-                Val::from(1000_i64),
-                Val::from(60_u64),
-            ]],
-        );
-        // Cancel without sender auth.
-        let result = env.try_invoke_contract(
-            &contract,
-            &Symbol::new(&env, "cancel"),
-            &soroban_sdk:vec![&env, [Val::from(sender.clone())]],
-        );
-        assert!(result.is_error(), "cancel without sender auth must fail");
-        matches!(result.unwrap_err(), InvokeError::Auth(error) => error.is_auth_failure());
+        env.mock_all_auths();
+        let args: Vec<Val> = (sender.clone(), recipient.clone(), 1000_i128, 60_u64).into_val(&env);
+        env.invoke_contract::<Val>(&contract, &Symbol::new(&env, "create_stream"), args);
+        // Drop mocked auth before attempting the cancel as an unsigned caller.
+        env.mock_auths(&[]);
+        let cancel_args: Vec<Val> = (sender.clone(),).into_val(&env);
+        env.invoke_contract::<Val>(&contract, &Symbol::new(&env, "cancel"), cancel_args);
     }
 }

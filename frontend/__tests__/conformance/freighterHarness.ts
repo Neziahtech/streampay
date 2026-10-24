@@ -1,1 +1,96 @@
-aW1wb3J0IHsgQXNzZXQsIFRyYW5zYWN0aW9uQnVpbGRlciwgTmV0d29ya3MsIGtleXBhaXIgfSBmcm9tICJAc3RlbGxhci9zdGVsbGFyLXNkayI7CmltcG9ydCB7IGJ1aWxkQ2xhaW1UcmFuc2FjdGlvbiwga2V5cGFpckZyb21TZWVkIH0gZnJvbSAiLi9zY2hlbWFzIjsKCi8qKgogKiBGcmVpZ2h0ZXIgQVBJIHN1cmZhY2UgdGhlIGNvbmZvcm1hbmNlIHN1aXRlIGV4ZXJjaXNlcy4KICogVGhpcyBpbnRlcmZhY2UgaXMgdGhlIGNvbnRyYWN0IHRoYXQgYm90aCB0aGUgbW9ja2VkIGhhcm5lc3MgYW5kIHRoZSBsaXZlCiAqIHRlc3RuZXQgaGFybmVzcyBpbXBsZW1lbnQuIEl0IG1hdGNoZXMgdGhlIHNoYXBlIG9mIEZyZWlnaHRlcidzIGBpbnRlcm5hbEFwaWAKICogZXhwb3NlZCB0byB0aGUgZnJvbnRlbmQuCiAqLwpleHBvcnQgaW50ZXJmYWNlIEZyZWlnaHRlckFwaSB7CiAgaXNDb25uZWN0ZWQoKTogUHJvbWlzZTx7IHB1YmxpY0tleT86IHN0cmluZyB9PjsKICBjb25uZWN0KCk6IFByb21pc2U8eyBwdWJsaWNLZXk6IHN0cmluZyB9PjsKICBzaWduVHJhbnNhY3Rpb24oeGRyOiBzdHJpbmcsIG9wdHM/OiB7IG5ldHdvcms/OiBzdHJpbmcgfSk6IFByb21pc2U8eyBzaWduZWRYRFI/OiBzdHJpbmc7IGVycm9yPzogc3RyaW5nIH0+OwogIHNpZ25CbG9iKGRhdGE6IHN0cmluZyk6IFByb21pc2U8eyBzaWduYXR1cmU6IHN0cmluZyB9PjsKfQoKZXhwb3J0IGludGVyZmFjZSBIYXJuZXNzUmVzdWx0IHsKICBzaWduZWRYRFI6IHN0cmluZzsKICBuZXR3b3JrUGFzc3BocmFzZTogc3RyaW5nOwogIHNpZ25lckFkZHJlc3M6IHN0cmluZzsKfQoKLyoqCiAqIE1vY2tlZCBGcmVpZ2h0ZXIgaGFybmVzcy4gU2lnbnMgdXNpbmcgYSBkZXRlcm1pbmlzdGljIGtleXBhaXIgZGVyaXZlZAogKiBmcm9tIGEgc2VlZCwgc28gdGVzdHMgYXJlIHJlcHJvZHVjaWJsZSBhbmQgcnVuIGluIENJIHdpdGhvdXQgbmV0d29yayBhY2Nlc3MuCiAqLwpleHBvcnQgY2xhc3MgTW9ja2VkRnJlaWdodGVyIGltcGxlbWVudHMgRnJlaWdodGVyQXBpIHsKICBwcml2YXRlIHJlYWRvbmx5IGtleXBhaXI6IHsgcHVibGljS2V5OiBzdHJpbmc7IHNpZ246ICh4ZHI6IHN0cmluZywgcGFzc3BocmFzZTogc3RyaW5nKSA9PiBQcm9taXNlPHN0cmluZz4gfTsKICBwcml2YXRlIHJlYWRvbmx5IHNlZWQ6IHN0cmluZzsKICBwcml2YXRlIGNvbm5lY3RlZCA9IGZhbHNlOwogIHB1YmxpYyByZWNvcmRlZFJlcXVlc3RzOiBBcnJheTx7IHhkcjogc3RyaW5nOyBuZXR3b3JrPzogc3RyaW5nIH0+ID0gW107CgogIGNvbnN0cnVjdG9yKHNlZWQ6IHN0cmluZykgewogICAgdGhpcy5zZWVkID0gc2VlZDsKICAgIHRoaXMua2V5cGFpciA9IGtleXBhaXJGcm9tU2VlZChzZWVkKTsKICB9CgogIGFzeW5jIGlzQ29ubmVjdGVkKCk6IFByb21pc2U8eyBwdWJsaWNLZXk/OiBzdHJpbmcgfT4gewogICAgcmV0dXJuIHRoaXMuY29ubmVjdGVkID8geyBwdWJsaWNLZXk6IHRoaXMua2V5cGFpci5wdWJsaWNLZXkgfSA6IHt9OwogIH0KCiAgYXN5bmMgY29ubmVjdCgpOiBQcm9taXNlPHsgcHVibGljS2V5OiBzdHJpbmcgfT4gewogICAgdGhpcy5jb25uZWN0ZWQgPSB0cnVlOwogICAgcmV0dXJuIHsgcHVibGljS2V5OiB0aGlzLmtleXBhaXIucHVibGljS2V5IH07CiAgfQoKICBhc3luYyBzaWduVHJhbnNhY3Rpb24oCiAgICB4ZHI6IHN0cmluZywKICAgIG9wdHM/OiB7IG5ldHdvcms/OiBzdHJpbmcgfSwKICApOiBQcm9taXNlPHsgc2lnbmVkWERS_Pogc3RyaW5nOyBlcnJvcj86IHN0cmluZyB9PiB7CiAgICB0aGlzLnJlY29yZGVkUmVxdWVzdHMucHVzaCh7IHhkcjogdGhpcy5yZWNvcmRlZFJlcXVlc3RzLmxlbmd0aCwgbmV0d29yazogb3B0cz8ubmV0d29yayB9KTsKICAgIGNvbnN0IHBhc3NwaHJhc2UgPSBvcHRzPy5uZXR3b3JrID8/IE5ldHdvcmtzLlRFU1RORVQubmV0d29ya1Bhc3NwaHJhc2U7CiAgICB0cnkgewogICAgICBjb25zdCBzaWduZWQgPSBhd2FpdCB0aGlzLmtleXBhaXIuc2lnbih4ZHIsIHBhc3NwaHJhc2UpOwogICAgICByZXR1cm4geyBzaWduZWRYRFI6IHNpZ25lZCB9OwogICAgfSBjYXRjaCAoZXJyKSB7CiAgICAgIHJldHVybiB7IGVycm9yOiAoZXJyIGFzIEVycm9yKS5tZXNzYWdlIH07CiAgICB9CiAgfQoKICBhc3luYyBzaWduQmxvYihkYXRhOiBzdHJpbmcpOiBQcm9taXNlPHsgc2lnbmF0dXJlOiBzdHJpbmcgfT4gewogICAgLy8gRnJlaWdodGVyIHNpZ25zIHRoZSByYXcgYnl0ZXMgb2YgdGhlIHByb3ZpZGVkIGRhdGEuCiAgICBjb25zdCBrcCA9IGtleXBhaXIuZnJvbVNlY3JldCh0aGlzLnNlZWQpOwogICAgY29uc3Qgc2lnID0ga3Auc2lnbihCdWZmZXIuZnJvbShkYXRhLCAidXRmLTgiKSk7CiAgICByZXR1cm4geyBzaWduYXR1cmU6IHNpZy50b1N0cmluZygpIH07CiAgfQp9CgovKioKICogQnVpbGQgYW5kIHNpZ24gYSBjbGFpbSB0cmFuc2FjdGlvbiB0aHJvdWdoIHRoZSBGcmVpZ2h0ZXIgQVBJIHN1cmZhY2UuCiAqIFRoaXMgaXMgdGhlIGZ1bmN0aW9uIHRoZSBjb25mb3JtYW5jZSBhc3NlcnRpb25zIGRyaXZlLgogKi8KZXhwb3J0IGFzeW5jIGZ1bmN0aW9uIHNpZ25DbGFpbVZpYUZyZWlnaHRlcigKICBoYXJuZXNzOiBGcmVpZ2h0ZXJBcGksCiAgcGFyYW1zOiB7CiAgICBzb3VyY2VQdWJsaWNLZXk6IHN0cmluZzsKICAgIGRlc3RpbmF0aW9uOiBzdHJpbmc7CiAgICBhbW91bnQ6IHN0cmluZzsKICAgIGFzc2V0OiBBc3NldDsKICAgIGZlZTogc3RyaW5nOwogICAgbmV0d29ya1Bhc3NwaHJhc2U6IHN0cmluZzsKICB9LAopOiBQcm9taXNlPEhhcm5lc3NSZXN1bHQ+IHsKICBjb25zdCBidWlsZGVyID0gYXdhaXQgYnVpbGRDbGFpbVRyYW5zYWN0aW9uKHBhcmFtcyk7CiAgY29uc3QgeGRyID0gYnVpbGRlci50b1hEUigpOwogIGNvbnN0IHJlc3AgPSBhd2FpdCBoYXJuZXNzLnNpZ25UcmFuc2FjdGlvbih4ZHIsIHsgbmV0d29yazogcGFyYW1zLm5ldHdvcmtQYXNzcGhyYXNlIH0pOwogIGlmIChyZXNwLmVycm9yKSB0aHJvdyBuZXcgRXJyb3IoYEZyZWlnaHRlciBzaWduaW5nIGZhaWxlZDogJHtyZXNwLmVycm9yfWApOwogIGNvbnN0IHNpZ25lZCA9IHJlc3Auc2lnbmVkWERSOwogIGlmICghc2lnbmVkKSB0aHJvdyBuZXcgRXJyb3IoIkZyZWlnaHRlciByZXR1cm5lZCBubyBzaWduZWQgdHJhbnNhY3Rpb24iKTsKICBjb25zdCB0eCA9IFRyYW5zYWN0aW9uQnVpbGRlci5mcm9tWERSKHNpZ25lZCwgcGFyYW1zLm5ldHdvcmtQYXNzcGhyYXNlKTsKICByZXR1cm4gewogICAgc2lnbmVkWERSOiBzaWduZWQsCiAgICBuZXR3b3JrUGFzc3BocmFzZTogcGFyYW1zLm5ldHdvcmtQYXNzcGhyYXNlLAogICAgc2lnbmVyQWRkcmVzczogdHguc291cmNlLAogIH07Cn0K
+import { Asset, TransactionBuilder, Networks, Keypair } from "@stellar/stellar-sdk";
+import { buildClaimTransaction, keypairFromSeed } from "./schemas";
+
+/**
+ * Freighter API surface the conformance suite exercises.
+ * This interface is the contract that both the mocked and live testnet
+ * harnesses implement. It matches the shape of Freighter's `internalApi`
+ * exposed to the frontend.
+ */
+export interface FreighterApi {
+  isConnected(): Promise<{ publicKey?: string }>;
+  connect(): Promise<{ publicKey: string }>;
+  signTransaction(xdr: string, opts?: { network?: string }): Promise<{ signedXDR?: string; error?: string }>;
+  signBlob(data: string): Promise<{ signature: string }>;
+}
+
+export interface HarnessResult {
+  signedXDR: string;
+  networkPassphrase: string;
+  signerAddress: string;
+}
+
+/**
+ * Mocked Freighter harness. Signs using a deterministic keypair derived from
+ * a seed, so tests are reproducible and run in CI without network access.
+ */
+export class MockedFreighter implements FreighterApi {
+  private readonly keypair: { publicKey: string; sign: (xdr: string, passphrase: string) => Promise<string> };
+  private readonly seed: string;
+  private connected = false;
+  public recordedRequests: Array<{ xdr: string; network?: string }> = [];
+
+  constructor(seed: string) {
+    this.seed = seed;
+    this.keypair = keypairFromSeed(seed);
+  }
+
+  async isConnected(): Promise<{ publicKey?: string }> {
+    return this.connected ? { publicKey: this.keypair.publicKey } : {};
+  }
+
+  async connect(): Promise<{ publicKey: string }> {
+    this.connected = true;
+    return { publicKey: this.keypair.publicKey };
+  }
+
+  async signTransaction(
+    xdr: string,
+    opts?: { network?: string },
+  ): Promise<{ signedXDR?: string; error?: string }> {
+    this.recordedRequests.push({ xdr, network: opts?.network });
+    const passphrase = opts?.network ?? Networks.TESTNET.networkPassphrase;
+    try {
+      const signed = await this.keypair.sign(xdr, passphrase);
+      return { signedXDR: signed };
+    } catch (err) {
+      return { error: (err as Error).message };
+    }
+  }
+
+  async signBlob(data: string): Promise<{ signature: string }> {
+    // Freighter signs the raw bytes of the provided data.
+    const kp = Keypair.fromSecret(this.seed);
+    const sig = kp.sign(Buffer.from(data, "utf-8"));
+    return { signature: sig.toString() };
+  }
+}
+
+/**
+ * Build and sign a claim transaction through the Freighter API surface.
+ * This is the function the conformance assertions drive.
+ */
+export async function signClaimViaFreighter(
+  harness: FreighterApi,
+  params: {
+    sourcePublicKey: string;
+    destination: string;
+    amount: string;
+    asset: Asset;
+    fee: string;
+    networkPassphrase: string;
+  },
+): Promise<HarnessResult> {
+  const builder = await buildClaimTransaction(params);
+  const xdr = builder.toXDR();
+  const resp = await harness.signTransaction(xdr, { network: params.networkPassphrase });
+  if (resp.error) throw new Error(`Freighter signing failed: ${resp.error}`);
+  const signed = resp.signedXDR;
+  if (!signed) throw new Error("Freighter returned no signed transaction");
+  const tx = TransactionBuilder.fromXDR(signed, params.networkPassphrase);
+  return {
+    signedXDR: signed,
+    networkPassphrase: params.networkPassphrase,
+    signerAddress: tx.source,
+  };
+}

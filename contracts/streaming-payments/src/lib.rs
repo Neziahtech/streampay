@@ -59,6 +59,7 @@ extern crate std;
 
 #[cfg(test)]
 mod cei_trace;
+#[cfg(test)]
 mod client_parity_test;
 #[cfg(test)]
 mod differential_harness;
@@ -269,7 +270,6 @@ impl StreamingPayments {
     ///   start streaming immediately).
     /// * `end_time` must be strictly after `start_time` (zero-duration streams
     ///   are rejected) and at most `MAX_DURATION_SECONDS` long.
-    #[allow(clippy::too_many_arguments)] // 8-arg surface is the intended client API
     /// * `cancelable` controls whether the recipient may also call
     ///   `cancel_stream` to reclaim their accrued balance.
     ///
@@ -278,6 +278,7 @@ impl StreamingPayments {
     /// The deposit pull is mapped to [`StreamError::DepositTransferFailed`]
     /// (missing balance/allowance, or an asset that refuses the transfer);
     /// nothing is persisted when it fails, so no stream id is consumed.
+    #[allow(clippy::too_many_arguments)] // 8-arg surface is the intended client API
     pub fn create_stream(
         env: Env,
         sender: Address,
