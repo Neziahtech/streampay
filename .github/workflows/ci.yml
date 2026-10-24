@@ -17,9 +17,29 @@ jobs:
     name: Contract — test / fmt / clippy / wasm
     runs-on: ubuntu-latest
     env:
-      # Single source of truth for the Wasm size budget (KB, issue #35).
-      # Raise deliberately in a PR with justification if the contract grows.
-      WASM_SIZE_BUDGET_KB: 120
+      # Single source of truth for the Wasm size budget (KB). The rule is:
+      # the smallest whole KB that the current public interface fits, so the
+      # ratchet stays as tight as the interface allows. 90 KB = this build's
+      # 91,534 B + 2,606 B of headroom. History: issue #58's techniques took the
+      # contract from 91,004 B to 60,386 B, upstream's ownership-transfer +
+      # vault surface added 3,757 B (gate: 63 KB), and the governance timelock
+      # that has now merged adds 14,123 B more — 10,005 B of `code`, 3,072 B of
+      # structural spec entries, 748 B of `data` topics and 235 B of exports, on
+      # top of the ungated `///` docs its new interface items carried (6,416 B,
+      # recovered by re-applying Technique 1; docs/WASM_SIZE.md). The recipient
+      # dispute flow (#55) then adds 7,004 B on top of that 77 KB gate: 5
+      # entrypoints, 3 events, 2 types, 3 error codes and one persistent storage
+      # key, no new dependencies, measured with the pinned stellar-cli 28.1.0.
+      # Its interface items merged without Technique 1, so the same gating that
+      # governance needed here recovers 5,048 B (90,318 B before, 85,270 B
+      # after). Issue #54's mid-stream rate renegotiation adds 6,347 B on top of
+      # that — 4,162 B of `code` (the propose/accept/cancel legs and the piecewise
+      # accrual helpers), 1,512 B of structural `contractspecv0` entries (5
+      # entrypoints, 2 events, 2 stored structs, 4 error codes), 537 B of `data`
+      # event symbols, 107 B of exports and 29 B of meta. Merged together the two
+      # feature branches produce 91,534 B (89.4 KB → 90 KB gate). The next
+      # entrypoint addition should trigger the split discussion, not a bump.
+      WASM_SIZE_BUDGET_KB: 90
     steps:
       - uses: actions/checkout@v7
 
@@ -122,6 +142,18 @@ jobs:
         working-directory: contracts/streaming-payments
         run: stellar contract build
 
+      # Issue #58's Technique 1 invariant, as a gate rather than a one-off edit:
+      # no `#[contracttype]`/`#[contracterror]`/`#[contractevent]` item and no
+      # `pub fn` in `#[contractimpl]` may carry a plain `///` doc comment,
+      # because `soroban-sdk-macros` embeds those strings into `contractspecv0`
+      # (~6.4 KB of the binary when the governance interface merged with plain
+      # docs and silently broke this rule). Host documentation is unaffected —
+      # the same text lives in a `cfg_attr(not(target_family = "wasm"), doc)`
+      # attribute. Scoped to streampay deliberately: the other crates are not
+      # covered by the size budget below.
+      - name: Interface doc strings stay out of the Wasm spec
+        run: python3 scripts/gate_interface_docs.py --check contracts/streaming-payments/src/*.rs
+
       - name: Wasm size budget check
         run: |
           wasm=target/wasm32v1-none/release/streampay_contract.wasm
@@ -148,6 +180,56 @@ jobs:
           name: streampay-contract-wasm-${{ github.run_id }}
           path: target/wasm32v1-none/release/streampay_contract.wasm
           if-no-files-found: error
+
+  event-registry:
+    name: Event registry — schema / compatibility / codegen gates
+    runs-on: ubuntu-latest
+    steps:
+      # fetch-depth 0: the compatibility checker diffs the registry against the
+      # PR base commit, which must be present in the checkout.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      # The registry (`schemas/events/`), the per-event JSON Schemas, the event
+      # catalogue and the TypeScript types the indexer and frontend import are
+      # all generated from the `#[contractevent]` structs. This is the same
+      # script contributors run locally (`npm run generated:events` /
+      # `generated:check`): regenerate in place, then fail on any drift —
+      # including artifacts a new event just created but nobody committed.
+      - name: Event registry artifacts are up to date
+        run: bash scripts/check_generated.sh events
+
+      # Additive-only gate (issue #213): removals or type changes against the
+      # PR base fail the build; additions must be recorded in
+      # schemas/events/CHANGELOG.md. The in-crate pin test and the publish-site
+      # gate (both part of `cargo test`) prove the registry describes the code;
+      # this gate owns the wire-compatibility verdict for consumers.
+      - name: Event compatibility check against the base
+        if: github.event_name == 'pull_request'
+        run: node scripts/event_compat_check.mjs --base "${{ github.event.pull_request.base.sha }}"
+
+      # Unit tests for the gate itself, including the seeded break demo
+      # (renaming an event field turns the checker red with a clear diff).
+      - name: Compatibility checker tests
+        run: node --test scripts/event_compat_check.test.mjs
 
   frontend:
     name: Frontend — lint / typecheck / tests / build / audit
@@ -207,6 +289,18 @@ jobs:
         run: node --experimental-strip-types --test lib/network.test.ts
       - name: Client parity smoke tests
         run: npm run test:parity
+
+      # -----------------------------------------------------------------------
+      # Clock-skew suite (issue #211): the time-matrix harness runs the accrual
+      # paths under controlled skew between the three clocks (local Date.now(),
+      # simulate-at-ledger reads, ledger().timestamp() enforcement), and pins
+      # the never-over-up UX contract formalised in docs/TIME_HANDLING.md.
+      # Uses Node's built-in test runner + mock timers; no browser needed.
+      # -----------------------------------------------------------------------
+      - name: Clock-skew property + live-accrual tests
+        run: >-
+          node --experimental-strip-types --test
+          lib/clock-skew.test.ts lib/live-accrual.test.ts
 
       # -----------------------------------------------------------------------
       # WCAG 2.1 AA accessibility gate (issue #98)

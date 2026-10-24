@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getAddress, isConnected } from "@stellar/freighter-api";
 import {
   cancelStream,
@@ -22,9 +22,14 @@ import {
   type SponsorView,
   type StreamView,
 } from "@/lib/stellar";
+import {
+  INITIAL_STATE,
+  startLiveAccrual,
+  type LiveAccrual,
+  type LiveAccrualState,
+} from "@/lib/live-accrual";
 import { useClaimScheduler } from "@/lib/use-claim-scheduler";
 import ClaimSchedulerSettings from "@/components/ClaimSchedulerSettings";
-import { computeAvailable, StreamSnapshot } from "@/lib/accrual";
 import {
   consentPublicKeyHex,
   DEFAULT_INTENT_TTL_SECONDS,
@@ -46,83 +51,72 @@ export default function StreamDetail() {
   const id = params?.id ?? "";
 
   const [stream, setStream] = useState<StreamView | null>(null);
+  const [live, setLive] = useState<LiveAccrualState>(INITIAL_STATE);
   const [assetMeta, setAssetMeta] = useState<AssetMeta | null>(null);
-  const [available, setAvailable] = useState<bigint | null>(null);
-  const [displayAvailable, setDisplayAvailable] = useState<bigint | null>(null);
-  const [snapshot, setSnapshot] = useState<StreamSnapshot | null>(null);
   const [amount, setAmount] = useState<string>("");
   const [isAmountDirty, setIsAmountDirty] = useState(false);
   const [address, setAddress] = useState<string | null>(null);
+  const engineRef = useRef<LiveAccrual | null>(null);
   const [status, setStatus] = useState<string>("");
   const [error, setError] = useState<string>("");
   const [sponsor, setSponsor] = useState<SponsorView | null>(null);
   const [consentPub, setConsentPub] = useState<string>("");
   const [enrolledKey, setEnrolledKey] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [loadError, setLoadError] = useState<string>("");
   const [refreshing, setRefreshing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [discoveryModalOpen, setDiscoveryModalOpen] = useState<boolean>(false);
 
-  const reload = useCallback(async () => {
+  useEffect(() => {
     if (!id) return;
-    setRefreshing(true);
-    try {
-      const [s, a] = await Promise.all([readStream(id), readAvailable(id)]);
-      setStream(s);
-      setAvailable(a);
-      fetchAssetMeta(s.token).then((meta) => setAssetMeta(meta));
-      setSnapshot({
-        deposit: BigInt(s.deposit),
-        startTime: s.startTime,
-        endTime: s.endTime,
-        withdrawn: BigInt(s.withdrawn),
-        status: s.status,
-      });
+    const engine = startLiveAccrual({
+      readStream: async () => {
+        const s = await readStream(id);
+        setStream(s);
+        fetchAssetMeta(s.token).then((meta) => setAssetMeta(meta));
+        return {
+          deposit: BigInt(s.deposit),
+          startTime: s.startTime,
+          endTime: s.endTime,
+          withdrawn: BigInt(s.withdrawn),
+          status: s.status,
+        };
+      },
+      readAvailable: () => readAvailable(id),
+      onUpdate: setLive,
+    });
+    engineRef.current = engine;
+    return () => {
+      engineRef.current = null;
+      engine.stop();
+    };
+  }, [id]);
 
-      // Auto-prefill the input with accrued balance on initial load if not modified by user
-      if (!isAmountDirty && a !== null && a > 0n) {
-        setAmount(a.toString());
-      }
-      setLoadError("");
-    } catch (e) {
-      const msg = describeError(e);
-      setLoadError(msg);
-      toast.error(msg);
-    } finally {
-      setRefreshing(false);
+  // displayAvailable is the guarded live counter (contract-available + one
+  // epsilon at most). Submission decisions and client-side guards are
+  // strictly validated against `available`, the canonical simulate-at-ledger
+  // read. A client-side guard can only ever prevent, never guarantee, a
+  // successful on-chain claim (e.g. near end_time or right after a
+  // concurrent cancel).
+  const available = live.available;
+  const snapshot = live.snapshot;
+  const displayAvailable = live.displayAvailable;
+  const loadError = live.error ? describeError(live.error) : "";
+
+  // Auto-prefill the input with the accrued balance while the user has not
+  // edited it; explicit edits (isAmountDirty) are never overwritten. The
+  // state update runs in a microtask so the effect never sets state
+  // synchronously (react-hooks/set-state-in-effect).
+  useEffect(() => {
+    if (!isAmountDirty && available !== null && available > 0n) {
+      const value = available.toString();
+      void Promise.resolve().then(() => setAmount(value));
     }
-  }, [id, isAmountDirty, toast]);
+  }, [available, isAmountDirty]);
 
   useEffect(() => {
-    void (async () => {
-      await reload();
-    })();
-    const t = setInterval(() => void reload(), 15_000); // live accrual poll
-    return () => clearInterval(t);
-  }, [reload]);
-
-  // Cosmetic linear interpolation: updates the displayed counter every 1s for visual smoothness.
-  // CRITICAL NOTE: displayAvailable and this 1-second interpolator are purely cosmetic.
-  // Submission decisions and client-side guards are strictly validated against the canonical
-  // on-chain `available` value. A client-side guard can only ever prevent, never guarantee,
-  // a successful on-chain claim (e.g. near end_time or right after a concurrent cancel).
-  useEffect(() => {
-    if (!snapshot) return;
-    const timer = setInterval(() => {
-      const now = BigInt(Math.floor(Date.now() / 1000));
-      const next = computeAvailable(
-        snapshot.deposit,
-        snapshot.startTime,
-        snapshot.endTime,
-        snapshot.withdrawn,
-        snapshot.status,
-        now
-      );
-      setDisplayAvailable(next);
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [snapshot]);
+    if (live.error) toast.error(describeError(live.error));
+  }, [live.error, toast]);
 
   useEffect(() => {
     void (async () => {
@@ -236,7 +230,8 @@ export default function StreamDetail() {
         setAmount("");
         setIsAmountDirty(false);
       }
-      await reload();
+      setAmount("");
+      await engineRef.current?.refresh();
     } catch (e) {
       toast.error(describeError(e));
     } finally {
@@ -298,7 +293,7 @@ export default function StreamDetail() {
         `Claimed ${claimAmount.toString()} units — gas paid by the sponsor. tx ${res.txHash}`
       );
       setAmount("");
-      await Promise.all([reload(), loadSponsorship(address)]);
+      await Promise.all([engineRef.current?.refresh(), loadSponsorship(address)]);
     } catch (e) {
       setError(describeError(e));
     } finally {
@@ -312,7 +307,7 @@ export default function StreamDetail() {
     try {
       await cancelStream(address, stream!.id);
       toast.success("Stream cancelled.");
-      await reload();
+      await engineRef.current?.refresh();
     } catch (e) {
       toast.error(describeError(e));
     } finally {
@@ -399,7 +394,14 @@ export default function StreamDetail() {
                 })()}
                 {stream.status === "Active" && (
                   <button
-                    onClick={() => void reload()}
+                    onClick={async () => {
+                      setRefreshing(true);
+                      try {
+                        await engineRef.current?.refresh();
+                      } finally {
+                        setRefreshing(false);
+                      }
+                    }}
                     disabled={refreshing}
                     style={{
                       marginLeft: "0.75rem",
