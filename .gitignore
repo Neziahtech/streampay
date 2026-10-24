@@ -28,6 +28,7 @@ frontend/.env.local
 
 # Perf trend build artifact
 /perf/trend.json
+/tools/canary/canary-result.json
 
 
 # Local tooling leftovers

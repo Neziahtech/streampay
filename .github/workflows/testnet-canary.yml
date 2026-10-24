@@ -1,0 +1,79 @@
+name: Testnet lifecycle canary
+
+on:
+  schedule:
+    - cron: "17 9 * * *"
+  workflow_dispatch:
+    inputs:
+      force_failure:
+        description: "Exercise the failure alert path without making a network request"
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  canary:
+    name: Live testnet lifecycle
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tools/canary/package-lock.json
+
+      - name: Install canary dependencies
+        working-directory: tools/canary
+        run: npm ci
+
+      - name: Test alert formatting
+        working-directory: tools/canary
+        run: npm test
+
+      - name: Type-check canary
+        working-directory: tools/canary
+        run: npm run typecheck
+
+      - name: Run testnet lifecycle
+        id: live-canary
+        continue-on-error: true
+        working-directory: tools/canary
+        env:
+          STREAMPAY_CANARY_CONTRACT_ID: ${{ vars.STREAMPAY_CANARY_CONTRACT_ID }}
+          STREAMPAY_CANARY_TOKEN_ID: ${{ vars.STREAMPAY_CANARY_TOKEN_ID }}
+          STREAMPAY_CANARY_SECRET_KEY: ${{ secrets.STREAMPAY_CANARY_SECRET_KEY }}
+          STREAMPAY_CANARY_RPC_URL: ${{ vars.STREAMPAY_CANARY_RPC_URL }}
+          STREAMPAY_CANARY_FORCE_FAILURE: ${{ inputs.force_failure && '1' || '' }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+        run: npm run canary
+
+      - name: Deliver failure alert
+        if: ${{ always() && steps.live-canary.outcome == 'failure' }}
+        working-directory: tools/canary
+        env:
+          ONCALL_WEBHOOK_URL: ${{ secrets.ONCALL_WEBHOOK_URL }}
+        run: node alert.mjs canary-result.json
+
+      - name: Upload canary evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: testnet-canary-${{ github.run_id }}-${{ github.sha }}
+          path: tools/canary/canary-result.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Preserve canary failure status
+        if: ${{ always() && steps.live-canary.outcome == 'failure' }}
+        run: exit 1

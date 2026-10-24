@@ -25,8 +25,10 @@ import {
 } from "./telemetry.ts";
 import { sanitizeAddress } from "./privacy.ts";
 import {
+  buildCancelStreamOperation,
   buildCreateStreamOperationForDays,
   buildWithdrawOperation,
+  buildWithdrawMaxOperation,
   i128,
   scAddr,
   u32,
@@ -46,12 +48,16 @@ const CONTRACT_ID = process.env.NEXT_PUBLIC_STREAMING_CONTRACT_ID || "";
 export const STREAMING_CONTRACT_ID = CONTRACT_ID;
 
 function contract(): Contract {
+  return new Contract(configuredContractId());
+}
+
+function configuredContractId(): string {
   if (!CONTRACT_ID) {
     throw new Error(
       "NEXT_PUBLIC_STREAMING_CONTRACT_ID is not set — deploy the contract and put its id in frontend/.env.local"
     );
   }
-  return new Contract(CONTRACT_ID);
+  return CONTRACT_ID;
 }
 
 export interface StreamArgs {
@@ -460,7 +466,7 @@ export async function withdrawMaxFromStream(
 
       const { result, txHash } = await sendWithTx(
         recipient,
-        contract().call("withdraw_max", u64(streamId)),
+        buildWithdrawMaxOperation(configuredContractId(), streamId),
         (v) => BigInt(scValToNative(v) as bigint)
       );
 
@@ -504,7 +510,7 @@ export async function prepareWithdrawMax(
     fee: "100000",
     networkPassphrase: NETWORK,
   })
-    .addOperation(contract().call("withdraw_max", u64(streamId)))
+    .addOperation(buildWithdrawMaxOperation(configuredContractId(), streamId))
     .setTimeout(validitySeconds)
     .build();
   const simulated = await server.simulateTransaction(tx);
@@ -570,7 +576,7 @@ export async function claimStreamWithReceipt(
 ): Promise<ClaimReceipt> {
   const { result, txHash } = await sendWithTx(
     recipient,
-    contract().call("withdraw_max", u64(streamId)),
+    buildWithdrawMaxOperation(configuredContractId(), streamId),
     (v) => BigInt(scValToNative(v) as bigint)
   );
   return {
@@ -603,7 +609,7 @@ export async function cancelStream(
 ): Promise<void> {
   await send(
     caller,
-    contract().call("cancel_stream", scAddr(caller), u64(streamId)),
+    buildCancelStreamOperation(configuredContractId(), caller, streamId),
     () => undefined
   );
 }

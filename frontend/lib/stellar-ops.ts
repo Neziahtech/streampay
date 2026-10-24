@@ -78,3 +78,22 @@ export function buildWithdrawOperation(
     i128(amount)
   );
 }
+
+export function buildWithdrawMaxOperation(
+  contractId: string,
+  streamId: string
+): xdr.Operation {
+  return new Contract(contractId).call("withdraw_max", u64(streamId));
+}
+
+export function buildCancelStreamOperation(
+  contractId: string,
+  sender: string,
+  streamId: string
+): xdr.Operation {
+  return new Contract(contractId).call(
+    "cancel_stream",
+    scAddr(sender),
+    u64(streamId)
+  );
+}
