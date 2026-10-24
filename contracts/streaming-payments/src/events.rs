@@ -1,7 +1,7 @@
 //! Events emitted by StreamPay.
-//!
-//! Per-stream events are keyed by `stream_id`; `StreamsCreated` is keyed by
-//! sender and carries the batch ids. Non-topic fields are event data.
+///
+/// Per-stream events are keyed by `stream_id`; `StreamsCreated` is keyed by
+/// sender and carries the batch ids. Non-topic fields are event data.
 
 use soroban_sdk::{contractevent, Address, BytesN, Vec};
 
@@ -711,52 +711,89 @@ pub struct OracleStaleFallback {
 pub struct OwnershipProposed {
     #[topic]
     pub stream_id: u64,
-    #[cfg_attr(
-        not(target_family = "wasm"),
-        doc = " The current role holder (must be the stream's sender or recipient)."
-    )]
-    pub current_owner: Address,
-    #[cfg_attr(
-        not(target_family = "wasm"),
-        doc = " Address that must accept before the role moves."
-    )]
-    pub new_owner: Address,
     pub role: OwnershipRole,
-    #[cfg_attr(
-        not(target_family = "wasm"),
-        doc = " Ledger timestamp at or after which the proposal is stale."
-    )]
-    pub expires_at: u64,
+    pub current: Address,
+    pub proposed: Address,
 }
 
-#[cfg_attr(
-    not(target_family = "wasm"),
-    doc = " Emitted when a proposed ownership handoff is accepted by its target. The"
-)]
-#[cfg_attr(
-    not(target_family = "wasm"),
-    doc = " stream's accounting fields (`deposit`, `withdrawn`, time window) are"
-)]
-#[cfg_attr(
-    not(target_family = "wasm"),
-    doc = " unchanged; only the role address moves."
-)]
+/// Emitted when the proposed owner accepts the role handoff.
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnershipAccepted {
     #[topic]
     pub stream_id: u64,
-    #[cfg_attr(
-        not(target_family = "wasm"),
-        doc = " The role holder before the transfer."
-    )]
-    pub previous_owner: Address,
-    #[cfg_attr(
-        not(target_family = "wasm"),
-        doc = " The new role holder (the accepting address)."
-    )]
-    pub new_owner: Address,
     pub role: OwnershipRole,
+    pub previous: Address,
+    pub new_owner: Address,
+}
+
+/// Emitted when a pending ownership handoff is cancelled.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OwnershipCancelled {
+    #[topic]
+    pub stream_id: u64,
+    pub role: OwnershipRole,
+    pub proposed: Address,
+}
+
+/// Emitted when a recipient authorizes an agent (hot wallet) to perform
+/// capped delegated withdrawals on a specific stream. Keyed by `stream_id`
+/// with the agent as a second topic so indexers can track per-agent cap
+/// history without reading contract state.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AgentAuthorized {
+    #[topic]
+    pub stream_id: u64,
+    #[topic]
+    pub agent: Address,
+    pub recipient: Address,
+    /// Maximum amount the agent may withdraw per window.
+    pub max_per_period: i128,
+    /// Maximum cumulative amount the agent may withdraw over the lifetime
+    /// of this authorization.
+    pub max_per_stream: i128,
+    /// Length of the rolling window in seconds.
+    pub window_seconds: u64,
+    /// Absolute expiry time of the authorization.
+    pub expires_at: u64,
+}
+
+/// Emitted when an agent performs a delegated withdrawal. Keyed by `stream_id`
+/// and the agent address. cap_remaining_period and cap_remaining_stream
+/// allow off-chain monitors to reconcile against the on-chain cap ledger.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AgentWithdrawn {
+    #[topic]
+    pub stream_id: u64,
+    #[topic]
+    pub agent: Address,
+    pub recipient: Address,
+    pub amount: i128,
+    /// Total withdrawn from the stream after this withdrawal.
+    pub withdrawn_total: i128,
+    /// Remaining per-period cap after this withdrawal.
+    pub cap_remaining_period: i128,
+    /// Remaining lifetime cap for this agent on this stream.
+    pub cap_remaining_stream: i128,
+    /// Time the current rolling window started.
+    pub window_start: u64,
+}
+
+/// Emitted when a recipient revokes an agent authorization. Revocation takes effect
+/// immediately for all subsequent transactions.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AgentRevoked {
+    #[topic]
+    pub stream_id: u64,
+    #[topic]
+    pub agent: Address,
+    pub revoked_by: Address,
+    /// Amount withdrawn by the agent during the authorization's lifetime.
+    pub total_withdrawn: i128,
 }
 
 #[cfg_attr(

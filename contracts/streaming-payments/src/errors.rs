@@ -447,115 +447,66 @@ pub enum StreamError {
         doc = " or accept it before proposing another."
     )]
     OwnershipProposalPending = 63,
-    #[cfg_attr(
-        not(target_family = "wasm"),
-        doc = " A governance entrypoint was called before the signer set was bootstrapped."
-    )]
-    GovernanceNotInitialized = 64,
-    #[cfg_attr(
-        not(target_family = "wasm"),
-        doc = " `governance_bootstrap` was called, but the signer set already exists."
-    )]
-    #[cfg_attr(
-        not(target_family = "wasm"),
-        doc = " Bootstrap is one-time; later sets arrive as an executed `SetSigners`"
-    )]
-    #[cfg_attr(
-        not(target_family = "wasm"),
-        doc = " proposal, so no key can re-establish governance over an existing one."
-    )]
-    GovernanceAlreadyInitialized = 65,
-    #[cfg_attr(
-        not(target_family = "wasm"),
-        doc = " The caller is not a member of the governance signer set."
-    )]
-    NotGovernanceSigner = 66,
-    #[cfg_attr(
-        not(target_family = "wasm"),
-        doc = " The proposed signer set lists the same address twice. Refused rather than"
-    )]
-    #[cfg_attr(
-        not(target_family = "wasm"),
-        doc = " deduplicated: two slots held by one key are one key."
-    )]
-    GovernanceDuplicateSigner = 67,
-    #[cfg_attr(
-        not(target_family = "wasm"),
-        doc = " The proposed signer set is empty."
-    )]
-    GovernanceSignerSetEmpty = 68,
-    #[cfg_attr(
-        not(target_family = "wasm"),
-        doc = " The proposed signer set exceeds `MAX_SIGNERS`."
-    )]
-    GovernanceTooManySigners = 69,
-    #[cfg_attr(
-        not(target_family = "wasm"),
-        doc = " The proposed signer set does not hold two distinct keys, so it could never"
-    )]
-    #[cfg_attr(not(target_family = "wasm"), doc = " satisfy the two-signature rule.")]
-    GovernanceSignersNotDistinct = 70,
-    #[cfg_attr(
-        not(target_family = "wasm"),
-        doc = " No proposal is stored under the supplied id."
-    )]
-    GovernanceProposalNotFound = 71,
-    #[cfg_attr(
-        not(target_family = "wasm"),
-        doc = " Execution was attempted while the veto window is still open."
-    )]
-    GovernanceVetoWindowOpen = 72,
-    #[cfg_attr(
-        not(target_family = "wasm"),
-        doc = " A veto was attempted after the window closed; the proposal is matured and"
-    )]
-    #[cfg_attr(
-        not(target_family = "wasm"),
-        doc = " executable (execute-on-timeout), so the way to stop it now is to rotate"
-    )]
-    #[cfg_attr(
-        not(target_family = "wasm"),
-        doc = " the keys it would act through, not to veto it."
-    )]
-    GovernanceVetoWindowClosed = 73,
-    #[cfg_attr(
-        not(target_family = "wasm"),
-        doc = " The requested veto window is shorter than `MIN_VETO_WINDOW_SECONDS`."
-    )]
-    GovernanceVetoWindowTooShort = 74,
-    #[cfg_attr(
-        not(target_family = "wasm"),
-        doc = " The proposal was vetoed and is therefore dead."
-    )]
-    GovernanceAlreadyVetoed = 75,
-    #[cfg_attr(
-        not(target_family = "wasm"),
-        doc = " The proposal has already been executed."
-    )]
-    GovernanceAlreadyExecuted = 76,
-    #[cfg_attr(
-        not(target_family = "wasm"),
-        doc = " This address has already signed the proposal. Execution needs two"
-    )]
-    #[cfg_attr(
-        not(target_family = "wasm"),
-        doc = " *distinct* signatures, so a second one from the same key is refused."
-    )]
-    GovernanceDuplicateSignature = 77,
-    #[cfg_attr(
-        not(target_family = "wasm"),
-        doc = " Fewer than the required distinct, still-current signatures are recorded."
-    )]
-    GovernanceSignaturesInsufficient = 78,
-    #[cfg_attr(
-        not(target_family = "wasm"),
-        doc = " The action requires an executed governance proposal now that the signer"
-    )]
-    #[cfg_attr(
-        not(target_family = "wasm"),
-        doc = " set is bootstrapped; the direct entry point is closed."
-    )]
-    GovernanceTimelockRequired = 79,
+    /// No session-key (agent) authorization exists for this (agent, stream)
+    /// pair; the recipient must call `authorize_agent` first.
+    AgentNotAuthorized = 64,
+    /// The session key's authorization has expired (`expires_at` has passed).
+    AgentExpired = 65,
+    /// The session key was revoked by the recipient; it can no longer sign
+    /// delegated withdrawals for this stream.
+    AgentRevoked = 66,
+    /// The delegated withdrawal would exceed the agent's per-period cap for
+    /// this stream within the current cap window.
+    AgentPeriodCapExceeded = 67,
+    /// The delegated withdrawal would exceed the agent's lifetime cap for
+    /// this stream (max total across all windows).
+    AgentStreamCapExceeded = 68,
+    /// The provided agent signature did not verify against the authorized
+    /// session key for this (agent, stream) pair.
+    AgentSignatureInvalid = 69,
+    /// The delegated withdrawal's nonce was already consumed — a replay of a
+    /// previously executed delegated withdrawal.
+    AgentNonceReplay = 70,
+    /// A governance entrypoint was called before the signer set was bootstrapped.
+    GovernanceNotInitialized = 71,
+    /// `governance_bootstrap` was called, but the signer set already exists.
+    /// Bootstrap is one-time; later sets arrive as an executed `SetSigners`
+    /// proposal, so no key can re-establish governance over an existing one.
+    GovernanceAlreadyInitialized = 72,
+    /// The caller is not a member of the governance signer set.
+    NotGovernanceSigner = 73,
+    /// The proposed signer set lists the same address twice. Refused rather than
+    /// deduplicated: two slots held by one key are one key.
+    GovernanceDuplicateSigner = 74,
+    /// The proposed signer set is empty.
+    GovernanceSignerSetEmpty = 75,
+    /// The proposed signer set exceeds `MAX_SIGNERS`.
+    GovernanceTooManySigners = 76,
+    /// The proposed signer set does not hold two distinct keys, so it could never
+    /// satisfy the two-signature rule.
+    GovernanceSignersNotDistinct = 77,
+    /// No proposal is stored under the supplied id.
+    GovernanceProposalNotFound = 78,
+    /// Execution was attempted while the veto window is still open.
+    GovernanceVetoWindowOpen = 79,
+    /// A veto was attempted after the window closed; the proposal is matured and
+    /// executable (execute-on-timeout), so the way to stop it now is to rotate
+    /// the keys it would act through, not to veto it.
+    GovernanceVetoWindowClosed = 80,
+    /// The requested veto window is shorter than `MIN_VETO_WINDOW_SECONDS`.
+    GovernanceVetoWindowTooShort = 81,
+    /// The proposal was vetoed and is therefore dead.
+    GovernanceAlreadyVetoed = 82,
+    /// The proposal has already been executed.
+    GovernanceAlreadyExecuted = 83,
+    /// This address has already signed the proposal. Execution needs two
+    /// *distinct* signatures, so a second one from the same key is refused.
+    GovernanceDuplicateSignature = 84,
+    /// Fewer than the required distinct, still-current signatures are recorded.
+    GovernanceSignaturesInsufficient = 85,
+    /// The action requires an executed governance proposal now that the signer
+    /// set is bootstrapped; the direct entry point is closed.
+    GovernanceTimelockRequired = 86,
     #[cfg_attr(
         not(target_family = "wasm"),
         doc = " A dispute is open on the stream: `cancel_stream` and `top_up` are"
@@ -564,22 +515,22 @@ pub enum StreamError {
         not(target_family = "wasm"),
         doc = " frozen until the sender resolves it or the timelock expires."
     )]
-    DisputeActive = 80,
+    DisputeActive = 87,
     #[cfg_attr(
         not(target_family = "wasm"),
         doc = " No open dispute exists on the stream."
     )]
-    DisputeNotFound = 81,
+    DisputeNotFound = 88,
     #[cfg_attr(
         not(target_family = "wasm"),
         doc = " The dispute's timelock has not elapsed yet."
     )]
-    DisputeNotExpired = 82,
+    DisputeNotExpired = 89,
     #[cfg_attr(
         not(target_family = "wasm"),
         doc = " No rate-change proposal is stored for this stream."
     )]
-    NoPendingRateChange = 83,
+    NoPendingRateChange = 90,
     #[cfg_attr(
         not(target_family = "wasm"),
         doc = " The pending rate-change proposal's acceptance window has elapsed; the"
@@ -588,7 +539,7 @@ pub enum StreamError {
         not(target_family = "wasm"),
         doc = " rate must be proposed again by a stream party."
     )]
-    RateProposalExpired = 84,
+    RateProposalExpired = 91,
     #[cfg_attr(
         not(target_family = "wasm"),
         doc = " An unexpired rate-change proposal already exists for this stream; cancel"
@@ -597,7 +548,7 @@ pub enum StreamError {
         not(target_family = "wasm"),
         doc = " or accept it before proposing another."
     )]
-    RateProposalPending = 85,
+    RateProposalPending = 92,
     #[cfg_attr(
         not(target_family = "wasm"),
         doc = " The stream already carries the maximum number of rate segments"
@@ -606,7 +557,7 @@ pub enum StreamError {
         not(target_family = "wasm"),
         doc = " (`MAX_RATE_SEGMENTS`); cancel it or open a new stream instead."
     )]
-    TooManyRateSegments = 86,
+    TooManyRateSegments = 93,
 }
 
 impl StreamError {
@@ -677,6 +628,13 @@ impl StreamError {
         StreamError::OwnershipProposalExpired,
         StreamError::InvalidTransferTarget,
         StreamError::OwnershipProposalPending,
+        StreamError::AgentNotAuthorized,
+        StreamError::AgentExpired,
+        StreamError::AgentRevoked,
+        StreamError::AgentPeriodCapExceeded,
+        StreamError::AgentStreamCapExceeded,
+        StreamError::AgentSignatureInvalid,
+        StreamError::AgentNonceReplay,
         StreamError::GovernanceNotInitialized,
         StreamError::GovernanceAlreadyInitialized,
         StreamError::NotGovernanceSigner,
