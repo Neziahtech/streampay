@@ -9,6 +9,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -45,7 +48,7 @@ jobs:
       # entrypoint addition should trigger the split discussion, not a bump.
       WASM_SIZE_BUDGET_KB: 90
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       # Fast, dependency-free guard that runs before the toolchain is even
       # installed: StreamError codes are the on-chain wire contract, and the
@@ -61,13 +64,13 @@ jobs:
         run: bash scripts/check_error_codes.sh
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
         with:
           targets: wasm32v1-none
           components: rustfmt, clippy
 
       - name: Cache cargo
-        uses: actions/cache@v6
+        uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94d9d67 # v4.2.2
         with:
           path: |
             ~/.cargo/registry
@@ -190,7 +193,7 @@ jobs:
           PY
 
       - name: Coverage
-        uses: taiki-e/install-action@cargo-llvm-cov
+        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
         with:
           tool: cargo-llvm-cov
 
@@ -293,9 +296,9 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -408,9 +411,9 @@ jobs:
       run:
         working-directory: infra/ttl-sentinel
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -439,9 +442,9 @@ jobs:
       run:
         working-directory: indexer
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -466,9 +469,9 @@ jobs:
       run:
         working-directory: tools/streampay-cli
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
 
@@ -484,14 +487,22 @@ jobs:
       # that needs an RPC-backed follow-up before it can be fixed safely.
 
   supply-chain:
-    name: Security — advisories / licenses
+    name: Security — advisories / licenses / scorecard
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       # cargo-deny's advisories check covers the same RustSec database as
       # cargo-audit, so one gate owns the ignore policy (see deny.toml).
       - name: cargo-deny (advisories, licenses, bans, sources)
+        uses: EmbarkStudios/cargo-deny-action@34899fc7ba81ca6268d5947a7a16b4649013fea1 # v2.0.11
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      - name: OpenSSF Scorecard gate policy
+        run: node scripts/scorecard-gate.mjs
         id: deny
         uses: EmbarkStudios/cargo-deny-action@v2
 
@@ -549,15 +560,15 @@ jobs:
     # This job catches any drift between the container setup and the contract
     # build requirements before a contributor hits it locally.
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install Rust toolchain (mirrors devcontainer feature)
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
         with:
           targets: wasm32v1-none
 
       - name: Cache cargo
-        uses: actions/cache@v6
+        uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94d9d67 # v4.2.2
         with:
           path: |
             ~/.cargo/registry

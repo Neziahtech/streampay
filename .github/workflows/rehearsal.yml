@@ -27,14 +27,15 @@ jobs:
     name: Dress rehearsal (testnet -> mocked mainnet)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
         with:
           targets: wasm32v1-none
 
       - name: Cache cargo
+        uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94d9d67 # v4.2.2
         uses: actions/cache@v6
         with:
           path: |
@@ -60,6 +61,7 @@ jobs:
 
       - name: Upload rehearsal evidence
         if: ${{ always() }}
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4.3.3
         uses: actions/upload-artifact@v7
         with:
           name: rehearsal-evidence

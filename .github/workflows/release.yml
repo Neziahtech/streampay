@@ -11,19 +11,21 @@ on:
       - "v*"
 
 permissions:
-  contents: write
-  attestations: write
-  id-token: write
+  contents: read
 
 jobs:
   wasm:
     name: Build + attest contract Wasm
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      attestations: write
+      id-token: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
         with:
           targets: wasm32v1-none
 
@@ -157,6 +159,7 @@ jobs:
       # Bit-for-bit reproducibility must be verified independently by rebuilding
       # from the tag using the verify-reproducible-build action.
       - name: Attest Wasm build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
@@ -165,7 +168,7 @@ jobs:
             UPGRADE_DIGESTS.txt
 
       - name: Create/edit release draft
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           draft: true
           files: |

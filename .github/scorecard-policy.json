@@ -1,0 +1,43 @@
+{
+  "$schema": "https://raw.githubusercontent.com/ossf/scorecard/main/pkg/scorecard/json.raw.schema",
+  "version": 1,
+  "description": "OpenSSF Scorecard gate policy configuration for StreamPay",
+  "overall_score_floor": 7.0,
+  "hard_requirements": {
+    "Maintained": 10,
+    "Packaging": 10,
+    "Dangerous-Workflow": 10,
+    "Binary-Artifacts": 10,
+    "Security-Policy": 10,
+    "License": 10,
+    "Dependency-Update-Tool": 10,
+    "Token-Permissions": 10,
+    "Vulnerabilities": 10
+  },
+  "exemptions": {
+    "Branch-Protection": {
+      "reason": "Branch protection rules require repository-admin API credentials and are configured via GitHub repository settings / rulesets rather than in-tree files; organizational policy mandates PR reviews and status checks prior to merge.",
+      "min_score": 0
+    },
+    "Fuzzing": {
+      "reason": "StreamPay maintains active in-tree fuzzing suites under fuzz/ run via cargo-fuzz in .github/workflows/fuzz.yml and nightly-fuzz.yml; Scorecard's automated heuristic flags fuzzing absent an external OSS-Fuzz or ClusterFuzzLite integration.",
+      "min_score": 0
+    },
+    "Signed-Releases": {
+      "reason": "Release artifacts currently publish cryptographic SHA256SUMS and SLSA provenance attestations via GitHub Artifact Attestations (attestations: write); external minisign/cosign binary key signing is scheduled for the v1.0 mainnet milestone (see SECURITY.md).",
+      "min_score": 0
+    },
+    "CII-Best-Practices": {
+      "reason": "OpenSSF Best Practices badge registration on coreinfrastructure.org is underway and pending formal v1.0 security audit completion.",
+      "min_score": 0
+    },
+    "SAST": {
+      "reason": "The repository is covered by Clippy (-D warnings), cargo-deny, npm audit, WCAG a11y gates, and CEI operation-order goldens; CodeQL lacks native Soroban eBPF/Wasm smart contract analysis semantics.",
+      "min_score": 0
+    },
+    "Code-Review": {
+      "reason": "All production code changes undergo PR review; solo/bootstrap commits in initial commit window lower the retrospective heuristic score until higher PR volume accumulates.",
+      "min_score": 5
+    }
+  }
+}

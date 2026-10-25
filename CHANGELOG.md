@@ -10,6 +10,10 @@ interface: they are only ever appended to, never renumbered or reused.
 ## [Unreleased]
 
 ### Added
+- OpenSSF Scorecard supply-chain security gate in CI (`.github/workflows/scorecard.yml`
+  and `.github/workflows/ci.yml`) enforcing an immutable 7.0 / 10.0 score floor,
+  token-permission hardening (`contents: read`), action commit SHA pinning, and
+  documented exemptions policy (`docs/SCORECARD.md`, `.github/scorecard-policy.json`).
 - Two-step rate renegotiation (#54): `propose_rate_change`,
   `accept_rate_change`, `cancel_rate_change`, and the `pending_rate_change` and
   `rate_segments` read views. Either party can propose a new

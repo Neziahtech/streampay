@@ -45,8 +45,7 @@ on:
         default: false
 
 permissions:
-  contents: write
-  issues: write
+  contents: read
 
 concurrency:
   group: promote-${{ inputs.release_tag }}
@@ -64,20 +63,23 @@ jobs:
   sandbox:
     name: Sandbox gates
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       digest: ${{ steps.record.outputs.digest }}
       interface: ${{ steps.record.outputs.interface }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ inputs.release_tag }}
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
         with:
           targets: wasm32v1-none
 
       - name: Cache cargo
+        uses: actions/cache@0c45773b623bea8c8e75f6c82b208c3cf94d9d67 # v4.2.2
         uses: actions/cache@v6
         with:
           path: |
@@ -112,6 +114,7 @@ jobs:
           echo "interface=$(cat evidence/interface.sha256)" >> "$GITHUB_OUTPUT"
 
       - name: Upload evidence bundle
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4.3.3
         uses: actions/upload-artifact@v7
         with:
           name: evidence-sandbox-${{ inputs.release_tag }}
@@ -123,8 +126,11 @@ jobs:
     needs: sandbox
     runs-on: ubuntu-latest
     environment: testnet
+    permissions:
+      contents: write
+      issues: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ inputs.release_tag }}
 
@@ -176,6 +182,7 @@ jobs:
           echo "promotions-log-delta:"; tail -n 1 deployments/promotions.log
 
       - name: Upload promotion record
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4.3.3
         uses: actions/upload-artifact@v7
         with:
           name: promotion-testnet-${{ inputs.release_tag }}
@@ -190,8 +197,11 @@ jobs:
     if: ${{ inputs.through == 'mainnet-canary' }}
     runs-on: ubuntu-latest
     environment: mainnet-canary
+    permissions:
+      contents: write
+      issues: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ inputs.release_tag }}
 
@@ -252,6 +262,7 @@ jobs:
             "${{ steps.deploy.outputs.contract_id }}" promoted
 
       - name: Upload promotion record
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4.3.3
         uses: actions/upload-artifact@v7
         with:
           name: promotion-mainnet-${{ inputs.release_tag }}
@@ -266,8 +277,11 @@ jobs:
     if: ${{ failure() && needs.mainnet-canary.result == 'failure' }}
     runs-on: ubuntu-latest
     environment: mainnet-canary
+    permissions:
+      contents: write
+      issues: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Install stellar-cli
         run: |
           curl -fsSL https://github.com/stellar/stellar-cli/releases/download/v28.1.0/stellar-cli-28.1.0-x86_64-unknown-linux-gnu.tar.gz | tar xz
@@ -282,6 +296,7 @@ jobs:
           STELLAR_SOURCE_KEY=mainnet-deployer scripts/rollback_mainnet.sh
       - name: Upload rollback record
         if: ${{ always() }}
+        uses: actions/upload-artifact@65462800fd760344b1a7b4382951275a0abb4808 # v4.3.3
         uses: actions/upload-artifact@v7
         with:
           name: rollback-mainnet-${{ github.run_id }}
