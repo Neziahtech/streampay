@@ -2599,9 +2599,12 @@ dependencies = [
  "serde",
  "serde_json",
  "soroban-ledger-snapshot",
+ "quote",
  "serde_json",
+ "sha2",
  "soroban-sdk",
  "streampay-model",
+ "syn 2.0.119",
 ]
 
 [[package]]

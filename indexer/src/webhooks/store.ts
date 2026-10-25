@@ -8,6 +8,10 @@ import type {
 } from "./types.js";
 import { calculateNextRetryDelay, isTerminalAttempt } from "./retry.js";
 
+function nullableId(value: unknown): string | null {
+  return value === null || value === undefined ? null : String(value);
+}
+
 export class WebhookStore {
   constructor(private readonly db: Database.Database) {
     this.initTables();
@@ -30,7 +34,7 @@ export class WebhookStore {
         id TEXT PRIMARY KEY,
         endpoint_id TEXT NOT NULL,
         event_id TEXT NOT NULL,
-        stream_id TEXT NOT NULL,
+        stream_id TEXT,
         event_type TEXT NOT NULL,
         payload TEXT NOT NULL,
         attempt INTEGER NOT NULL DEFAULT 1,
@@ -49,7 +53,7 @@ export class WebhookStore {
         delivery_id TEXT NOT NULL,
         endpoint_id TEXT NOT NULL,
         event_id TEXT NOT NULL,
-        stream_id TEXT NOT NULL,
+        stream_id TEXT,
         event_type TEXT NOT NULL,
         payload TEXT NOT NULL,
         attempts_count INTEGER NOT NULL,
@@ -160,7 +164,9 @@ export class WebhookStore {
   queueDeliveriesForEvent(event: {
     id: string;
     name: string;
-    streamId: string;
+    /** `null` for the events that are not about a stream; subscribers matching
+     *  by event name still receive them, with the field present and null. */
+    streamId: string | null;
     ledgerClosedAt: string;
     data: Record<string, unknown>;
   }): number {
@@ -381,7 +387,7 @@ export class WebhookStore {
       id: String(row.id),
       endpoint_id: String(row.endpoint_id),
       event_id: String(row.event_id),
-      stream_id: String(row.stream_id),
+      stream_id: nullableId(row.stream_id),
       event_type: String(row.event_type),
       payload,
       attempt: Number(row.attempt),
@@ -406,7 +412,7 @@ export class WebhookStore {
       delivery_id: String(row.delivery_id),
       endpoint_id: String(row.endpoint_id),
       event_id: String(row.event_id),
-      stream_id: String(row.stream_id),
+      stream_id: nullableId(row.stream_id),
       event_type: String(row.event_type),
       payload,
       attempts_count: Number(row.attempts_count),

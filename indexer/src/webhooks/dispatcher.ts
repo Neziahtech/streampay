@@ -173,7 +173,7 @@ export class WebhookDispatcher {
     const event = {
       id: `test_${Date.now()}`,
       name: "stream_ping",
-      streamId: "0",
+      streamId: null,
       ledgerClosedAt: new Date().toISOString(),
       data: {
         ping: true,

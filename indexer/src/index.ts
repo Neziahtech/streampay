@@ -373,7 +373,7 @@ export async function run(): Promise<void> {
       getRateBudget: () => manager.getRateBudget(),
     },
     sink: store,
-    decode: decodeEvent,
+    decode: (event) => decodeEvent(event, { contractId }),
     filters: [{ type: "contract", contractIds: [contractId], topics: topicFilters }],
     initialLedger: configuredStartLedger(),
     pageLimit: envInt("INGEST_PAGE_LIMIT", 1000),

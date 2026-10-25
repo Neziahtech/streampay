@@ -33,4 +33,13 @@ streampay-model = { version = "0.1.0", path = "../../model" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 soroban-ledger-snapshot = "29.0.1"
+# Event-schema registry (`src/event_registry.rs` + `schemas/events/`):
+# syn parses the `#[contractevent]` structs out of the crate sources so the
+# generated schemas can never drift from the code, and walks every `publish()`
+# call site so no event can be emitted that the registry does not declare.
+# sha2 fingerprints each event shape for the CI compatibility gate. Dev-only:
+# nothing here reaches the Wasm build.
+syn = { version = "2", features = ["full", "extra-traits", "visit"] }
+quote = "1"
+sha2 = "0.10"
 

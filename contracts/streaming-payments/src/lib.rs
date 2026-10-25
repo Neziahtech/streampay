@@ -79,6 +79,8 @@ extern crate std;
 mod cei_trace;
 mod client_parity_test;
 #[cfg(test)]
+mod clock_skew_test;
+#[cfg(test)]
 mod differential_harness;
 #[cfg(test)]
 mod differential_test;
@@ -87,6 +89,8 @@ mod error_surface_test;
 
 mod dispute;
 mod errors;
+#[cfg(test)]
+mod event_registry;
 mod events;
 mod governance;
 #[cfg(test)]

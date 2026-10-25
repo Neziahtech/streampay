@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { DecodedEvent, Stream } from "./types.js";
+import { EVENT_KEYS } from "./generated/events.js";
 import { WebhookStore } from "./webhooks/store.js";
 import { OutboxStore, newOutboxEventFromDecoded } from "./outbox/store.js";
 import { globalIndexerTracer, traceCorrelationRegistry } from "./telemetry.js";
@@ -38,7 +39,7 @@ export class StreamStore {
       CREATE INDEX IF NOT EXISTS streams_sender ON streams(sender, stream_id);
       CREATE INDEX IF NOT EXISTS streams_recipient ON streams(recipient, stream_id);
       CREATE TABLE IF NOT EXISTS events (
-        id TEXT PRIMARY KEY, stream_id TEXT NOT NULL, name TEXT NOT NULL,
+        id TEXT PRIMARY KEY, stream_id TEXT, name TEXT NOT NULL,
         ledger INTEGER NOT NULL, ledger_closed_at TEXT NOT NULL,
         tx_hash TEXT, trace_id TEXT, span_id TEXT, payload TEXT NOT NULL
       );
@@ -56,6 +57,40 @@ export class StreamStore {
     } catch {}
     this.webhooks = new WebhookStore(this.db);
     this.outbox = new OutboxStore(this.db);
+    this.allowNullStreamId();
+  }
+
+  /**
+   * `stream_id` is nullable in the four event journals. The registry declares a
+   * stream for only part of its events, and an event without one now carries
+   * `null` rather than a value lifted from its first positional topic. SQLite
+   * cannot drop a NOT NULL constraint in place, so a database built before this
+   * change is rebuilt table-by-table — definition, rows and indexes included.
+   * A fresh database already matches and skips the work.
+   */
+  private allowNullStreamId(): void {
+    for (const table of ["events", "outbox_events", "webhook_deliveries", "webhook_dead_letter"]) {
+      // Table names are this list's own constants, never caller input.
+      const columns = this.db.pragma(`table_info(${table})`) as Array<{ name: string; notnull: number }>;
+      const column = columns.find((c) => c.name === "stream_id");
+      if (!column?.notnull) continue;
+
+      const { sql: recorded } = this.db
+        .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?")
+        .get(table) as { sql: string };
+      const indexes = this.db
+        .prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL")
+        .all(table) as Array<{ sql: string }>;
+      const temporary = `${table}_allow_null_stream_id`;
+
+      this.db.transaction(() => {
+        this.db.exec(`ALTER TABLE ${table} RENAME TO ${temporary}`);
+        this.db.exec(recorded.replace(/stream_id\s+TEXT\s+NOT NULL/i, "stream_id TEXT"));
+        this.db.exec(`INSERT INTO ${table} SELECT * FROM ${temporary}`);
+        this.db.exec(`DROP TABLE ${temporary}`);
+        for (const index of indexes) this.db.exec(index.sql);
+      })();
+    }
   }
 
   close(): void { this.db.close(); }
@@ -95,14 +130,18 @@ export class StreamStore {
   }
 
   private ingestWithinTransaction(event: DecodedEvent, ledgerCursor: string): { duplicate: boolean; projectionSkipped: boolean } {
+    // A stream-less event has no `stream.id` to report; the attribute is
+    // omitted rather than filled with a placeholder.
+    const streamAttributes: Record<string, string | number> = {
+      "event.name": event.name,
+      "ledger.sequence": event.ledger,
+      "soroban.tx_hash": event.txHash || "unknown",
+    };
+    if (event.streamId !== null) streamAttributes["stream.id"] = event.streamId;
+
     const ingestSpan = globalIndexerTracer.startSpan("indexer.ingest_event", {
       kind: "CONSUMER",
-      attributes: {
-        "event.name": event.name,
-        "ledger.sequence": event.ledger,
-        "stream.id": event.streamId,
-        "soroban.tx_hash": event.txHash || "unknown",
-      },
+      attributes: streamAttributes,
     });
 
     // Check correlation registry for the asynchronous event seam (linking originating claim trace)
@@ -132,8 +171,7 @@ export class StreamStore {
         kind: "INTERNAL",
         attributes: {
           "db.system": "sqlite",
-          "stream.id": event.streamId,
-          "event.name": event.name,
+          ...streamAttributes,
         },
       });
 
@@ -178,6 +216,16 @@ export class StreamStore {
       }
 
       const d = event.data;
+      // The projection is keyed by stream id, so it runs only for the events the
+      // registry says are about a stream. A stream-less event is journalled,
+      // retracted-safe, dispatched to subscribers by name — and touches no
+      // `streams` row, because it has no stream to touch.
+      if (event.streamId === null) {
+        dbSpan.setStatus("OK");
+        dbSpan.end();
+        ingestSpan.setStatus("OK");
+        return { duplicate: false, projectionSkipped: true };
+      }
       const existing = this.db.prepare("SELECT * FROM streams WHERE stream_id = ?").get(event.streamId) as Record<string, unknown> | undefined;
       const get = (key: string): string | null => d[key] === undefined || d[key] === null ? null : String(d[key]);
       const patch: Partial<Stream & { cancelled_by?: string | null; recipient_amount?: string | null; sender_amount?: string | null }> = {
@@ -186,7 +234,9 @@ export class StreamStore {
       };
 
       switch (event.name) {
-        case "stream_created":
+        // Registry-known event keys (schemas/events/registry.json), via the
+        // generated table so a renamed key fails typecheck here.
+        case EVENT_KEYS.StreamCreated:
           Object.assign(patch, {
             sender: get("sender"),
             recipient: get("recipient"),
@@ -199,13 +249,13 @@ export class StreamStore {
             withdrawn: "0",
           });
           break;
-        case "withdrawn":
+        case EVENT_KEYS.Withdrawn:
           patch.withdrawn = get("withdrawn_total") ?? (existing?.withdrawn as string | undefined) ?? "0";
           break;
-        case "stream_topped_up":
+        case EVENT_KEYS.StreamToppedUp:
           patch.deposit = get("new_deposit") ?? (existing?.deposit as string | undefined) ?? null;
           break;
-        case "stream_cancelled": {
+        case EVENT_KEYS.StreamCancelled: {
           patch.status = "cancelled";
           patch.cancelled_by = get("cancelled_by") ?? (existing?.cancelled_by as string | undefined) ?? null;
           patch.recipient_amount = get("recipient_amount") ?? (existing?.recipient_amount as string | undefined) ?? null;

@@ -182,6 +182,25 @@ guarantees: [docs/OUTBOX.md](../docs/OUTBOX.md).
 
 ---
 
+### Event Shapes Come From the Schema Registry
+
+The names and fields this indexer decodes are not hand-maintained here: they
+are generated from the contract's `#[contractevent]` structs into
+`src/generated/events.ts` by `npm run generated:events` (source of truth:
+[`schemas/events/`](../schemas/events/README.md), issue
+[#213](https://github.com/Neziahtech/streampay/issues/213)).
+
+- `decodeEvent` validates every registry-known event: the positional topic
+  count must match the registry and each declared data field must be present,
+  so a contract/registry drift surfaces as a decode error naming the schema
+  file instead of silently indexing a half-shaped stream row.
+- Extra data keys are tolerated — the registry evolves additively, and old
+  indexers keep working against a newly upgraded contract.
+- `src/registry.test.ts` asserts the generated table matches the committed
+  `schemas/events/registry.json` field-for-field.
+
+---
+
 ## 5. Testing
 
 Run all unit, decoder, database, and integration tests:

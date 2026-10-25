@@ -215,6 +215,56 @@ jobs:
           path: target/wasm32v1-none/release/streampay_contract.wasm
           if-no-files-found: error
 
+  event-registry:
+    name: Event registry — schema / compatibility / codegen gates
+    runs-on: ubuntu-latest
+    steps:
+      # fetch-depth 0: the compatibility checker diffs the registry against the
+      # PR base commit, which must be present in the checkout.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      # The registry (`schemas/events/`), the per-event JSON Schemas, the event
+      # catalogue and the TypeScript types the indexer and frontend import are
+      # all generated from the `#[contractevent]` structs. This is the same
+      # script contributors run locally (`npm run generated:events` /
+      # `generated:check`): regenerate in place, then fail on any drift —
+      # including artifacts a new event just created but nobody committed.
+      - name: Event registry artifacts are up to date
+        run: bash scripts/check_generated.sh events
+
+      # Additive-only gate (issue #213): removals or type changes against the
+      # PR base fail the build; additions must be recorded in
+      # schemas/events/CHANGELOG.md. The in-crate pin test and the publish-site
+      # gate (both part of `cargo test`) prove the registry describes the code;
+      # this gate owns the wire-compatibility verdict for consumers.
+      - name: Event compatibility check against the base
+        if: github.event_name == 'pull_request'
+        run: node scripts/event_compat_check.mjs --base "${{ github.event.pull_request.base.sha }}"
+
+      # Unit tests for the gate itself, including the seeded break demo
+      # (renaming an event field turns the checker red with a clear diff).
+      - name: Compatibility checker tests
+        run: node --test scripts/event_compat_check.test.mjs
+
   frontend:
     name: Frontend — lint / typecheck / tests / build / audit
     runs-on: ubuntu-latest
@@ -273,6 +323,18 @@ jobs:
         run: node --experimental-strip-types --test lib/network.test.ts
       - name: Client parity smoke tests
         run: npm run test:parity
+
+      # -----------------------------------------------------------------------
+      # Clock-skew suite (issue #211): the time-matrix harness runs the accrual
+      # paths under controlled skew between the three clocks (local Date.now(),
+      # simulate-at-ledger reads, ledger().timestamp() enforcement), and pins
+      # the never-over-up UX contract formalised in docs/TIME_HANDLING.md.
+      # Uses Node's built-in test runner + mock timers; no browser needed.
+      # -----------------------------------------------------------------------
+      - name: Clock-skew property + live-accrual tests
+        run: >-
+          node --experimental-strip-types --test
+          lib/clock-skew.test.ts lib/live-accrual.test.ts
 
       # -----------------------------------------------------------------------
       # WCAG 2.1 AA accessibility gate (issue #98)

@@ -12,6 +12,9 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 import type { StreamPolicyView, StreamView } from "@/lib/stream-types";
+// The `StreamPolicy` shape comes from the generated event-schema registry
+// (schemas/events/registry.json), shared with the indexer (issue #213).
+import type { StreamPolicy } from "@/lib/generated/events";
 
 const RPC_URL =
   process.env.NEXT_PUBLIC_SOROBAN_RPC_URL ||
@@ -123,14 +126,14 @@ export async function readStreamPolicy(
       : nativeToScVal(null);
     const retval = await simulateRead("get_stream_policy", [arg]);
     if (!retval) return null;
-    const raw = scValToNative(retval) as Record<string, unknown> | null;
+    const raw = scValToNative(retval) as StreamPolicy | null;
     if (!raw) return null;
     return {
-      minDeposit: String(raw.min_deposit ?? "0"),
-      minDuration: Number(raw.min_duration ?? 0),
-      maxDuration: Number(raw.max_duration ?? 0),
-      minRate: String(raw.min_rate ?? "0"),
-      maxRate: String(raw.max_rate ?? "0"),
+      minDeposit: String(raw.min_deposit),
+      minDuration: Number(raw.min_duration),
+      maxDuration: Number(raw.max_duration),
+      minRate: String(raw.min_rate),
+      maxRate: String(raw.max_rate),
     };
   } catch {
     return null;

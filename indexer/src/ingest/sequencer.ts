@@ -21,7 +21,9 @@ import type { LedgerWindow } from "./planner.js";
 
 export interface SequencedEvent {
   id: string;
-  streamId: string;
+  /** null for the events that are not about a stream; they are counted but
+   *  never keyed, so they cannot share one pseudo-stream. */
+  streamId: string | null;
   ledger: number;
 }
 
@@ -91,6 +93,7 @@ export class IngestSequencer {
    */
   classify(event: SequencedEvent): EventOrder {
     this.eventsSeen += 1;
+    if (event.streamId === null) return "in-order";
     const committed = this.streamLedgers.get(event.streamId);
     if (committed !== undefined && event.ledger < committed) {
       this.lateEvents += 1;

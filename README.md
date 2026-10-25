@@ -372,6 +372,8 @@ docs/SCHEDULED_INTENTS.md       scheduled intents: keeper guide + threat model
 docs/DEPLOY_PIPELINE.md         sandbox → testnet → mainnet-canary promotion design
 docs/CANARY_RUNBOOK.md          mainnet canary + rollback procedure
 docs/DEMO.md                    verified testnet walkthrough
+docs/EVENTS.md                  generated catalogue of every contract event
+schemas/events/README.md        event schema registry: generator, compatibility gate, consumer workflow
 indexer/README.md               event indexer setup, configuration, and API
 docs/GOOD_FIRST_ISSUES.md       ready-to-file contributor tickets
 .github/workflows/ci.yml        test + fmt + clippy + coverage + wasm + lint/build/audit + supply chain
