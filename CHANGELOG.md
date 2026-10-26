@@ -10,6 +10,59 @@ interface: they are only ever appended to, never renumbered or reused.
 ## [Unreleased]
 
 ### Added
+- Stream pause / resume (#24): `pause_stream` and `resume_stream`, sender only.
+  While a stream is paused its accrual is frozen at the pause point (on the
+  stream's own clock, so oracle-time streams freeze at the oracle time);
+  `withdraw`, `withdraw_max`, `withdraw_many`, `cancel_stream` and rate changes
+  all evaluate against the frozen time, so a paused stream cannot be drained.
+  Resuming shifts the window (and any rate segments) forward by the paused
+  length, so accrual continues from the frozen amount at the original rate and
+  the full deposit still streams. Pause state lives in a new persistent
+  `StreamPause(id)` side key rather than in `Stream`, so records written by a
+  deployed build keep decoding. Adds the `stream_paused` / `stream_resumed`
+  events and error code 99 `InvalidPauseTransition` (pause while paused, or
+  resume while not paused); only `Active` streams can pause.
+- Two-step rate renegotiation (#54): `propose_rate_change`,
+  `accept_rate_change`, `cancel_rate_change`, and the `pending_rate_change` and
+  `rate_segments` read views. Either party can propose a new
+  `amount_per_second` for the remainder of a live stream; only the named
+  counterparty can accept, within a seven-day window. At acceptance the accrued
+  balance is priced under the schedule that existed before the change (never
+  re-priced), the rest of the window is reserved at the new rate, and the
+  difference against the escrow still held is pulled from the sender (increase)
+  or refunded to them (decrease) in the same transaction.
+- Piecewise accrual: `Stream` streams are now priced as a schedule of
+  `RateSegment { start_time, end_time, allocation, basis_seconds }` windows.
+  `streamed_amount_at_segments` sums the unchanged pure `streamed_at` over them,
+  so an empty schedule is the pre-#54 single-window formula bit-for-bit and a
+  renegotiated window — `allocation = rate × window`, `basis_seconds = window` —
+  accrues with no division residue at all. `available`, `withdraw`,
+  `withdraw_max`, `cancel_stream`, `streamed_at` and `sponsored_withdraw` all
+  price the same schedule.
+- `PendingRateChange` and `RateSegments` storage keys
+  (`DataKey::PendingRateChange(id)`, `DataKey::RateSegments(id)`, both
+  appended), one offer per stream and at most `MAX_RATE_SEGMENTS = 32` accepted
+  windows per stream, with dedicated TTL maintenance. No stored `Stream` layout
+  changed, so no migration is required.
+- Append-only `RateChangeProposed` / `RateChangeAccepted` events
+  (`stream_id` topic); the acceptance payload carries
+  `owed_at_change`, `reserved_at_new_rate`, `adjustment` and the new `deposit`
+  as the audit trail of the rebalancing.
+- New `StreamError` variants (appended): `NoPendingRateChange` (80),
+  `RateProposalExpired` (81), `RateProposalPending` (82), and
+  `TooManyRateSegments` (83).
+- Reference-model schedule math (`model/src/math.rs`):
+  `streamed_at_schedule` (the `u128` floor-division model) and
+  `streamed_at_rate_schedule` (a division-free `Σ rate × elapsed` model), used
+  as differential oracles rather than as a second reading of contract state.
+- New `rate_schedule` fuzz target for segment sequences, and the `conservation`
+  target now renegotiates streams inside its random operation sequence and
+  re-prices every stored schedule against the reference model. Both are wired
+  into `fuzz.yml`, `nightly-fuzz.yml`, `fuzz-campaign.yml` and the campaign /
+  coverage scripts.
+- `docs/adr/0012-piecewise-rate-schedule-storage.md`, and
+  `docs/ARCHITECTURE.md` §3.1 (piecewise math) + §18 (the renegotiation flow,
+  storage/TTL and the exactness argument).
 - Two-step stream ownership transfer: `propose_ownership_transfer`,
   `accept_ownership_transfer`, `cancel_ownership_transfer`, and the
   `pending_ownership_transfer` read view. Either the sender (payer) or the
@@ -23,6 +76,104 @@ interface: they are only ever appended to, never renumbered or reused.
 - New `StreamError` variants (appended): `NoPendingOwnership` (60),
   `OwnershipProposalExpired` (61), `InvalidTransferTarget` (62), and
   `OwnershipProposalPending` (63).
+- Explicit **storage record versioning**: every stream record is written as a
+  tagged `VersionedStream { version, stream }` envelope rather than a bare
+  `Stream`, so a record's layout is declared by the bytes instead of inferred
+  from them. Untagged pre-versioning records keep reading (as v1); a tag this
+  build has never seen fails closed on every path — reads, withdrawals,
+  cancellation, top-ups and the migration path itself — with the appended
+  `StreamError::SchemaVersionUnsupported` (87). New entrypoints
+  `migrate_stream_version(stream_id)` (permissionless, one record per call,
+  idempotent: re-running it on a current record is a byte-for-byte no-op) and
+  the `stream_record_version(stream_id)` view, plus the
+  `StreamRecordMigrated { stream_id, from_version, to_version }` event.
+  An XDR-level test hand-encodes a v1 blob, migrates it and asserts the result
+  is field-for-field identical to a natively-written record; accrual across the
+  two layouts is property-tested at window boundaries.
+- Off-chain migration planner: `scripts/migrate_audit.ts` (+
+  `scripts/migrate_audit.sh`) walks the per-address discovery indexes, decodes
+  every stream record it reaches and classifies its layout
+  (current / legacy / future / unrecognised), printing the plan as a table or
+  Markdown. The classification lives in `frontend/lib/migration-report.ts` and
+  is shared with the frontend; the golden report is
+  [`docs/MIGRATION_AUDIT.md`](docs/MIGRATION_AUDIT.md), regenerated and diffed
+  in CI. Documented in `docs/UPGRADES.md`.
+- **Consented sender-role transfer**: `propose_sender_transfer(stream_id,
+  new_sender, nonce, transfer_refund_rights)` (current sender only) records a
+  proposal with the same seven-day window, and `accept_sender_transfer(stream_id,
+  nonce)` executes it only on the *recipient's* consent — the party that loses
+  its counterparty when the payer changes. Anyone may reclaim an aged-out
+  proposal with `expire_sender_transfer(stream_id)`, which returns the nonce it
+  removed; a live proposal refuses (`SenderTransferNotExpired`). Only `sender`
+  moves: deposit, withdrawn, token and window are untouched, so accrual and the
+  `0 ≤ withdrawn ≤ streamed ≤ deposit` invariant are identical across a hop.
+  Each executed hop is appended to the stream's immutable `SenderHistory` log
+  (`sender_at_creation` never changes) and re-points *both* sides of the sender
+  discovery index through the shared index writers, TTL-extending each page.
+  The refund claim of the existing deposit is **not** implied by the role
+  change: it stays with whoever held it unless the proposal sets
+  `transfer_refund_rights`, and `refund_target(stream_id)` always reports where
+  the cancellation remainder would go. `cancel_stream` pays that target with the
+  same CEI ordering and conservation properties as before, at the cost of one
+  extra persistent read (`docs/FOOTPRINT.md`, Candidate 5).
+- New storage keys (append-only): `PendingSenderTransfer(id)`,
+  `SenderHistory(id)`, `RefundTarget(id)`.
+- Append-only events: `SenderTransferProposed`, `SenderTransferred`,
+  `SenderTransferExpired` (all with the `stream_id` topic; the executed event
+  carries `sender_from` / `sender_to`).
+- New `StreamError` variants (appended): `SenderTransferNotFound` (88),
+  `SenderTransferExpired` (89), `SenderTransferNotExpired` (90),
+  `SenderTransferNonceMismatch` (91), `SenderTransferPending` (92),
+  `SenderTransferNotConsenter` (93).
+- Randomised hop sequences (fixed seeds in `contracts/streaming-payments`)
+  assert after every step that the proposal slot, the role, the append-only log,
+  the refund claim, the escrow balance and every address index agree with an
+  independent model. Documented in `docs/ARCHITECTURE.md` §18.
+- **Refund routing**: `create_stream_with_refund(…, refund_to)` pins the
+  remainder destination at creation and `set_refund_target(stream_id, refund_to)`
+  amends it later — sender-role holder only, active streams only, and routing to
+  the address that already holds the claim is refused as a no-op
+  (`RefundTargetUnchanged`). The routing changes *where cancellation money goes*
+  and nothing else: it grants no authority (the new holder still cannot cancel,
+  top up or withdraw), it never enters the accrual math (a routed and an
+  unrouted twin stream produce identical records and identical remainders), and
+  `cancel_stream` pays the routed address with the same CEI ordering and the same
+  conservation identity as before. Amendments overwrite the single
+  `DataKey::RefundTarget(id)` key, so storage grows by at most one address per
+  routed stream rather than per amendment. Append-only:
+  `StreamRefundTargetChanged { previous_target, new_target, at_creation }`,
+  `StreamError::RefundTargetNotSender` (94) and `RefundTargetUnchanged` (95).
+  The indexer projects the routing into `streams.refund_target`, the stream
+  detail page warns when the destination differs from the sender, and randomised
+  route/cancel/transfer sequences are fuzzed against an independent model.
+  Documented in `docs/ARCHITECTURE.md` §19.
+- **Batch claiming**: `withdraw_many(recipient, stream_ids, strict)` settles up to
+  `MAX_WITHDRAW_BATCH` (20) streams in one transaction, running the *same*
+  per-stream claim path as `withdraw_max` (shared `settle_accrued` tail) so
+  accrual math, TTL extension and the `Withdrawn` event are identical by
+  construction rather than restated. It answers one entry per requested id, in
+  request order — `{ stream_id, amount, code }`, `code` being `0` for a stream
+  that paid and otherwise the `StreamError` that skipped it — so a stream that
+  cannot pay is skipped instead of reverting its siblings; `strict` makes any
+  per-entry rejection revert the whole call. The code travels as a number rather
+  than as a `Result` because a ScVal carrying an `ScError` has no off-chain
+  decoder, so one skipped entry would otherwise make the whole batch undecodable.
+  One authorization covers the batch
+  and every entry must belong to the caller, so a holder cannot claim a
+  counterparty's stream by listing its id. The bounds are checked before any
+  state is read: empty (89), over-cap (90) and duplicate ids (91) each revert
+  outright, because a repeated id would claim against state its first entry had
+  already rewritten. A refused *payout* is the one error that aborts rather than
+  skips: its state write and event precede the token call, as CEI requires, and
+  cannot be undone for a single entry. Append-only:
+  `BatchWithdrawSummary { recipient(topic), settled, total, requested, skipped }`
+  alongside the unchanged per-stream events. The indexer subscribes to the
+  summary and journals it without projecting it — the per-stream `withdrawn`
+  rows stay authoritative — and the stream list gains multi-select batch claims
+  behind `NEXT_PUBLIC_BATCH_CLAIM`. Measured: 20 claims in one call cost 6.27M
+  CPU against 7.99M as 20 transactions (`docs/FOOTPRINT.md` §4.1), asserted by
+  `withdraw_many_footprint_harness`; randomised batches over duplicates, foreign
+  streams and mixed tokens are fuzzed against an independent model.
 - Frontend (opt-in) **fee-aware claim scheduling**: a recipient can queue a
   signed `withdraw_max` intent and have the client submit it when the Soroban
   inclusion-fee percentile drops under a budget, with a deadline fallback so a
@@ -127,6 +278,20 @@ interface: they are only ever appended to, never renumbered or reused.
   branches or any branch without a code.
 - Generated [`docs/ERROR_SURFACE.md`](./docs/ERROR_SURFACE.md) (entrypoint × branch → code
   table) with a CI step that regenerates it and diffs the committed artifact.
+- Recipient-initiated dispute flow (#55): `raise_dispute` (bonded flag that
+  freezes `cancel_stream`/`top_up` for a 7-day timelock), sender-only
+  `resolve_dispute` (accept: bond refunded + pro-rata unwind; reject: bond
+  slashed to the sender, stream resumes), permissionless `expire_dispute`
+  (bond split 50/50, stream resumes), plus `get_dispute` /
+  `required_dispute_bond` views. Anti-griefing bond = 5% of the deposit
+  scaling linearly per dispute round on the stream; accrued withdrawals and
+  accrual are never frozen. New events `DisputeRaised` / `DisputeResolved` /
+  `DisputeExpired`; new `StreamError` codes `DisputeActive` (80),
+  `DisputeNotFound` (81), `DisputeNotExpired` (82), each wired into the
+  `surface.rs` branch registry with matrix probes. Covered by unit/property
+  tests (incl. the locks-plus-outstanding-bonds balance invariant) and a new
+  `dispute_bond` fuzz target. `docs/ARCHITECTURE.md` §8 documents the freeze
+  policy and griefing-threshold math.
 - **Gas sponsorship** (`sponsor.rs`, issue #57): sponsors pay transaction
   costs for recipients claiming accrued funds. Soroban has no mempool
   relayer, so authorization is carried *inside* the call: any account
@@ -145,7 +310,7 @@ interface: they are only ever appended to, never renumbered or reused.
   (appended): `SponsorNotFound` (21), `SponsorInactive` (22),
   `BeneficiaryNotEnrolled` (23), `ClaimExpired` (24), `ClaimNonceReplay`
   (25), `SponsorBudgetExceeded` (26), `BeneficiaryBudgetExceeded` (27);
-  18–20 remain reserved for the dispute-flow PR.
+  the dispute-flow codes append at 80–82 after the governance block.
 - Frontend "Claim for free" path (`frontend/lib/sponsor.ts` + stream detail
   page): builds and signs the exact intent the contract verifies, posts it
   to the sponsor relay, and discloses who pays and how much budget remains;
@@ -213,6 +378,36 @@ interface: they are only ever appended to, never renumbered or reused.
   build`). Linked from the README and CONTRIBUTING.
 
 ### Changed
+- `hot_path_footprint_harness` instruction budgets were re-measured and raised
+  (`create_stream` 560k / `withdraw` 370k / `cancel_stream` 545k /
+  `withdraw_max` 375k, plus a new 415k budget for `withdraw` on a renegotiated
+  stream): reading the rate schedule from its own key costs one extra persistent
+  lookup on every accrual path even for a stream that never renegotiated. The
+  trade-off, and why the alternative (a field on `Stream`) was rejected, is
+  recorded in `docs/FOOTPRINT.md` Candidate 5 and ADR-0012.
+- **Contract Wasm size (#58):** the deployed binary shrinks from 91,004 B to
+  60,386 B (59.0 KiB, under the new 60 KB CI budget). Doc comments on
+  interface items are no longer embedded into `contractspecv0` on-chain
+  (kept 1:1 for host rustdoc via `cfg_attr`), and the duplicated
+  stream-creation effects leg is consolidated into one helper. No storage,
+  event, error-code or signature change; the deploy digest and the
+  canonical interface hash do change — see `docs/WASM_SIZE.md` for the
+  operator notification procedure. Merged with `main` (ownership transfer)
+  the binary is 64,143 B: upstream's new interface adds 3,757 B on top of the
+  60,386 B this work reached, and every remaining non-interface lever was
+  measured at 0 B or negative. The CI budget is therefore raised deliberately
+  to the smallest whole KB the current interface fits (63 KB, 369 B of
+  headroom), with `docs/WASM_SIZE.md` recording why and naming the next
+  entrypoint addition as the trigger to revisit the contract split. Merging
+  the governance timelock then took the build to 84,682 B, because its new
+  interface items arrived with plain `///` docs again; re-applying Technique 1
+  with the new `scripts/gate_interface_docs.py` probe (55 doc groups, and four
+  entrypoints whose doc blocks the merge had duplicated) recovers 6,416 B and
+  lands the binary at **78,266 B**, 14,123 B of which is governance's code,
+  spec entries, event symbols and exports. The scan now runs as a CI step
+  ("Interface doc strings stay out of the Wasm spec") so the rule cannot regress
+  again, and the budget moves 63 → **77 KB** (582 B of headroom) under the same
+  rule.
 - **Deployment interface:** the contract now has a constructor. Deploy with
   the governor address as a constructor argument
   (`stellar contract deploy … -- --governor G…`); `scripts/deploy_testnet.sh`

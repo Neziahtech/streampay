@@ -51,6 +51,15 @@ The harness measures:
 | `withdraw_max` | RMW | 1 Stream Entry | 338,663 | 134,329 | 236 B |
 | `sender_streams (5 ids)` | Read | 1 Index Entry | 52,369 | 25,006 | 0 B |
 
+> **Re-measured after #54 (rate renegotiation).** Every accrual path now reads
+> the rate schedule from its own storage key, so each one pays an extra
+> persistent lookup even for a stream that never renegotiated — the `withdraw`
+> path moved from the 360,000-instruction budget the harness carried before this
+> change to a measured 365,133. `create_stream` is unchanged: a new stream has
+> no schedule to price. The numbers the harness asserts against today are in §6,
+> and §4 Candidate 5 records why the extra read was accepted rather than
+> avoided.
+
 ### 3.2 Wire & Storage Byte Footprint
 
 | Component | Entity | Serialized Payload (Bytes) | Key Size (Bytes) | Total Ledger Footprint |
@@ -123,6 +132,153 @@ The harness measures:
 
 ---
 
+### Candidate 5: Where a Negotiated Rate Schedule Lives (Implemented)
+- **Mechanism Tested:**
+  #54 replaced "one rate per stream" with a schedule of priced windows. The
+  schedule has to be readable by every accrual path (`available`, `withdraw`,
+  `withdraw_max`, `cancel_stream`, `streamed_at`, `sponsored_claim`), so the
+  question is which entry it is stored in.
+- **Options and measured results:**
+  - **Inline on `Stream`** (a `rate_segments` field): one read, but it changes
+    the XDR layout of `DataKey::Stream(id)` — every stream written by an earlier
+    release would fail to deserialize, which the append-only interface rule
+    ([ADR-0003](adr/0003-append-only-interface.md)) forbids, and it inflates the
+    entry every path reads and writes even when no renegotiation ever happened.
+  - **A `has_schedule` flag on `Stream`** to skip the read for never-renegotiated
+    streams: saves one lookup and costs the layout change above, i.e. it buys
+    nothing that Candidate 5 is trying to buy.
+  - **`DataKey::RateSegments(id)`, a separate persistent entry (implemented)**:
+    no stored layout changes, the entry only exists on a stream that actually
+    renegotiated, and its TTL is maintained with the schedule's own writes. The
+    price is one absent-key lookup on the accrual paths of every other stream.
+- **Measured cost of that lookup:** `withdraw` on a never-renegotiated stream
+  costs 365,133 CPU instructions (the harness budget before #54 was 360,000).
+  A stream with a two-window schedule prices at 407,316 (**+42,183**), and a
+  schedule at the `MAX_RATE_SEGMENTS` cap of 32 windows prices at 820,911
+  (**+455,778**, roughly 14,200 per window). The cap is what keeps the worst
+  case bounded: `full_schedule_pricing_is_bounded` measures it rather than
+  assuming it.
+- **Conclusion:** **Accepted & Implemented**. The extra read is bounded, one
+  host dispatch, and it is the only option that leaves stored streams
+  byte-identical. See [ADR-0012](adr/0012-piecewise-rate-schedule-storage.md).
+
+### Candidate 6: Versioned Stream Records and the Refund-Target Read (Implemented)
+
+Two later changes each bought a property at the cost of metered work on the hot
+paths, so both are recorded here rather than being discovered by a surprised
+contributor:
+
+- **`VersionedStream` envelope (#202).** `DataKey::Stream(id)` now stores
+  `{ version, stream }` instead of a bare `Stream`. Every read pays one extra
+  map decode and every write one extra map encode, and the record grows by the
+  version symbol. This is what makes a future layout change decodable at all —
+  the fail-closed probe in `get_stream_record` needs a tag to probe against.
+- **`DataKey::RefundTarget(id)` read (#201).** `cancel_stream` resolves the
+  address that owns the unaccrued remainder before it writes state, because a
+  consented sender-role transfer must be able to leave that claim behind with
+  the address that funded the deposit. The read happens on every cancel, and a
+  *missing* key is metered like a present one, so a stream that never had a
+  transfer pays the difference too.
+- **Rejected alternative:** a `refund_to` field on `Stream`. `#[contracttype]`
+  structs encode positionally (§13.2 of `docs/ARCHITECTURE.md`), so adding a
+  field would make every already-stored record undecodable — the one change
+  the storage-versioning work exists to make unnecessary. A separate key costs
+  CPU; a field would cost the ledger's history.
+- **Refund routing (#204).** `set_refund_target` is a read-then-overwrite of that
+  same `DataKey::RefundTarget(id)`: one stream read, one target read, one key
+  write, one event, and no token transfer — so amendments are cheaper than the
+  cancel they redirect. `create_stream_with_refund` pays ordinary creation plus
+  that single write, which is why the creation goldens and budgets are
+  unchanged: routing is delegated to the existing creation path and pinned
+  afterwards. Because every amendment overwrites the one key rather than
+  appending, storage grows by at most one address per *routed stream*, not per
+  routed amendment — the append-only growth claim is bounded by streams, and an
+  unrouted stream stores nothing at all.
+- **Batch claiming (#205).** `withdraw_many` settles each id through the same
+  `settle_accrued` helper `withdraw_max` uses, so the per-entry work — record
+  read, oracle resolution, rewrite, `Withdrawn` event, token transfer — is
+  identical by construction. What the batch removes is the *per-transaction*
+  work: one contract invocation, one `ContractFrozen` instance read, one
+  `require_auth` for the whole batch, and one ledger footprint instead of
+  twenty. The batch also adds work no single claim pays: the duplicate scan, the
+  per-entry outcome vector, and the `BatchWithdrawSummary` event. Measured over
+  the full cap of 20 streams, the additions cost less than the overhead they
+  remove — see the table below.
+- **Storage growth is append-only and bounded per stream:** at most three extra
+  keys exist for a stream that has been through the sender-transfer surface
+  (`PendingSenderTransfer`, `RefundTarget`, `SenderHistory`), and each is under
+  the same 200,000/500,000-ledger TTL regime as the stream entry itself, so an
+  abandoned stream still archives.
+
+Re-measured with `cargo test -p streampay-contract --lib hot_path_footprint
+--nocapture` (which prints `FOOTPRINT: path=… cpu=… mem=…` for each step):
+
+| Operation | CPU Instructions | Memory (Bytes) | vs. §3.1 baseline |
+|---|---:|---:|---:|
+| `create_stream` | 546,291 | 214,304 | +4,693 (+0.87%) |
+| `withdraw` | 372,647 | 149,374 | +25,565 (+7.37%) |
+| `withdraw_max` | 376,172 | 146,139 | +37,509 (+11.08%) |
+| `cancel_stream` | 590,248 | 192,600 | +66,685 (+12.74%) |
+| `set_refund_target` | 140,812 | 68,410 | new path (#204), budget 150,000 |
+
+`withdraw` on this tree measures 372,647 against the 365,133 #54 left behind:
+the difference, 7,514, is the `VersionedStream` envelope — the same amount every
+other accrual path now pays. `cancel_stream` carries that envelope cost plus the
+`DataKey::RefundTarget(id)` read on top of #54's schedule read, which is why it
+is the only path that pays three added lookups.
+
+### 4.1 Batch claim vs. the same claims issued separately (#205)
+
+`withdraw_many_footprint_harness` builds one portfolio of
+`MAX_WITHDRAW_BATCH` = 20 fully accrued streams twice, over two identical
+fixtures, and claims it in both ways. `cost_estimate()` reports the budget of the
+*last* host invocation rather than a running total, so the twenty separate
+claims are measured one call at a time and summed — that sum is what a recipient
+without batching actually pays. The row below labelled "one stream" is the last
+of those individual measurements, which the harness prints as
+`withdraw_max cpu=… mem=…`; the later claims in the loop are the most expensive
+ones, because every claim grows the recipient's own index the next claim reads.
+
+| Path | CPU Instructions | Memory (Bytes) |
+|---|---:|---:|
+| `withdraw_max`, one stream (last measured) | 469,092 | 184,763 |
+| `withdraw_max` × 20 (20 transactions, summed) | 9,056,515 | 3,503,477 |
+| `withdraw_many` (20 ids, 1 transaction) | **7,213,732** | **1,925,908** |
+| Saved by batching | 1,842,783 (−20.3%) | 1,577,569 (−45.0%) |
+
+Per entry the batch pays 360,687 CPU against a 452,826 CPU average single
+(9,056,515 / 20), so the −20.3% saving is the same ratio read either way, and
+memory falls by nearly half because one transaction carries one contract
+instance, one authorization and one footprint instead of twenty of each. The
+harness asserts both that the batch is cheaper than the summed twenty singles and
+that it is cheaper than twenty times the single claim it replaces, so a future
+change cannot quietly make the batch path pay more per entry than the loop it
+optimizes.
+
+These numbers are *not* comparable with the §4 table's `withdraw_max` row
+(376,172 CPU / 146,139 B). That one claims a 30-day stream in a fixture that has
+already run `create_stream`, `withdraw` and `cancel_stream` in the same env; this
+one claims twenty 1-day streams in a fixture built for the comparison. Only the
+ratios inside each table are meaningful.
+
+Two numbers put the cap in context: a full 20-stream batch runs at 7.21M CPU
+against Soroban's 100M-instruction per-transaction ceiling, and the harness
+budgets it at 8,600,000 CPU (8,000,000 before pause/resume, #24: each entry now
+also looks up its `StreamPause` side key, which takes the batch to 8.42M CPU on
+the same fixture). The ~0.8M of headroom the original budget left is the
+caller's own footprint, rent, and the transaction envelope — which is why the cap
+is 20 and not the 25 `create_streams_batch` allows: creation entries do not read
+a record, resolve an oracle, rewrite it, emit two events and transfer tokens.
+
+`cancel_stream` is the only path that pays all three added lookups — #54's rate
+schedule, the record envelope, and the refund-target read; the rest of the delta
+is the envelope alone. Its harness budget therefore moved 540,000 → 570,000
+(#54) → 580,000 (#201/#204 on the pre-envelope record) → 600,000 CPU instructions
+on this tree, and the harness now prints the numbers above so the next change to
+a hot path is measured, not estimated.
+
+---
+
 ## 5. Before vs. After Footprint Comparison
 
 | Operation | Metric | Before | After | Change |
@@ -142,13 +298,34 @@ The harness measures:
 ## 6. Verification & Regression Testing
 
 1. **Unit & Property Tests**:
-   - `cargo test -p streampay-contract`: All 195 unit and property tests pass.
+   - `cargo test -p streampay-contract`: All 338 unit and property tests pass
+     (two more — the registry generator and the million-schedule rounding
+     analysis — stay `#[ignore]`d).
    - `cargo test -p streampay-passkey`: All 14 tests pass.
 2. **CEI Golden Ordering Traces**:
-   - `cargo test -p streampay-contract --lib operation_order_matches_golden --locked`: All 9 golden traces match byte-for-byte.
+   - `cargo test -p streampay-contract --lib operation_order_matches_golden --locked`: All 18 golden traces match byte-for-byte.
 3. **Footprint Regression Harness**:
    - `hot_path_footprint_harness` in `contracts/streaming-payments/src/test.rs` permanently asserts that hot paths execute within instruction budgets:
-     - `create_stream` <= 560,000 CPU
-     - `withdraw` <= 360,000 CPU
-     - `cancel_stream` <= 540,000 CPU
-     - `withdraw_max` <= 350,000 CPU
+     - `create_stream` <= 560,000 CPU (546,291 measured)
+     - `withdraw` <= 398,000 CPU (389,128 measured; 372,647 before the
+       pause side-key lookup (#24), 365,133 before the record envelope, 347,082
+       before #54)
+     - `cancel_stream` <= 620,000 CPU (608,330 measured — 538,801 with #54's
+       schedule read, 552,355 with the envelope on top, 590,248 with the
+       routed-refund read, and the pause side-key lookup for the rest; 540,000
+       was the pre-dispute budget)
+     - `withdraw_max` <= 402,000 CPU (393,457 measured; 376,172 before #24)
+     - `withdraw` on a renegotiated (two-window) stream <= 458,000 CPU (448,929 measured; 414,184 before #24)
+     - `set_refund_target` <= 150,000 CPU (140,812 measured) — one read of the
+       stream, one key overwrite, no token transfer
+   - Pause/resume (#24) keeps its state under its own `StreamPause(id)` key
+     rather than adding fields to `Stream` (which would change the stored
+     layout of every existing stream), so every accrual path pays one more
+     persistent lookup even for a stream that was never paused; the budgets
+     above were re-measured with that lookup in place.
+   - `full_schedule_pricing_is_bounded` asserts the worst case a schedule can
+     produce — a stream at the 32-segment cap — at <= 850,000 CPU (828,425 measured).
+   - `withdraw_many_footprint_harness` measures §4.1 and asserts that a
+     full 20-id batch stays under 8,600,000 CPU (8,000,000 before #24's
+     per-entry pause lookup) and costs less than the same
+     twenty claims issued as separate transactions.

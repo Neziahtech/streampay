@@ -12,7 +12,9 @@ export interface WebhookEndpoint {
 export interface WebhookEventEnvelope {
   event_id: string;
   event_type: string;
-  stream_id: string;
+  /** `null` for events that are not about a stream (fee, governance, oracle,
+   *  policy and index events). The key is always present. */
+  stream_id: string | null;
   timestamp: number;
   payload: Record<string, unknown>;
 }
@@ -29,7 +31,7 @@ export interface WebhookDelivery {
   id: string;
   endpoint_id: string;
   event_id: string;
-  stream_id: string;
+  stream_id: string | null;
   event_type: string;
   payload: Record<string, unknown>;
   attempt: number;
@@ -47,7 +49,7 @@ export interface WebhookDeadLetterItem {
   delivery_id: string;
   endpoint_id: string;
   event_id: string;
-  stream_id: string;
+  stream_id: string | null;
   event_type: string;
   payload: Record<string, unknown>;
   attempts_count: number;

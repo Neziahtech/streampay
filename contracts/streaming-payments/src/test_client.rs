@@ -11,9 +11,10 @@
 use soroban_sdk::{contractclient, Address, BytesN, Env, Vec};
 
 use crate::{
-    BatchEntry, FeeScan, GovernanceAction, MigrationStatus, PendingOwnership, PendingUpgrade,
-    PeriodSpend, Proposal, ScheduledIntent, SponsorConfig, Stream, StreamError, StreamInput,
-    StreamPolicy, TreasuryStatus,
+    BatchEntry, Dispute, FeeScan, GovernanceAction, MigrationStatus, PendingOwnership,
+    PendingRateChange, PendingSenderTransfer, PendingUpgrade, PeriodSpend, Proposal, RateSegment,
+    ScheduledIntent, SenderHistory, SponsorConfig, Stream, StreamError, StreamInput, StreamPolicy,
+    TreasuryStatus, WithdrawEntry,
 };
 
 /// Interface of the StreamPay streaming-payments contract.
@@ -43,6 +44,24 @@ pub trait StreamingPaymentsApi {
         cancelable: bool,
         use_oracle: bool,
     ) -> Result<u64, StreamError>;
+    #[allow(clippy::too_many_arguments)]
+    fn create_stream_with_refund(
+        env: Env,
+        sender: Address,
+        recipient: Address,
+        token: Address,
+        deposit_amount: i128,
+        start_time: u64,
+        end_time: u64,
+        cancelable: bool,
+        refund_to: Address,
+    ) -> Result<u64, StreamError>;
+    fn set_refund_target(
+        env: Env,
+        caller: Address,
+        stream_id: u64,
+        refund_to: Address,
+    ) -> Result<(), StreamError>;
     fn create_streams(
         env: Env,
         sender: Address,
@@ -55,8 +74,24 @@ pub trait StreamingPaymentsApi {
 
     fn withdraw(env: Env, stream_id: u64, amount: i128) -> Result<(), StreamError>;
     fn withdraw_max(env: Env, stream_id: u64) -> Result<i128, StreamError>;
+    fn withdraw_many(
+        env: Env,
+        recipient: Address,
+        stream_ids: Vec<u64>,
+        strict: bool,
+    ) -> Result<Vec<WithdrawEntry>, StreamError>;
     fn cancel_stream(env: Env, caller: Address, stream_id: u64) -> Result<(), StreamError>;
+    fn pause_stream(env: Env, caller: Address, stream_id: u64) -> Result<(), StreamError>;
+    fn resume_stream(env: Env, caller: Address, stream_id: u64) -> Result<(), StreamError>;
     fn top_up(env: Env, stream_id: u64, amount: i128) -> Result<(), StreamError>;
+    fn raise_dispute(env: Env, stream_id: u64) -> Result<Dispute, StreamError>;
+    fn resolve_dispute(
+        env: Env,
+        caller: Address,
+        stream_id: u64,
+        accept: bool,
+    ) -> Result<(), StreamError>;
+    fn expire_dispute(env: Env, stream_id: u64) -> Result<(), StreamError>;
     fn propose_ownership_transfer(
         env: Env,
         caller: Address,
@@ -74,7 +109,19 @@ pub trait StreamingPaymentsApi {
         stream_id: u64,
     ) -> Result<(), StreamError>;
     fn pending_ownership_transfer(env: Env, stream_id: u64) -> Option<PendingOwnership>;
+    fn propose_rate_change(
+        env: Env,
+        caller: Address,
+        stream_id: u64,
+        amount_per_second: i128,
+    ) -> Result<(), StreamError>;
+    fn accept_rate_change(env: Env, caller: Address, stream_id: u64) -> Result<(), StreamError>;
+    fn cancel_rate_change(env: Env, caller: Address, stream_id: u64) -> Result<(), StreamError>;
+    fn pending_rate_change(env: Env, stream_id: u64) -> Option<PendingRateChange>;
+    fn rate_segments(env: Env, stream_id: u64) -> Vec<RateSegment>;
     fn get_stream(env: Env, stream_id: u64) -> Result<Stream, StreamError>;
+    fn get_dispute(env: Env, stream_id: u64) -> Result<Dispute, StreamError>;
+    fn required_dispute_bond(env: Env, stream_id: u64) -> Result<i128, StreamError>;
     fn available(env: Env, stream_id: u64) -> Result<i128, StreamError>;
     fn recipient_streams(env: Env, recipient: Address, offset: u32, limit: u32) -> Vec<u64>;
     fn sender_streams(env: Env, sender: Address, offset: u32, limit: u32) -> Vec<u64>;
@@ -199,6 +246,30 @@ pub trait StreamingPaymentsApi {
         count: u32,
     ) -> Result<MigrationStatus, StreamError>;
     fn migration_progress(env: Env) -> MigrationStatus;
+    fn stream_record_version(env: Env, stream_id: u64) -> Result<u32, StreamError>;
+    fn migrate_stream_version(
+        env: Env,
+        stream_id: u64,
+    ) -> Result<crate::StreamVersionReport, StreamError>;
+    #[allow(clippy::too_many_arguments)]
+    fn propose_sender_transfer(
+        env: Env,
+        caller: Address,
+        stream_id: u64,
+        new_sender: Address,
+        nonce: u64,
+        transfer_refund_rights: bool,
+    ) -> Result<(), StreamError>;
+    fn accept_sender_transfer(
+        env: Env,
+        caller: Address,
+        stream_id: u64,
+        nonce: u64,
+    ) -> Result<(), StreamError>;
+    fn expire_sender_transfer(env: Env, stream_id: u64) -> Result<u64, StreamError>;
+    fn pending_sender_transfer(env: Env, stream_id: u64) -> Option<PendingSenderTransfer>;
+    fn sender_history(env: Env, stream_id: u64) -> Result<SenderHistory, StreamError>;
+    fn refund_target(env: Env, stream_id: u64) -> Result<Address, StreamError>;
     fn set_oracle_config(
         env: Env,
         caller: Address,

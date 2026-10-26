@@ -5,7 +5,7 @@ export interface OutboxEventRow {
   seq: number;
   idempotency_key: string;
   event_id: string;
-  stream_id: string;
+  stream_id: string | null;
   name: string;
   ledger: number;
   ledger_cursor: string;
@@ -41,7 +41,7 @@ export interface OutboxIntent {
   last_error: string | null;
   created_at: string;
   event_id: string;
-  stream_id: string;
+  stream_id: string | null;
   name: string;
   ledger: number;
   payload: Record<string, unknown>;
@@ -59,7 +59,7 @@ export interface OutboxReplayPage {
     seq: number;
     idempotency_key: string;
     event_id: string;
-    stream_id: string;
+    stream_id: string | null;
     name: string;
     ledger: number;
     ledger_cursor: string;

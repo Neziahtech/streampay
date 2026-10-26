@@ -12,6 +12,9 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 import type { StreamPolicyView, StreamView } from "@/lib/stream-types";
+// The `StreamPolicy` shape comes from the generated event-schema registry
+// (schemas/events/registry.json), shared with the indexer (issue #213).
+import type { StreamPolicy } from "@/lib/generated/events";
 
 const RPC_URL =
   process.env.NEXT_PUBLIC_SOROBAN_RPC_URL ||
@@ -99,6 +102,29 @@ export async function readAvailable(streamId: string): Promise<bigint> {
   return BigInt(scValToNative(retval) as bigint);
 }
 
+/**
+ * The storage layout version a stream record carries, or `null` when the
+ * contract refused to read it: `stream_record_version` fails closed with
+ * `SchemaVersionUnsupported` on a layout this build does not understand, and a
+ * simulation error is exactly that signal. `scripts/migrate_audit.ts` walks the
+ * same view over an address's indexes.
+ */
+export async function readStreamRecordVersion(streamId: string): Promise<number | null> {
+  const retval = await simulateRead("stream_record_version", [u64(streamId)]);
+  return retval ? Number(scValToNative(retval) as number) : null;
+}
+
+/**
+ * The address that receives the unstreamed remainder on cancel (issue #204), or
+ * `null` when the read failed. The contract returns the sender for an unrouted
+ * stream, so callers compare against `stream.sender` instead of testing for an
+ * absent key.
+ */
+export async function readRefundTarget(streamId: string): Promise<string | null> {
+  const retval = await simulateRead("refund_target", [u64(streamId)]);
+  return retval ? String(scValToNative(retval)) : null;
+}
+
 export async function fetchStreamIdsPage(
   address: string,
   role: "recipient" | "sender",
@@ -128,14 +154,14 @@ export async function readStreamPolicy(
       : nativeToScVal(null);
     const retval = await simulateRead("get_stream_policy", [arg]);
     if (!retval) return null;
-    const raw = scValToNative(retval) as Record<string, unknown> | null;
+    const raw = scValToNative(retval) as StreamPolicy | null;
     if (!raw) return null;
     return {
-      minDeposit: String(raw.min_deposit ?? "0"),
-      minDuration: Number(raw.min_duration ?? 0),
-      maxDuration: Number(raw.max_duration ?? 0),
-      minRate: String(raw.min_rate ?? "0"),
-      maxRate: String(raw.max_rate ?? "0"),
+      minDeposit: String(raw.min_deposit),
+      minDuration: Number(raw.min_duration),
+      maxDuration: Number(raw.max_duration),
+      minRate: String(raw.min_rate),
+      maxRate: String(raw.max_rate),
     };
   } catch {
     return null;
