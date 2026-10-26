@@ -57,3 +57,47 @@ fuzz/Cargo.lock
 test-results/
 playwright-report/
 blob-report/
+# ---------------------------------------------------------------------------
+# Storage-layout golden suite (issue #210)
+#
+# The committed fixtures ARE the test data, so the baseline release wasm must
+# escape the global `*.wasm` ignore above (build outputs stay ignored).
+!test_fixtures/**/*.wasm
+
+# The host writes a ledger snapshot per test run. The storage-golden ones embed
+# whole wasm blobs (hundreds of KB each) and carry no review signal: the
+# committed corpus under test_fixtures/storage/ is the artifact of record.
+contracts/streaming-payments/test_snapshots/storage_golden/
+
+# Per-operator state of scripts/storage_golden_smoke.sh (contract id, recorded
+# read-backs) for an in-flight 24 h testnet rehearsal.
+.storage_golden_smoke/
+
+# SDK build artifacts
+sdks/typescript/dist/
+sdks/typescript/*.tgz
+
+# Campaign output and triage bundles: per-run, versioned on the fuzz-corpus
+# branch instead (see docs/FUZZ_CAMPAIGN.md). fuzz/known/ and
+# fuzz/regressions/ are tracked.
+fuzz/campaign/
+fuzz/triage/
+fuzz/coverage/
+
+# Python bytecode
+__pycache__/
+
+# Terraform (infra/terraform)
+# State is never committed: it holds rendered config for a live host, and the
+# plan output of one run must not become another operator's starting point.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfplan
+crash.log
+override.tf
+override.tf.json
+# Rendered bundles and manifest streams: reproducible from the modules, and the
+# bundle manifest hashes files that only exist after install.sh runs.
+infra/terraform/stacks/*/build/

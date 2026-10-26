@@ -57,6 +57,12 @@ pub enum FuzzOp {
         stream_idx: u8,
         amount: i128,
     },
+    PauseStream {
+        stream_idx: u8,
+    },
+    ResumeStream {
+        stream_idx: u8,
+    },
     CancelStream {
         caller_is_recipient: bool,
         stream_idx: u8,
@@ -234,6 +240,24 @@ fuzz_target!(|campaign: ConservationCampaign| {
                     let _ = client
                         .mock_all_auths()
                         .try_top_up(&stream_id, &bounded_amount);
+                }
+            }
+            FuzzOp::PauseStream { stream_idx } => {
+                if !created_stream_ids.is_empty() {
+                    let stream_id =
+                        created_stream_ids[(stream_idx as usize) % created_stream_ids.len()];
+                    let _ = client
+                        .mock_all_auths()
+                        .try_pause_stream(&sender, &stream_id);
+                }
+            }
+            FuzzOp::ResumeStream { stream_idx } => {
+                if !created_stream_ids.is_empty() {
+                    let stream_id =
+                        created_stream_ids[(stream_idx as usize) % created_stream_ids.len()];
+                    let _ = client
+                        .mock_all_auths()
+                        .try_resume_stream(&sender, &stream_id);
                 }
             }
             FuzzOp::CancelStream {
