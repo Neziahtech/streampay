@@ -17,7 +17,8 @@ const OUTBOX_STATES: readonly OutboxState[] = ["pending", "in_flight", "delivere
 export interface NewOutboxEvent {
   id: string;
   name: string;
-  streamId: string;
+  /** null for the events the registry declares no stream for. */
+  streamId: string | null;
   ledger: number;
   ledgerCursor: string;
   payload: Record<string, unknown>;
@@ -34,7 +35,7 @@ export class OutboxStore {
         seq INTEGER PRIMARY KEY AUTOINCREMENT,
         idempotency_key TEXT NOT NULL UNIQUE,
         event_id TEXT NOT NULL,
-        stream_id TEXT NOT NULL,
+        stream_id TEXT,
         name TEXT NOT NULL,
         ledger INTEGER NOT NULL,
         ledger_cursor TEXT NOT NULL,
@@ -349,7 +350,7 @@ export class OutboxStore {
       seq: Number(r.seq),
       idempotency_key: String(r.idempotency_key),
       event_id: String(r.event_id),
-      stream_id: String(r.stream_id),
+      stream_id: r.stream_id === null || r.stream_id === undefined ? null : String(r.stream_id),
       name: String(r.name),
       ledger: Number(r.ledger),
       ledger_cursor: String(r.ledger_cursor),
@@ -371,7 +372,7 @@ export class OutboxStore {
       seq: Number(row.seq),
       idempotency_key: String(row.idempotency_key),
       event_id: String(row.event_id),
-      stream_id: String(row.stream_id),
+      stream_id: row.stream_id === null || row.stream_id === undefined ? null : String(row.stream_id),
       name: String(row.name),
       ledger: Number(row.ledger),
       ledger_cursor: String(row.ledger_cursor),
@@ -474,7 +475,7 @@ export class OutboxStore {
       last_error: (row.last_error as string) ?? null,
       created_at: String(row.created_at),
       event_id: String(row.event_id),
-      stream_id: String(row.stream_id),
+      stream_id: row.stream_id === null || row.stream_id === undefined ? null : String(row.stream_id),
       name: String(row.name),
       ledger: Number(row.ledger),
       payload: this.parsePayload(row.payload),

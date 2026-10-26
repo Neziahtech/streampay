@@ -225,7 +225,7 @@ fn main() {
         end_time: end,
         cancelable: true,
         status: StreamStatus::Active,
-        use_oracle: false,
+        use_oracle: Some(false),
     };
 
     let cold_config = StreamConfigCold {
