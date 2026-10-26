@@ -27,6 +27,11 @@ Every webhook POST body contains a deterministic JSON payload formatted with sor
 }
 ```
 
+`stream_id` is the stream the event is about, or `null` when the event is not about a
+stream at all — fee, governance, oracle, policy and index events carry `null`, since the
+schema registry declares a stream id topic for only part of the event surface. The key is
+always present, so a consumer can branch on it without guessing.
+
 ### Supported Event Types
 - `stream_created`: New stream opened and funded on-chain.
 - `withdrawn`: Recipient claimed accrued funds via `withdraw` or `withdraw_max`.

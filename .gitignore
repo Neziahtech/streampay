@@ -52,6 +52,22 @@ fuzz/target/
 fuzz/corpus/
 fuzz/artifacts/
 fuzz/Cargo.lock
+
+# ---------------------------------------------------------------------------
+# Storage-layout golden suite (issue #210)
+#
+# The committed fixtures ARE the test data, so the baseline release wasm must
+# escape the global `*.wasm` ignore above (build outputs stay ignored).
+!test_fixtures/**/*.wasm
+
+# The host writes a ledger snapshot per test run. The storage-golden ones embed
+# whole wasm blobs (hundreds of KB each) and carry no review signal: the
+# committed corpus under test_fixtures/storage/ is the artifact of record.
+contracts/streaming-payments/test_snapshots/storage_golden/
+
+# Per-operator state of scripts/storage_golden_smoke.sh (contract id, recorded
+# read-backs) for an in-flight 24 h testnet rehearsal.
+.storage_golden_smoke/
 # Campaign output and triage bundles: per-run, versioned on the fuzz-corpus
 # branch instead (see docs/FUZZ_CAMPAIGN.md). fuzz/known/ and
 # fuzz/regressions/ are tracked.

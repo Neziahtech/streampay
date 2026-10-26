@@ -40,7 +40,8 @@ use crate::test_client::StreamingPaymentsClient as Client;
 use crate::{
     bond_shares, required_bond, OwnershipRole, PendingRateChange, RateChangeAccepted,
     RateChangeProposed, Stream, StreamError, StreamInput, StreamStatus, StreamingPayments,
-    INITIAL_SCHEMA_VERSION, MAX_DURATION_SECONDS, MAX_RATE_SEGMENTS, MIN_UPGRADE_DELAY_SECONDS,
+    WithdrawEntry, WithdrawOutcome, INITIAL_SCHEMA_VERSION, MAX_DURATION_SECONDS,
+    MAX_RATE_SEGMENTS, MAX_WITHDRAW_BATCH, MIN_UPGRADE_DELAY_SECONDS,
     OWNERSHIP_PROPOSAL_TTL_SECONDS, RATE_PROPOSAL_TTL_SECONDS, TARGET_SCHEMA_VERSION,
 };
 
@@ -221,6 +222,26 @@ impl Fixture {
         self.env.ledger().with_mut(|li| li.timestamp += seconds);
     }
 
+    /// Current ledger timestamp — the contract's only source of "now".
+    pub(crate) fn ledger_time(&self) -> u64 {
+        self.env.ledger().timestamp()
+    }
+
+    /// Pin the ledger clock to an absolute timestamp. Models a read the
+    /// frontend believes happened at a known ledger moment (as-of anchor).
+    pub(crate) fn set_ledger_time(&self, timestamp: u64) {
+        self.env.ledger().with_mut(|li| li.timestamp = timestamp);
+    }
+
+    /// Shift the ledger clock by signed seconds, saturating at zero. Lets a
+    /// test run the ledger *behind* a client-supplied time to reproduce clock
+    /// skew between `Date.now()` and `ledger().timestamp()`.
+    pub(crate) fn offset_ledger_time(&self, offset: i64) {
+        self.env.ledger().with_mut(|li| {
+            li.timestamp = li.timestamp.saturating_add_signed(offset);
+        });
+    }
+
     /// Creates an address funded with `DEPOSIT` and pre-approved as a payer.
     pub(crate) fn fund_payer(&self) -> Address {
         let payer = Address::generate(&self.env);
@@ -329,6 +350,27 @@ fn top_up_then_withdraw_operation_order_matches_golden() {
     assert_eq!(
         actual,
         include_str!("../test_orderings/top_up_then_withdraw.txt").trim_end()
+    );
+}
+
+#[test]
+fn pause_resume_operation_order_matches_golden() {
+    let f = Fixture::setup_quiet();
+    let id = f.create_stream(DEPOSIT, 0, 10 * DAY, false);
+    f.advance_time(DAY);
+
+    // Pause, then resume a day later so the resume leg shifts the window and
+    // rewrites the stream: every state write lands before its event, and
+    // neither leg moves tokens.
+    crate::cei_trace::begin();
+    f.client.mock_all_auths().pause_stream(&f.sender, &id);
+    f.advance_time(DAY);
+    f.client.mock_all_auths().resume_stream(&f.sender, &id);
+    let actual = crate::cei_trace::finish();
+
+    assert_eq!(
+        actual,
+        include_str!("../test_orderings/pause_resume.txt").trim_end()
     );
 }
 
@@ -5565,7 +5607,13 @@ fn hot_path_footprint_harness() {
     // every accrual path pays one extra persistent lookup even for a stream that
     // never renegotiated. The cheaper alternative, a "has a schedule" flag,
     // would mean a new `Stream` field: a layout change for every stored stream.
+    // Pause/resume (#24) does the same with its `StreamPause` key: one more
+    // persistent lookup per accrual read, instead of new `Stream` fields.
     // See docs/FOOTPRINT.md.
+    fn measured(label: &str, cpu: u64, mem: u64) {
+        std::println!("FOOTPRINT: path={label} cpu={cpu} mem={mem}");
+    }
+
     let f = Fixture::setup();
     let duration = 30 * DAY;
 
@@ -5573,6 +5621,8 @@ fn hot_path_footprint_harness() {
     f.env.cost_estimate().budget().reset_unlimited();
     let id = f.create_stream(DEPOSIT, DAY, duration, true);
     let cpu_create = f.env.cost_estimate().budget().cpu_instruction_cost();
+    let mem_create = f.env.cost_estimate().budget().memory_bytes_cost();
+    measured("create_stream", cpu_create, mem_create);
     assert!(
         cpu_create <= 560_000,
         "create_stream exceeded budget: {}",
@@ -5584,8 +5634,10 @@ fn hot_path_footprint_harness() {
     f.env.cost_estimate().budget().reset_unlimited();
     f.client.mock_all_auths().withdraw(&id, &(DEPOSIT / 10));
     let cpu_withdraw = f.env.cost_estimate().budget().cpu_instruction_cost();
+    let mem_withdraw = f.env.cost_estimate().budget().memory_bytes_cost();
+    measured("withdraw", cpu_withdraw, mem_withdraw);
     assert!(
-        cpu_withdraw <= 370_000,
+        cpu_withdraw <= 398_000,
         "withdraw exceeded budget: {}",
         cpu_withdraw
     );
@@ -5595,11 +5647,19 @@ fn hot_path_footprint_harness() {
     f.env.cost_estimate().budget().reset_unlimited();
     f.client.mock_all_auths().cancel_stream(&f.sender, &id);
     let cpu_cancel = f.env.cost_estimate().budget().cpu_instruction_cost();
+    let mem_cancel = f.env.cost_estimate().budget().memory_bytes_cost();
+    measured("cancel_stream", cpu_cancel, mem_cancel);
+    // Resolving the refund target is one more persistent-key read (a stream that
+    // never had a role transfer or a refund amendment has no `RefundTarget` key,
+    // and a missing key is metered too). The alternative — a `refund_to` field on
+    // `Stream` — would break the positional encoding of every already-stored
+    // record; see `docs/FOOTPRINT.md` Candidate 6.
     assert!(
-        // 540k pre-dispute; the freeze check adds one dispute-key storage lookup.
-        // The merged rate-renegotiation code path adds another ~3K of hot-path
-        // instructions through shared validation helpers.
-        cpu_cancel <= 570_000,
+        // 540k pre-dispute; the freeze check adds one dispute-key storage lookup,
+        // the merged rate-renegotiation code path another ~3K of hot-path
+        // instructions through shared validation helpers, and the routed refund
+        // one more persistent-key read; the pause side-key check (#24) another.
+        cpu_cancel <= 620_000,
         "cancel_stream exceeded budget: {}",
         cpu_cancel
     );
@@ -5610,8 +5670,10 @@ fn hot_path_footprint_harness() {
     f.env.cost_estimate().budget().reset_unlimited();
     f.client.mock_all_auths().withdraw_max(&id2);
     let cpu_withdraw_max = f.env.cost_estimate().budget().cpu_instruction_cost();
+    let mem_withdraw_max = f.env.cost_estimate().budget().memory_bytes_cost();
+    measured("withdraw_max", cpu_withdraw_max, mem_withdraw_max);
     assert!(
-        cpu_withdraw_max <= 375_000,
+        cpu_withdraw_max <= 402_000,
         "withdraw_max exceeded budget: {}",
         cpu_withdraw_max
     );
@@ -5631,9 +5693,29 @@ fn hot_path_footprint_harness() {
     f.client.mock_all_auths().withdraw(&id3, &(DEPOSIT / 100));
     let cpu_scheduled_withdraw = f.env.cost_estimate().budget().cpu_instruction_cost();
     assert!(
-        cpu_scheduled_withdraw <= 415_000,
+        cpu_scheduled_withdraw <= 458_000,
         "withdraw on a scheduled stream exceeded budget: {}",
         cpu_scheduled_withdraw
+    );
+
+    // 5. set_refund_target on a fresh stream (issue #204). The amendment is a
+    // read + overwrite of one key and no transfer, so it is priced next to the
+    // cancel that pays the routed address. Its own fixture because the sender's
+    // balance above has already been spent by the withdrawal steps.
+    let g = Fixture::setup();
+    let route_id = g.create_stream(DEPOSIT, DAY, duration, true);
+    let routed = Address::generate(&g.env);
+    g.env.cost_estimate().budget().reset_unlimited();
+    g.client
+        .mock_all_auths()
+        .set_refund_target(&g.sender, &route_id, &routed);
+    let cpu_route = g.env.cost_estimate().budget().cpu_instruction_cost();
+    let mem_route = g.env.cost_estimate().budget().memory_bytes_cost();
+    measured("set_refund_target", cpu_route, mem_route);
+    assert!(
+        cpu_route <= 150_000,
+        "set_refund_target exceeded budget: {}",
+        cpu_route
     );
 }
 
@@ -5714,6 +5796,18 @@ fn freeze_and_unfreeze_governor_controls_and_mutation_gates() {
         .client
         .mock_all_auths()
         .try_top_up(&id, &DEPOSIT)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::ContractFrozen);
+
+    // 6. withdraw_many — the batch gate runs before any entry is read, so a
+    // frozen contract cannot be claimed through the batch path either.
+    let mut ids = soroban_sdk::Vec::new(&f.env);
+    ids.push_back(id);
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_withdraw_many(&f.recipient, &ids, &false)
         .unwrap_err()
         .unwrap();
     assert_eq!(err, StreamError::ContractFrozen);
@@ -7243,7 +7337,7 @@ fn empty_plan_matches_single_window_formula() {
                 end_time: start + duration,
                 cancelable: false,
                 status: StreamStatus::Active,
-                use_oracle: false,
+                use_oracle: Some(false),
             };
             for offset in [0u64, 1, duration / 2, duration - 1, duration, duration + 1] {
                 let now = start + offset;
@@ -7802,6 +7896,1041 @@ fn rate_change_events_are_emitted_with_expected_payloads() {
     );
 }
 
+// ------------------------------------------------- schema record versioning --
+//
+// Storage layout versioning: every persisted record carries an explicit version
+// tag on write, the legacy untagged layout stays readable, an unknown version
+// fails closed on every path, and one record can be re-encoded by anyone,
+// idempotently.
+
+/// The legacy (v1) layout is a bare `Stream` map: exactly these eleven keys, in
+/// declaration order, and no version tag anywhere.
+const V1_STREAM_FIELDS: [&str; 11] = [
+    "id",
+    "sender",
+    "recipient",
+    "token",
+    "deposit",
+    "withdrawn",
+    "start_time",
+    "end_time",
+    "cancelable",
+    "status",
+    "use_oracle",
+];
+
+/// Converts a host value to its XDR form.
+fn to_scval(env: &Env, val: soroban_sdk::Val) -> soroban_sdk::xdr::ScVal {
+    use soroban_sdk::TryFromVal;
+    soroban_sdk::xdr::ScVal::try_from_val(env, &val).unwrap()
+}
+
+/// Converts an XDR value back to its host form.
+fn to_host(env: &Env, scval: &soroban_sdk::xdr::ScVal) -> soroban_sdk::Val {
+    use soroban_sdk::TryFromVal;
+    soroban_sdk::Val::try_from_val(env, scval).unwrap()
+}
+
+/// Puts every map inside an ScVal into XDR canonical order. A host map is
+/// stored key-ordered and refuses an out-of-order one on import, so this is the
+/// wire form a record really has — whatever order its fields were declared in.
+fn canonicalize(scval: soroban_sdk::xdr::ScVal) -> soroban_sdk::xdr::ScVal {
+    use soroban_sdk::xdr::{ScMap, ScMapEntry, ScVal, ScVec};
+    match scval {
+        ScVal::Map(Some(ScMap(entries))) => {
+            let mut sorted: std::vec::Vec<ScMapEntry> = entries
+                .into_iter()
+                .map(|entry| ScMapEntry {
+                    key: canonicalize(entry.key),
+                    val: canonicalize(entry.val),
+                })
+                .collect();
+            sorted.sort();
+            ScVal::Map(Some(ScMap(sorted.try_into().unwrap())))
+        }
+        ScVal::Vec(Some(ScVec(values))) => ScVal::Vec(Some(ScVec(
+            values
+                .into_iter()
+                .map(canonicalize)
+                .collect::<std::vec::Vec<_>>()
+                .try_into()
+                .unwrap(),
+        ))),
+        other => other,
+    }
+}
+
+/// The map keys of an XDR map value, as strings, in sorted order: host maps
+/// are key-ordered, so the wire order is a property of the encoding, not of
+/// the declaration.
+fn scval_map_keys(map: &soroban_sdk::xdr::ScVal) -> Vec<&str> {
+    use soroban_sdk::xdr::ScVal;
+    let ScVal::Map(Some(entries)) = map else {
+        panic!("expected an ScVal map, got {map:?}");
+    };
+    let mut keys: Vec<&str> = entries
+        .iter()
+        .map(|entry| match &entry.key {
+            ScVal::Symbol(sym) => std::str::from_utf8(&sym.0[..]).unwrap(),
+            other => panic!("unexpected map key {other:?}"),
+        })
+        .collect();
+    keys.sort();
+    keys
+}
+
+/// The field names of a layout, in the order the host stores them.
+fn sorted_field_names(fields: &[&'static str]) -> Vec<&'static str> {
+    let mut names = fields.to_vec();
+    names.sort_unstable();
+    names
+}
+
+/// Hand-encodes the legacy v1 blob for `s` as raw XDR: a map of the eleven
+/// original field names, assembled from per-field ScVals rather than through
+/// `Stream`'s own derive, so the test pins the *wire layout*.
+fn hand_encode_v1_blob(env: &Env, s: &crate::Stream) -> soroban_sdk::xdr::ScVal {
+    use soroban_sdk::xdr::{ScMap, ScMapEntry, ScSymbol, ScVal};
+    let fields: std::vec::Vec<(&str, soroban_sdk::Val)> = std::vec![
+        ("id", s.id.into_val(env)),
+        ("sender", s.sender.into_val(env)),
+        ("recipient", s.recipient.into_val(env)),
+        ("token", s.token.into_val(env)),
+        ("deposit", s.deposit.into_val(env)),
+        ("withdrawn", s.withdrawn.into_val(env)),
+        ("start_time", s.start_time.into_val(env)),
+        ("end_time", s.end_time.into_val(env)),
+        ("cancelable", s.cancelable.into_val(env)),
+        ("status", s.status.into_val(env)),
+        ("use_oracle", s.use_oracle.into_val(env)),
+    ];
+    let entries: std::vec::Vec<ScMapEntry> = fields
+        .into_iter()
+        .map(|(name, val)| ScMapEntry {
+            key: ScVal::Symbol(ScSymbol(name.as_bytes().to_vec().try_into().unwrap())),
+            val: canonicalize(to_scval(env, val)),
+        })
+        .collect();
+    canonicalize(ScVal::Map(Some(ScMap(entries.try_into().unwrap()))))
+}
+
+/// Overwrites a stored record with raw XDR, as a pre-versioning deploy would
+/// have written it. Storage is contract-scoped, so the write happens inside the
+/// contract's own context — the same footprint its entrypoints read.
+fn store_raw_record(f: &Fixture, id: u64, blob: &soroban_sdk::xdr::ScVal) {
+    let canonical = canonicalize(blob.clone());
+    f.env.as_contract(&f.client.address, || {
+        let val = to_host(&f.env, &canonical);
+        f.env
+            .storage()
+            .persistent()
+            .set(&crate::stream::DataKey::Stream(id), &val);
+    });
+}
+
+fn raw_record(f: &Fixture, id: u64) -> soroban_sdk::xdr::ScVal {
+    f.env.as_contract(&f.client.address, || {
+        let val: soroban_sdk::Val = f
+            .env
+            .storage()
+            .persistent()
+            .get(&crate::stream::DataKey::Stream(id))
+            .unwrap();
+        to_scval(&f.env, val)
+    })
+}
+
+#[test]
+fn records_are_written_with_an_explicit_version_tag() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    assert_eq!(
+        f.client.stream_record_version(&id),
+        crate::CURRENT_STREAM_RECORD_VERSION
+    );
+    // The tag is on the wire, not inferred: the stored map names it.
+    assert_eq!(
+        scval_map_keys(&raw_record(&f, id)),
+        sorted_field_names(&["stream", "version"])
+    );
+}
+
+#[test]
+fn an_unknown_stream_has_no_record_version() {
+    let f = Fixture::setup();
+    let client = f.client.mock_all_auths();
+    let err = client.try_stream_record_version(&999).unwrap_err().unwrap();
+    assert_eq!(err, StreamError::StreamNotFound);
+    let err = client
+        .try_migrate_stream_version(&999)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::StreamNotFound);
+}
+
+#[test]
+fn xdr_v1_blob_migrates_to_a_field_for_field_identical_v2_record() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let native = f.client.get_stream(&id);
+    // The natively-written record is the reference the migration must match.
+    let native_blob = raw_record(&f, id);
+
+    // The hand-encoder is faithful: it reproduces the derive's v1 output.
+    let legacy = hand_encode_v1_blob(&f.env, &native);
+    assert_eq!(
+        legacy,
+        canonicalize(to_scval(&f.env, native.into_val(&f.env))),
+        "hand-encoded v1 blob diverged from the Stream wire layout"
+    );
+    assert_eq!(
+        scval_map_keys(&legacy),
+        sorted_field_names(&V1_STREAM_FIELDS)
+    );
+
+    // Downgrade the record in place to the legacy layout.
+    store_raw_record(&f, id, &legacy);
+
+    // A v1 record stays readable, and reports its version as 1.
+    assert_eq!(
+        f.client.stream_record_version(&id),
+        crate::STREAM_RECORD_VERSION_V1
+    );
+    assert_eq!(f.client.get_stream(&id), native);
+
+    let report = f.client.mock_all_auths().migrate_stream_version(&id);
+    assert_eq!(
+        report,
+        crate::StreamVersionReport {
+            stream_id: id,
+            from_version: crate::STREAM_RECORD_VERSION_V1,
+            to_version: crate::CURRENT_STREAM_RECORD_VERSION,
+            migrated: true,
+        }
+    );
+
+    // Field-for-field *and* byte-for-byte identical to the native v2 record.
+    assert_eq!(raw_record(&f, id), native_blob);
+    assert_eq!(f.client.get_stream(&id), native);
+    assert_eq!(
+        f.client.stream_record_version(&id),
+        crate::CURRENT_STREAM_RECORD_VERSION
+    );
+}
+
+#[test]
+fn migrating_a_current_record_twice_is_a_no_op() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let before = raw_record(&f, id);
+    let _ = f.env.events().all();
+
+    let report = f.client.mock_all_auths().migrate_stream_version(&id);
+    assert!(!report.migrated);
+    assert_eq!(report.from_version, report.to_version);
+    assert_eq!(report.to_version, crate::CURRENT_STREAM_RECORD_VERSION);
+    assert_eq!(raw_record(&f, id), before);
+    // No rewrite means no event: the second call is provably inert.
+    assert!(f
+        .env
+        .events()
+        .all()
+        .filter_by_contract(&f.client.address)
+        .events()
+        .is_empty());
+
+    // Idempotence is not a one-shot property.
+    assert!(
+        !f.client
+            .mock_all_auths()
+            .migrate_stream_version(&id)
+            .migrated
+    );
+}
+
+#[test]
+fn migrating_a_legacy_record_emits_one_event_with_its_version_span() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let native = f.client.get_stream(&id);
+    store_raw_record(&f, id, &hand_encode_v1_blob(&f.env, &native));
+    let _ = f.env.events().all();
+
+    f.client.mock_all_auths().migrate_stream_version(&id);
+    let expected = crate::StreamRecordMigrated {
+        stream_id: id,
+        from_version: crate::STREAM_RECORD_VERSION_V1,
+        to_version: crate::CURRENT_STREAM_RECORD_VERSION,
+    };
+    assert_eq!(
+        f.env.events().all().filter_by_contract(&f.client.address),
+        [expected.to_xdr(&f.env, &f.client.address)],
+    );
+}
+
+#[test]
+fn an_unknown_record_version_fails_closed_on_every_path() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let unknown = crate::stream::VersionedStream {
+        version: crate::CURRENT_STREAM_RECORD_VERSION + 1,
+        stream: f.client.get_stream(&id),
+    };
+    store_raw_record(&f, id, &to_scval(&f.env, unknown.into_val(&f.env)));
+
+    // Refuse to decode: a layout this build has never seen is never guessed at.
+    let client = f.client.mock_all_auths();
+    let attempts: std::vec::Vec<Result<(), Result<StreamError, soroban_sdk::InvokeError>>> = std::vec![
+        client.try_get_stream(&id).map(|_| ()),
+        client.try_available(&id).map(|_| ()),
+        client.try_withdraw(&id, &1).map(|_| ()),
+        client.try_withdraw_max(&id).map(|_| ()),
+        client.try_cancel_stream(&f.sender, &id).map(|_| ()),
+        client.try_top_up(&id, &1).map(|_| ()),
+        client.try_stream_record_version(&id).map(|_| ()),
+        client.try_migrate_stream_version(&id).map(|_| ()),
+    ];
+    for attempt in attempts {
+        assert_eq!(
+            attempt.unwrap_err().unwrap(),
+            StreamError::SchemaVersionUnsupported
+        );
+    }
+}
+
+#[test]
+fn a_record_of_unrecognisable_shape_is_refused_not_mis_decoded() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    // Neither the v1 field set nor the tagged layout: garbage must not decode
+    // into a plausible-looking stream.
+    let mut bogus = hand_encode_v1_blob(&f.env, &f.client.get_stream(&id));
+    if let soroban_sdk::xdr::ScVal::Map(Some(map)) = &mut bogus {
+        let mut entries: std::vec::Vec<soroban_sdk::xdr::ScMapEntry> =
+            map.0.iter().cloned().collect();
+        entries.retain(|entry| {
+            !matches!(&entry.key, soroban_sdk::xdr::ScVal::Symbol(sym)
+                if sym.0.iter().as_slice() == b"start_time"
+                    || sym.0.iter().as_slice() == b"end_time")
+        });
+        *map = soroban_sdk::xdr::ScMap(entries.try_into().unwrap());
+    }
+    store_raw_record(&f, id, &bogus);
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_get_stream(&id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::SchemaVersionUnsupported);
+}
+
+#[test]
+fn accrual_is_identical_across_layouts_at_window_boundaries() {
+    let f = Fixture::setup();
+    // Two streams sharing one window: one forced back to the legacy layout, one
+    // written natively. Their accrual must agree at every boundary.
+    let legacy_id = f.create_stream(DEPOSIT, DAY, 4 * DAY, false);
+    let native_id = f.create_stream(DEPOSIT, DAY, 4 * DAY, false);
+    let legacy = f.client.get_stream(&legacy_id);
+    store_raw_record(&f, legacy_id, &hand_encode_v1_blob(&f.env, &legacy));
+
+    // Boundaries walked in order: before start, mid-window, end-1, end, past end.
+    let mut before_end = None;
+    for step in 0..6 {
+        f.advance_time(DAY);
+        let legacy_available = f.client.available(&legacy_id);
+        assert_eq!(
+            legacy_available,
+            f.client.available(&native_id),
+            "legacy and native layouts diverged at step {step}"
+        );
+        if step == 3 {
+            before_end = Some(legacy_available);
+        }
+    }
+    assert!(before_end.is_some());
+
+    f.client.mock_all_auths().migrate_stream_version(&legacy_id);
+    // Past the window end both records settle on the full deposit, and the
+    // migrated record pays exactly what the native one owes.
+    assert_eq!(
+        f.client.available(&legacy_id),
+        f.client.available(&native_id)
+    );
+    assert_eq!(f.client.available(&legacy_id), DEPOSIT);
+    let paid = f.client.mock_all_auths().withdraw_max(&legacy_id);
+    assert_eq!(paid, DEPOSIT);
+}
+
+#[test]
+fn any_caller_can_migrate_and_the_batch_path_lands_on_the_current_layout() {
+    let f = Fixture::setup();
+    let legacy_id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let native = f.client.get_stream(&legacy_id);
+    store_raw_record(&f, legacy_id, &hand_encode_v1_blob(&f.env, &native));
+    let batch_id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let batch_stream = f.client.get_stream(&batch_id);
+
+    // Permissionless: no governor, no counterparty, no authorization at all.
+    f.client.mock_all_auths().migrate_stream_version(&legacy_id);
+    assert_eq!(
+        f.client.stream_record_version(&legacy_id),
+        crate::CURRENT_STREAM_RECORD_VERSION
+    );
+
+    // The governor-driven batch path rewrites the records it touches as well.
+    f.client.mock_all_auths().set_frozen(&f.governor, &true);
+    f.client
+        .mock_all_auths()
+        .migrate_storage(&f.governor, &1, &50);
+    f.client.mock_all_auths().set_frozen(&f.governor, &false);
+    assert_eq!(
+        f.client.stream_record_version(&batch_id),
+        crate::CURRENT_STREAM_RECORD_VERSION
+    );
+    assert_eq!(f.client.get_stream(&batch_id), batch_stream);
+    assert_eq!(f.client.get_stream(&legacy_id), native);
+}
+
+#[test]
+fn record_migration_is_refused_while_frozen() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    f.client.mock_all_auths().set_frozen(&f.governor, &true);
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_migrate_stream_version(&id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::ContractFrozen);
+    // Reads keep working while frozen.
+    assert_eq!(
+        f.client.stream_record_version(&id),
+        crate::CURRENT_STREAM_RECORD_VERSION
+    );
+}
+
+/// The migration path's own Checks-Effects-Interactions trace: it never
+/// transfers tokens, so a rewrite is `read -> write -> event` and nothing else.
+#[test]
+fn migrate_stream_version_operation_order_matches_golden() {
+    let f = Fixture::setup_quiet();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let native = f.client.get_stream(&id);
+    store_raw_record(&f, id, &hand_encode_v1_blob(&f.env, &native));
+
+    crate::cei_trace::begin();
+    f.client.mock_all_auths().migrate_stream_version(&id);
+    let actual = crate::cei_trace::finish();
+
+    assert_eq!(
+        actual,
+        include_str!("../test_orderings/migrate_stream_version.txt").trim_end()
+    );
+}
+
+// ---------------------------------------------- consented sender transfers --
+//
+// The payer role moves only on the recipient's consent: the sender proposes a
+// new sender with a nonce and a window, the recipient executes it (or anybody
+// reclaims it after the window), the hop is written to an append-only sender
+// log, both discovery indexes are re-pointed, and the deposit's refund claim
+// follows only when the proposal said it should.
+
+/// Proposes `new_sender` for `id` as the stream's sender and returns nothing:
+/// every test that needs the proposal to exist calls this first.
+fn propose_transfer(f: &Fixture, id: u64, new_sender: &Address, nonce: u64, rights: bool) {
+    f.client
+        .mock_all_auths()
+        .propose_sender_transfer(&f.sender, &id, new_sender, &nonce, &rights);
+}
+
+#[test]
+fn recipient_consent_moves_the_sender_role_and_leaves_the_money_alone() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let before = f.client.get_stream(&id);
+    let new_sender = Address::generate(&f.env);
+
+    propose_transfer(&f, id, &new_sender, 7, false);
+    assert_eq!(
+        f.client.get_stream(&id).sender,
+        f.sender,
+        "the role has not moved until the recipient consents"
+    );
+
+    f.advance_time(2 * DAY);
+    let available_before = f.client.available(&id);
+    let escrow_before = TokenClient::new(&f.env, &f.token).balance(&f.client.address);
+    f.client
+        .mock_all_auths()
+        .accept_sender_transfer(&f.recipient, &id, &7);
+
+    let after = f.client.get_stream(&id);
+    assert_eq!(after.sender, new_sender);
+    // Only the role address moved: window, token, deposit and withdrawals — and
+    // therefore the accrual curve — are untouched.
+    assert_eq!(after.recipient, before.recipient);
+    assert_eq!(after.token, before.token);
+    assert_eq!(after.deposit, before.deposit);
+    assert_eq!(after.withdrawn, before.withdrawn);
+    assert_eq!(after.start_time, before.start_time);
+    assert_eq!(after.end_time, before.end_time);
+    assert_eq!(after.status, before.status);
+    assert_eq!(
+        f.client.available(&id),
+        available_before,
+        "accrual does not depend on who pays"
+    );
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.client.address),
+        escrow_before,
+        "a role change moves no tokens"
+    );
+    assert!(f.client.pending_sender_transfer(&id).is_none());
+}
+
+#[test]
+fn only_the_recipient_can_execute_a_sender_transfer() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let new_sender = Address::generate(&f.env);
+    propose_transfer(&f, id, &new_sender, 1, false);
+
+    // The incoming sender consents to nothing; the outgoing sender already
+    // agreed by proposing; a stranger is irrelevant.
+    for caller in [
+        new_sender.clone(),
+        f.sender.clone(),
+        Address::generate(&f.env),
+    ] {
+        let err = f
+            .client
+            .mock_all_auths()
+            .try_accept_sender_transfer(&caller, &id, &1)
+            .unwrap_err()
+            .unwrap();
+        assert_eq!(err, StreamError::SenderTransferNotConsenter);
+    }
+    assert_eq!(f.client.get_stream(&id).sender, f.sender);
+    // The proposal survives a refused consent, so the recipient can still act.
+    assert_eq!(f.client.pending_sender_transfer(&id).unwrap().nonce, 1);
+}
+
+#[test]
+fn the_nonce_a_consent_presents_must_be_the_proposals() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let new_sender = Address::generate(&f.env);
+    propose_transfer(&f, id, &new_sender, 41, false);
+
+    for wrong in [40u64, 42, u64::MAX] {
+        let err = f
+            .client
+            .mock_all_auths()
+            .try_accept_sender_transfer(&f.recipient, &id, &wrong)
+            .unwrap_err()
+            .unwrap();
+        assert_eq!(
+            err,
+            StreamError::SenderTransferNonceMismatch,
+            "nonce {wrong}"
+        );
+    }
+    assert_eq!(f.client.get_stream(&id).sender, f.sender);
+
+    // A replaced proposal carries its own nonce, never the previous one: the
+    // stale nonce cannot execute whatever is stored now.
+    f.advance_time(OWNERSHIP_PROPOSAL_TTL_SECONDS);
+    propose_transfer(&f, id, &new_sender, 42, false);
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_accept_sender_transfer(&f.recipient, &id, &41)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::SenderTransferNonceMismatch);
+
+    f.client
+        .mock_all_auths()
+        .accept_sender_transfer(&f.recipient, &id, &42);
+    assert_eq!(f.client.get_stream(&id).sender, new_sender);
+}
+
+#[test]
+fn an_expired_transfer_cannot_be_accepted_and_is_cleanly_reclaimable() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let new_sender = Address::generate(&f.env);
+    propose_transfer(&f, id, &new_sender, 5, false);
+
+    f.advance_time(OWNERSHIP_PROPOSAL_TTL_SECONDS);
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_accept_sender_transfer(&f.recipient, &id, &5)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::SenderTransferExpired);
+    assert_eq!(f.client.get_stream(&id).sender, f.sender);
+
+    // Reclaiming is permissionless and reports which proposal it removed.
+    assert_eq!(f.client.mock_all_auths().expire_sender_transfer(&id), 5);
+    assert!(f.client.pending_sender_transfer(&id).is_none());
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_expire_sender_transfer(&id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::SenderTransferNotFound);
+
+    // A live proposal is not reclaimable — the window is what ends it.
+    propose_transfer(&f, id, &new_sender, 6, false);
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_expire_sender_transfer(&id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::SenderTransferNotExpired);
+    assert_eq!(f.client.pending_sender_transfer(&id).unwrap().nonce, 6);
+}
+
+#[test]
+fn proposing_again_is_refused_while_a_proposal_is_live_and_allowed_afterwards() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let first = Address::generate(&f.env);
+    let second = Address::generate(&f.env);
+
+    propose_transfer(&f, id, &first, 1, false);
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_propose_sender_transfer(&f.sender, &id, &second, &2, &false)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::SenderTransferPending);
+
+    // The window ending frees the slot without any cleanup call.
+    f.advance_time(OWNERSHIP_PROPOSAL_TTL_SECONDS);
+    propose_transfer(&f, id, &second, 2, false);
+    let pending = f.client.pending_sender_transfer(&id).unwrap();
+    assert_eq!(pending.new_sender, second);
+    assert_eq!(pending.nonce, 2);
+}
+
+#[test]
+fn proposal_targets_and_proposers_are_validated() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let stranger = Address::generate(&f.env);
+
+    // Only the current sender proposes their own role away.
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_propose_sender_transfer(&stranger, &id, &Address::generate(&f.env), &1, &false)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::NotAuthorized);
+
+    // Handing the role to the current sender (a no-op) or to the recipient
+    // (both roles on one address) is refused.
+    for target in [f.sender.clone(), f.recipient.clone()] {
+        let err = f
+            .client
+            .mock_all_auths()
+            .try_propose_sender_transfer(&f.sender, &id, &target, &1, &false)
+            .unwrap_err()
+            .unwrap();
+        assert_eq!(err, StreamError::InvalidTransferTarget);
+    }
+
+    // Unknown stream.
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_propose_sender_transfer(&f.sender, &999, &stranger, &1, &false)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::StreamNotFound);
+
+    // ...and a stream that is no longer active.
+    let ended = f.create_stream(DEPOSIT, 0, DAY, true);
+    f.advance_time(2 * DAY);
+    assert_eq!(f.client.mock_all_auths().withdraw_max(&ended), DEPOSIT);
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_propose_sender_transfer(&f.sender, &ended, &stranger, &1, &false)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::StreamNotActive);
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_accept_sender_transfer(&f.recipient, &999, &1)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::SenderTransferNotFound);
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_expire_sender_transfer(&999)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::SenderTransferNotFound);
+}
+
+#[test]
+fn a_sender_transfer_repoints_both_discovery_indexes() {
+    let f = Fixture::setup();
+    let kept = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let new_sender = Address::generate(&f.env);
+
+    assert_eq!(
+        f.client.sender_streams(&f.sender, &0, &50),
+        soroban_sdk::Vec::from_slice(&f.env, &[kept, id]),
+    );
+    propose_transfer(&f, id, &new_sender, 1, false);
+    f.client
+        .mock_all_auths()
+        .accept_sender_transfer(&f.recipient, &id, &1);
+
+    // The old sender's listing stops offering the stream they no longer control
+    // and keeps the rest in creation order; the new sender's listing starts.
+    assert_eq!(
+        f.client.sender_streams(&f.sender, &0, &50),
+        soroban_sdk::Vec::from_slice(&f.env, &[kept]),
+    );
+    assert_eq!(
+        f.client.sender_streams(&new_sender, &0, &50),
+        soroban_sdk::Vec::from_slice(&f.env, &[id]),
+    );
+    // The recipient's index is a discovery index of *their* streams; a payer
+    // change must not disturb it.
+    assert_eq!(
+        f.client.recipient_streams(&f.recipient, &0, &50),
+        soroban_sdk::Vec::from_slice(&f.env, &[kept, id]),
+    );
+    // Paging agrees with the full page on both sides of the hop.
+    assert_eq!(
+        f.client.sender_streams(&f.sender, &0, &1),
+        soroban_sdk::Vec::from_slice(&f.env, &[kept]),
+    );
+    assert!(f.client.sender_streams(&f.sender, &1, &1).is_empty());
+    assert_eq!(
+        f.client.sender_streams(&new_sender, &0, &1),
+        soroban_sdk::Vec::from_slice(&f.env, &[id]),
+    );
+    assert!(f.client.sender_streams(&new_sender, &1, &1).is_empty());
+}
+
+#[test]
+fn a_sender_transfer_extends_the_ttl_of_both_index_pages() {
+    use soroban_sdk::testutils::storage::Persistent as _;
+
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let new_sender = Address::generate(&f.env);
+    propose_transfer(&f, id, &new_sender, 1, false);
+
+    let ttl = |addr: &Address| {
+        let key = crate::stream::DataKey::SenderStreams(addr.clone());
+        f.env.as_contract(&f.client.address, || {
+            f.env.storage().persistent().get_ttl(&key)
+        })
+    };
+    // Push the page below the extension threshold — past the horizon the
+    // creation write bought it — so a transfer that touches it has to extend
+    // rather than rest on that older write.
+    f.env.ledger().with_mut(|li| {
+        li.sequence_number +=
+            crate::stream::TTL_EXTEND_LEDGERS - crate::stream::TTL_THRESHOLD_LEDGERS + 1
+    });
+    assert!(
+        ttl(&f.sender) < crate::stream::TTL_THRESHOLD_LEDGERS,
+        "the setup must leave the page near expiry"
+    );
+
+    f.client
+        .mock_all_auths()
+        .accept_sender_transfer(&f.recipient, &id, &1);
+
+    // Both the pruned page and the appended page are extended to the same
+    // horizon, so neither side of the hop goes cold on discovery.
+    assert_eq!(ttl(&f.sender), crate::stream::TTL_EXTEND_LEDGERS);
+    assert_eq!(ttl(&new_sender), crate::stream::TTL_EXTEND_LEDGERS);
+}
+
+#[test]
+fn the_refund_claim_stays_with_the_original_sender_unless_the_amendment_moves_it() {
+    for rights in [false, true] {
+        let f = Fixture::setup();
+        let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+        let new_sender = Address::generate(&f.env);
+        let claimant_before = TokenClient::new(&f.env, &f.token).balance(&f.sender);
+        let incoming_before = TokenClient::new(&f.env, &f.token).balance(&new_sender);
+
+        propose_transfer(&f, id, &new_sender, 1, rights);
+        f.client
+            .mock_all_auths()
+            .accept_sender_transfer(&f.recipient, &id, &1);
+        assert_eq!(
+            f.client.refund_target(&id),
+            if rights {
+                new_sender.clone()
+            } else {
+                f.sender.clone()
+            },
+            "the claim follows the explicit flag, never the role"
+        );
+
+        // The new sender may now cancel, and the remainder goes to whoever the
+        // deposit's claim belongs to — not automatically to the role holder.
+        f.advance_time(2 * DAY);
+        f.client.mock_all_auths().cancel_stream(&new_sender, &id);
+
+        let claimant_after = TokenClient::new(&f.env, &f.token).balance(&f.sender);
+        let incoming_after = TokenClient::new(&f.env, &f.token).balance(&new_sender);
+        if rights {
+            assert!(
+                incoming_after > incoming_before,
+                "a moved claim must pay the incoming sender"
+            );
+            assert_eq!(claimant_after, claimant_before, "the old claim moved away");
+        } else {
+            assert!(
+                claimant_after > claimant_before,
+                "a kept claim must pay the original sender"
+            );
+            assert_eq!(
+                incoming_after, incoming_before,
+                "a role change is not a refund"
+            );
+        }
+        assert_eq!(
+            TokenClient::new(&f.env, &f.token).balance(&f.client.address),
+            0,
+            "cancellation drains the escrow exactly"
+        );
+    }
+}
+
+#[test]
+fn top_up_and_cancellation_authority_follow_the_role_while_the_claim_does_not() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let new_sender = Address::generate(&f.env);
+    propose_transfer(&f, id, &new_sender, 1, false);
+    f.client
+        .mock_all_auths()
+        .accept_sender_transfer(&f.recipient, &id, &1);
+
+    // Losing the role loses the authority to cancel.
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_cancel_stream(&f.sender, &id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::NotAuthorized);
+
+    // Funding follows the role too: `top_up` pulls from the stream's sender, so
+    // it is the incoming address whose allowance is spent.
+    let sac = StellarAssetClient::new(&f.env, &f.token);
+    sac.mint(&new_sender, &DEPOSIT);
+    sac.approve(&new_sender, &f.client.address, &DEPOSIT, &1_000_000u32);
+    f.client.mock_all_auths().top_up(&id, &DEPOSIT);
+    assert_eq!(
+        f.client.get_stream(&id).deposit,
+        DEPOSIT * 2,
+        "the incoming sender funds the stream"
+    );
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&new_sender),
+        0,
+        "the new role holder paid"
+    );
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.sender),
+        DEPOSIT,
+        "the outgoing sender's balance is untouched by the top-up"
+    );
+
+    // The claim, the log's creation entry and the escrow all still say who
+    // originally funded the deposit.
+    assert_eq!(f.client.refund_target(&id), f.sender);
+    assert_eq!(f.client.sender_history(&id).sender_at_creation, f.sender);
+}
+
+#[test]
+fn the_sender_log_is_append_only_across_hops() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let second = Address::generate(&f.env);
+    let third = Address::generate(&f.env);
+
+    // Nothing has moved yet: the log reports the current sender as its creation
+    // entry and no hops.
+    let fresh = f.client.sender_history(&id);
+    assert_eq!(fresh.stream_id, id);
+    assert_eq!(fresh.sender_at_creation, f.sender);
+    assert_eq!(fresh.transfers.len(), 0);
+
+    propose_transfer(&f, id, &second, 1, false);
+    let first_at = f.env.ledger().timestamp();
+    f.client
+        .mock_all_auths()
+        .accept_sender_transfer(&f.recipient, &id, &1);
+
+    // A second hop, this one moving the refund claim as well. The first hop's
+    // record is copied through unchanged.
+    f.advance_time(DAY);
+    f.client
+        .mock_all_auths()
+        .propose_sender_transfer(&second, &id, &third, &2, &true);
+    let second_at = f.env.ledger().timestamp();
+    f.client
+        .mock_all_auths()
+        .accept_sender_transfer(&f.recipient, &id, &2);
+
+    let history = f.client.sender_history(&id);
+    assert_eq!(
+        history.sender_at_creation, f.sender,
+        "creation attribution never changes"
+    );
+    assert_eq!(history.transfers.len(), 2);
+    let first = history.transfers.get(0).unwrap();
+    assert_eq!(first.sender_from, f.sender);
+    assert_eq!(first.sender_to, second);
+    assert_eq!(first.nonce, 1);
+    assert!(!first.refund_rights_transferred);
+    assert_eq!(first.at, first_at);
+    let last = history.transfers.get(1).unwrap();
+    assert_eq!(last.sender_from, second, "hops chain through the log");
+    assert_eq!(last.sender_to, third);
+    assert_eq!(last.nonce, 2);
+    assert!(last.refund_rights_transferred);
+    assert_eq!(last.at, second_at);
+    // And the claim followed the explicit amendment only.
+    assert_eq!(f.client.refund_target(&id), third);
+}
+
+#[test]
+fn sender_transfer_views_reject_an_unknown_stream_and_read_after_a_frozen_one() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    assert!(f.client.pending_sender_transfer(&999).is_none());
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_sender_history(&999)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::StreamNotFound);
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_refund_target(&999)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::StreamNotFound);
+    assert_eq!(f.client.refund_target(&id), f.sender);
+
+    // Reads stay available while mutations are frozen.
+    propose_transfer(&f, id, &Address::generate(&f.env), 1, false);
+    f.client.mock_all_auths().set_frozen(&f.governor, &true);
+    assert_eq!(f.client.sender_history(&id).transfers.len(), 0);
+    assert!(f.client.pending_sender_transfer(&id).is_some());
+    assert_eq!(f.client.refund_target(&id), f.sender);
+
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_propose_sender_transfer(&f.sender, &id, &Address::generate(&f.env), &2, &false)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::ContractFrozen);
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_accept_sender_transfer(&f.recipient, &id, &1)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::ContractFrozen);
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_expire_sender_transfer(&id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::ContractFrozen);
+}
+
+#[test]
+fn sender_transfer_events_are_emitted_with_expected_payloads() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let now = f.env.ledger().timestamp();
+    let _ = f.env.events().all();
+
+    let new_sender = Address::generate(&f.env);
+    propose_transfer(&f, id, &new_sender, 9, true);
+    let proposed = crate::SenderTransferProposed {
+        stream_id: id,
+        sender_from: f.sender.clone(),
+        new_sender: new_sender.clone(),
+        nonce: 9,
+        expires_at: now + OWNERSHIP_PROPOSAL_TTL_SECONDS,
+        transfer_refund_rights: true,
+    };
+    assert_eq!(
+        f.env.events().all().filter_by_contract(&f.client.address),
+        [proposed.to_xdr(&f.env, &f.client.address)],
+    );
+
+    f.client
+        .mock_all_auths()
+        .accept_sender_transfer(&f.recipient, &id, &9);
+    let executed = crate::SenderTransferred {
+        stream_id: id,
+        sender_from: f.sender.clone(),
+        sender_to: new_sender.clone(),
+        nonce: 9,
+        refund_rights_transferred: true,
+    };
+    assert_eq!(
+        f.env.events().all().filter_by_contract(&f.client.address),
+        [executed.to_xdr(&f.env, &f.client.address)],
+    );
+
+    // A reclaimed proposal reports exactly what it removed.
+    let other = Address::generate(&f.env);
+    f.advance_time(DAY);
+    f.client
+        .mock_all_auths()
+        .propose_sender_transfer(&new_sender, &id, &other, &10, &false);
+    let _ = f.env.events().all();
+    f.advance_time(OWNERSHIP_PROPOSAL_TTL_SECONDS);
+    assert_eq!(f.client.mock_all_auths().expire_sender_transfer(&id), 10);
+    let reclaimed = crate::SenderTransferExpired {
+        stream_id: id,
+        sender_from: new_sender.clone(),
+        new_sender: other,
+        nonce: 10,
+    };
+    assert_eq!(
+        f.env.events().all().filter_by_contract(&f.client.address),
+        [reclaimed.to_xdr(&f.env, &f.client.address)],
+    );
+}
+
 /// A frozen contract settles nothing: the offer can be neither placed nor
 /// accepted, and the stream's schedule is untouched by the attempt.
 #[test]
@@ -7953,6 +9082,294 @@ impl ScheduleRng {
     }
 }
 
+/// The proposal/execution trace for a consented hop: reads, then the state
+/// writes (role, claim, log), then the pending entry's removal, then the event.
+/// No token interaction appears — a role change escrows and releases nothing.
+#[test]
+fn sender_transfer_operation_order_matches_golden() {
+    let f = Fixture::setup_quiet();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let new_sender = Address::generate(&f.env);
+
+    crate::cei_trace::begin();
+    propose_transfer(&f, id, &new_sender, 1, false);
+    f.client
+        .mock_all_auths()
+        .accept_sender_transfer(&f.recipient, &id, &1);
+    let lifecycle = crate::cei_trace::finish();
+    assert_eq!(
+        lifecycle,
+        include_str!("../test_orderings/sender_transfer.txt").trim_end()
+    );
+
+    // The reclaim path: the dead proposal is read, removed and announced, and
+    // no stream record is touched at all.
+    crate::cei_trace::begin();
+    let other = Address::generate(&f.env);
+    f.client
+        .mock_all_auths()
+        .propose_sender_transfer(&new_sender, &id, &other, &2, &false);
+    f.advance_time(OWNERSHIP_PROPOSAL_TTL_SECONDS);
+    assert_eq!(f.client.mock_all_auths().expire_sender_transfer(&id), 2);
+    let reclaim = crate::cei_trace::finish();
+    assert_eq!(
+        reclaim,
+        include_str!("../test_orderings/sender_transfer_expiry.txt").trim_end()
+    );
+}
+
+/// One stored proposal as the outside world expects to see it, tracked
+/// independently of the contract's own storage.
+#[derive(Clone)]
+struct ExpectedProposal {
+    target: Address,
+    nonce: u64,
+    rights: bool,
+    expires_at: u64,
+}
+
+/// Random hop sequences must never let the advisory indexes, the append-only
+/// log or the refund claim disagree with the stream records they describe.
+#[test]
+fn random_sender_transfer_hops_keep_indexes_history_and_claims_consistent() {
+    for seed in [0x5EED_5F01, 0x5EED_5F02, 0x5EED_5F03, 0x5EED_5F04] {
+        run_transfer_fuzz(seed, 50);
+    }
+}
+
+fn run_transfer_fuzz(seed: u64, steps: usize) {
+    let f = Fixture::setup_quiet();
+    let mut rng = Rng(seed | 1);
+    let holders: std::vec::Vec<Address> = std::vec![
+        f.sender.clone(),
+        Address::generate(&f.env),
+        Address::generate(&f.env),
+        Address::generate(&f.env),
+    ];
+    let streams: std::vec::Vec<u64> = std::vec![
+        f.create_stream(DEPOSIT, DAY, 200 * DAY, false),
+        f.create_stream(DEPOSIT, DAY, 200 * DAY, false),
+    ];
+    // Expected state per stream, derived from the model and never from storage:
+    // who holds the role, how many hops the log should carry, where the refund
+    // claim sits, and which proposal occupies the slot.
+    let mut sender_of = std::vec![f.sender.clone(), f.sender.clone()];
+    let mut hops = std::vec![0u32; streams.len()];
+    let mut claim_of = std::vec![f.sender.clone(), f.sender.clone()];
+    let mut pending: std::vec::Vec<Option<ExpectedProposal>> = std::vec![None; streams.len()];
+    let mut nonce = 0u64;
+
+    for step in 0..steps {
+        let ctx = format!("seed {seed:#x} step {step}");
+        nonce += 1;
+        let si = rng.below(streams.len() as u64) as usize;
+        let id = streams[si];
+        let now = f.env.ledger().timestamp();
+        let client = f.client.mock_all_auths();
+
+        match rng.below(5) {
+            // Propose a hop: refused on an invalid target or a live slot, and
+            // otherwise stored with a fresh window.
+            0 => {
+                let target = holders[rng.below(holders.len() as u64) as usize].clone();
+                let rights = rng.below(2) == 1;
+                let current = sender_of[si].clone();
+                let live = pending[si].as_ref().is_some_and(|p| now < p.expires_at);
+                if target == current || target == f.recipient {
+                    let err = client
+                        .try_propose_sender_transfer(&current, &id, &target, &nonce, &rights)
+                        .unwrap_err()
+                        .unwrap();
+                    assert_eq!(
+                        err,
+                        StreamError::InvalidTransferTarget,
+                        "{ctx}: a role collapse is refused"
+                    );
+                } else if live {
+                    let err = client
+                        .try_propose_sender_transfer(&current, &id, &target, &nonce, &rights)
+                        .unwrap_err()
+                        .unwrap();
+                    assert_eq!(
+                        err,
+                        StreamError::SenderTransferPending,
+                        "{ctx}: a live proposal must not be replaced"
+                    );
+                } else {
+                    client.propose_sender_transfer(&current, &id, &target, &nonce, &rights);
+                    pending[si] = Some(ExpectedProposal {
+                        target,
+                        nonce,
+                        rights,
+                        expires_at: now + OWNERSHIP_PROPOSAL_TTL_SECONDS,
+                    });
+                }
+            }
+            // Consent with exactly the stored nonce.
+            1 => {
+                let Some(proposal) = pending[si].clone() else {
+                    let err = client
+                        .try_accept_sender_transfer(&f.recipient, &id, &nonce)
+                        .unwrap_err()
+                        .unwrap();
+                    assert_eq!(
+                        err,
+                        StreamError::SenderTransferNotFound,
+                        "{ctx}: consenting to nothing"
+                    );
+                    continue;
+                };
+                if now >= proposal.expires_at {
+                    let err = client
+                        .try_accept_sender_transfer(&f.recipient, &id, &proposal.nonce)
+                        .unwrap_err()
+                        .unwrap();
+                    assert_eq!(
+                        err,
+                        StreamError::SenderTransferExpired,
+                        "{ctx}: an elapsed window never executes"
+                    );
+                    continue;
+                }
+                client.accept_sender_transfer(&f.recipient, &id, &proposal.nonce);
+                sender_of[si] = proposal.target.clone();
+                hops[si] += 1;
+                if proposal.rights {
+                    claim_of[si] = proposal.target;
+                }
+                pending[si] = None;
+            }
+            // Consent with a nonce that is not the stored one. The mismatch
+            // outranks the elapsed window: consent has to name a proposal.
+            2 => {
+                let stale = nonce + 1_000;
+                let err = client
+                    .try_accept_sender_transfer(&f.recipient, &id, &stale)
+                    .unwrap_err()
+                    .unwrap();
+                match pending[si].clone() {
+                    None => assert_eq!(
+                        err,
+                        StreamError::SenderTransferNotFound,
+                        "{ctx}: nothing to consent to"
+                    ),
+                    Some(_) => assert_eq!(
+                        err,
+                        StreamError::SenderTransferNonceMismatch,
+                        "{ctx}: a stale nonce cannot execute the stored proposal"
+                    ),
+                }
+            }
+            // Reclaim the slot. Permissionless, but only once the window ends.
+            3 => match pending[si].clone() {
+                None => {
+                    let err = client.try_expire_sender_transfer(&id).unwrap_err().unwrap();
+                    assert_eq!(
+                        err,
+                        StreamError::SenderTransferNotFound,
+                        "{ctx}: an empty slot cannot be reclaimed"
+                    );
+                }
+                Some(proposal) if now < proposal.expires_at => {
+                    let err = client.try_expire_sender_transfer(&id).unwrap_err().unwrap();
+                    assert_eq!(
+                        err,
+                        StreamError::SenderTransferNotExpired,
+                        "{ctx}: a live proposal is still the recipient's option"
+                    );
+                }
+                Some(proposal) => {
+                    assert_eq!(
+                        client.expire_sender_transfer(&id),
+                        proposal.nonce,
+                        "{ctx}: the reclaim reports the proposal it removed"
+                    );
+                    pending[si] = None;
+                }
+            },
+            // Age the clock, half a window or a whole one.
+            _ => {
+                let half = OWNERSHIP_PROPOSAL_TTL_SECONDS / 2;
+                f.advance_time(if rng.below(2) == 0 { half } else { half * 2 });
+            }
+        }
+
+        // Consistency after every step: the proposal slot, the role, the log,
+        // the claim, the escrow and the discovery indexes all agree with the
+        // model — for every stream, not just the one this step touched.
+        for (model_index, id) in streams.iter().enumerate() {
+            match pending[model_index].clone() {
+                Some(proposal) => {
+                    let stored = f.client.pending_sender_transfer(id).unwrap();
+                    assert_eq!(stored.stream_id, *id, "{ctx}: proposal names the stream");
+                    assert_eq!(stored.new_sender, proposal.target, "{ctx}: proposal target");
+                    assert_eq!(stored.nonce, proposal.nonce, "{ctx}: proposal nonce");
+                    assert_eq!(
+                        stored.transfer_refund_rights, proposal.rights,
+                        "{ctx}: proposal refund flag"
+                    );
+                    assert_eq!(
+                        stored.expires_at, proposal.expires_at,
+                        "{ctx}: proposal window"
+                    );
+                    assert_eq!(
+                        stored.sender_from, sender_of[model_index],
+                        "{ctx}: the proposer is the sender of record"
+                    );
+                }
+                None => assert!(
+                    f.client.pending_sender_transfer(id).is_none(),
+                    "{ctx}: the slot must be empty"
+                ),
+            }
+
+            let stream = f.client.get_stream(id);
+            assert_eq!(stream.sender, sender_of[model_index], "{ctx}: role");
+            let history = f.client.sender_history(id);
+            assert_eq!(
+                history.sender_at_creation, f.sender,
+                "{ctx}: creation attribution is immutable"
+            );
+            assert_eq!(
+                history.transfers.len(),
+                hops[model_index],
+                "{ctx}: log length"
+            );
+            assert_eq!(
+                f.client.refund_target(id),
+                claim_of[model_index],
+                "{ctx}: claim"
+            );
+
+            // A hop moves roles, never funds.
+            assert_eq!(stream.withdrawn, 0, "{ctx}: nothing was withdrawn");
+            assert_eq!(
+                TokenClient::new(&f.env, &f.token).balance(&f.client.address),
+                DEPOSIT * streams.len() as i128,
+                "{ctx}: the escrow is untouched by hops"
+            );
+        }
+
+        // The advisory index of every candidate holder is exactly the set of
+        // streams that model says they pay.
+        for holder in holders.iter() {
+            let listed = f.client.sender_streams(holder, &0, &50);
+            let mut actual: std::vec::Vec<u64> = (0..listed.len())
+                .map(|index| listed.get(index).unwrap())
+                .collect();
+            let mut expected: std::vec::Vec<u64> = streams
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| sender_of[*index] == *holder)
+                .map(|(_, id)| *id)
+                .collect();
+            actual.sort_unstable();
+            expected.sort_unstable();
+            assert_eq!(actual, expected, "{ctx}: index of {holder:?}");
+        }
+    }
+}
+
 /// Seconds of `segment`'s window elapsed at `now`, written straight from the
 /// definition rather than through the contract's helper.
 fn window_elapsed(window_start: u64, window_end: u64, now: u64) -> u64 {
@@ -8058,7 +9475,7 @@ fn price_random_schedules(trials_count: usize) -> usize {
                 end_time,
                 cancelable: false,
                 status: StreamStatus::Active,
-                use_oracle: false,
+                use_oracle: Some(false),
             };
 
             // Ascending probes, so the monotonicity assertion has an ordering
@@ -8138,4 +9555,1913 @@ fn piecewise_accrual_matches_the_reference_models() {
 fn piecewise_accrual_rounding_analysis_over_a_million_schedules() {
     let windows = price_random_schedules(1_000_000);
     std::println!("ROUNDING ANALYSIS: 1_000_000 segment sets, {windows} windows priced, 0 diffs");
+}
+
+// ------------------------------------------------------------- refund routing --
+
+/// Routes `id`'s refund claim to `target`, acting as `caller`, asserting that
+/// the amendment was accepted.
+fn route_refund(f: &Fixture, caller: &Address, id: u64, target: &Address) {
+    f.client
+        .mock_all_auths()
+        .set_refund_target(caller, &id, target);
+}
+
+/// The sum of every token in play. The fixture mints `2 * DEPOSIT` to the
+/// sender and nothing else, so this total is conserved through creation,
+/// routing, withdrawal and cancellation — a routed refund must move the
+/// remainder between the escrow and a destination, never create or destroy it.
+fn total_supply(f: &Fixture, holders: &[Address]) -> i128 {
+    let token = TokenClient::new(&f.env, &f.token);
+    holders.iter().map(|holder| token.balance(holder)).sum()
+}
+
+#[test]
+fn a_routed_refund_pays_the_designated_address_and_nobody_else() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let vault = Address::generate(&f.env);
+    let all = std::vec![
+        f.sender.clone(),
+        f.recipient.clone(),
+        vault.clone(),
+        f.client.address.clone(),
+    ];
+    let supply_before = total_supply(&f, &all);
+
+    f.advance_time(2 * DAY);
+    let accrued = f.client.available(&id);
+    assert!(
+        accrued > 0,
+        "some of the stream must have accrued to cancel"
+    );
+
+    route_refund(&f, &f.sender, id, &vault);
+    assert_eq!(f.client.refund_target(&id), vault);
+
+    f.client.mock_all_auths().cancel_stream(&f.sender, &id);
+
+    let token = TokenClient::new(&f.env, &f.token);
+    assert_eq!(
+        token.balance(&f.recipient),
+        accrued,
+        "the accrued leg is identical to an unrouted cancel"
+    );
+    assert_eq!(
+        token.balance(&vault),
+        DEPOSIT - accrued,
+        "the remainder follows the routing"
+    );
+    assert_eq!(
+        token.balance(&f.sender),
+        DEPOSIT,
+        "routing a refund is not a payment to the sender"
+    );
+    assert_eq!(
+        token.balance(&f.client.address),
+        0,
+        "cancellation drains the escrow exactly"
+    );
+    assert_eq!(
+        total_supply(&f, &all),
+        supply_before,
+        "conservation holds across a routed cancellation"
+    );
+    assert_eq!(f.client.get_stream(&id).status, StreamStatus::Cancelled);
+}
+
+#[test]
+fn a_stream_can_be_created_with_its_refund_already_routed() {
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+    let vault = Address::generate(&f.env);
+    let id = f.client.mock_all_auths().create_stream_with_refund(
+        &f.sender,
+        &f.recipient,
+        &f.token,
+        &DEPOSIT,
+        &(now + DAY),
+        &(now + 11 * DAY),
+        &false,
+        &vault,
+    );
+
+    // A destination, not a role: everything the sender owns stays theirs.
+    assert_eq!(f.client.refund_target(&id), vault);
+    assert_eq!(f.client.get_stream(&id).sender, f.sender);
+    assert_eq!(f.client.get_stream(&id).deposit, DEPOSIT);
+    assert_eq!(f.client.sender_history(&id).sender_at_creation, f.sender);
+    assert!(f.client.sender_history(&id).transfers.is_empty());
+
+    // The plain creation path still refunds its sender — the routing is per
+    // stream, never global.
+    let plain = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    assert_eq!(f.client.refund_target(&plain), f.sender);
+
+    f.advance_time(2 * DAY);
+    let accrued = f.client.available(&id);
+    f.client.mock_all_auths().cancel_stream(&f.sender, &id);
+    let token = TokenClient::new(&f.env, &f.token);
+    assert_eq!(token.balance(&vault), DEPOSIT - accrued);
+    assert_eq!(token.balance(&f.recipient), accrued);
+    assert_eq!(
+        token.balance(&f.sender),
+        0,
+        "the sender paid for both streams and receives nothing back"
+    );
+}
+
+#[test]
+fn only_the_current_sender_can_re_route_the_refund() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let vault = Address::generate(&f.env);
+    let stranger = Address::generate(&f.env);
+    let client = f.client.mock_all_auths();
+
+    // The recipient owns the accrual claim, not the deposit claim.
+    assert_eq!(
+        client
+            .try_set_refund_target(&f.recipient, &id, &vault)
+            .unwrap_err()
+            .unwrap(),
+        StreamError::RefundTargetNotSender
+    );
+    assert_eq!(
+        client
+            .try_set_refund_target(&stranger, &id, &vault)
+            .unwrap_err()
+            .unwrap(),
+        StreamError::RefundTargetNotSender
+    );
+
+    route_refund(&f, &f.sender, id, &vault);
+    // Not even the address the claim currently points at may move it: routing
+    // is the funder's decision, and a payee cannot opt themselves in.
+    assert_eq!(
+        f.client
+            .mock_all_auths()
+            .try_set_refund_target(&vault, &id, &stranger)
+            .unwrap_err()
+            .unwrap(),
+        StreamError::RefundTargetNotSender
+    );
+    assert_eq!(f.client.refund_target(&id), vault);
+
+    // Authority follows the role: after a consented hop the outgoing sender
+    // loses the routing decision and the incoming one gains it, while the
+    // pinned claim itself stays put until someone with authority moves it.
+    let new_sender = Address::generate(&f.env);
+    propose_transfer(&f, id, &new_sender, 1, false);
+    f.client
+        .mock_all_auths()
+        .accept_sender_transfer(&f.recipient, &id, &1);
+    assert_eq!(
+        f.client.refund_target(&id),
+        vault,
+        "a hop is not a re-route"
+    );
+    assert_eq!(
+        f.client
+            .mock_all_auths()
+            .try_set_refund_target(&f.sender, &id, &stranger)
+            .unwrap_err()
+            .unwrap(),
+        StreamError::RefundTargetNotSender
+    );
+    let second_vault = Address::generate(&f.env);
+    route_refund(&f, &new_sender, id, &second_vault);
+    assert_eq!(f.client.refund_target(&id), second_vault);
+}
+
+#[test]
+fn routing_to_the_address_that_already_holds_the_claim_is_refused() {
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+    let vault = Address::generate(&f.env);
+
+    // At creation the claim sits with the sender by definition.
+    assert_eq!(
+        f.client
+            .mock_all_auths()
+            .try_create_stream_with_refund(
+                &f.sender,
+                &f.recipient,
+                &f.token,
+                &DEPOSIT,
+                &(now + DAY),
+                &(now + 2 * DAY),
+                &false,
+                &f.sender,
+            )
+            .unwrap_err()
+            .unwrap(),
+        StreamError::RefundTargetUnchanged
+    );
+
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    assert_eq!(
+        f.client
+            .mock_all_auths()
+            .try_set_refund_target(&f.sender, &id, &f.sender)
+            .unwrap_err()
+            .unwrap(),
+        StreamError::RefundTargetUnchanged,
+        "an unrouted stream is already refunding its sender"
+    );
+
+    route_refund(&f, &f.sender, id, &vault);
+    assert_eq!(
+        f.client
+            .mock_all_auths()
+            .try_set_refund_target(&f.sender, &id, &vault)
+            .unwrap_err()
+            .unwrap(),
+        StreamError::RefundTargetUnchanged,
+        "restating the live target is the same no-op"
+    );
+
+    // Undoing a routing is a real change, because the pinned target differs
+    // from the role holder's address.
+    route_refund(&f, &f.sender, id, &f.sender);
+    assert_eq!(f.client.refund_target(&id), f.sender);
+
+    // A stream created routed refuses to re-state its own target too.
+    let routed = f.client.mock_all_auths().create_stream_with_refund(
+        &f.sender,
+        &f.recipient,
+        &f.token,
+        &DEPOSIT,
+        &(now + DAY),
+        &(now + 2 * DAY),
+        &false,
+        &vault,
+    );
+    assert_eq!(
+        f.client
+            .mock_all_auths()
+            .try_set_refund_target(&f.sender, &routed, &vault)
+            .unwrap_err()
+            .unwrap(),
+        StreamError::RefundTargetUnchanged
+    );
+}
+
+#[test]
+fn routing_never_touches_the_accrual_math() {
+    let f = Fixture::setup();
+    let plain = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let routed = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let vault = Address::generate(&f.env);
+    route_refund(&f, &f.sender, routed, &vault);
+
+    let token = TokenClient::new(&f.env, &f.token);
+    // Get both streams past their start so every step below has something to
+    // claim.
+    f.advance_time(2 * DAY);
+    let mut paid_each = 0i128;
+    for _ in 0..5 {
+        f.advance_time(DAY);
+        assert_eq!(
+            f.client.available(&plain),
+            f.client.available(&routed),
+            "routing cannot change what accrues"
+        );
+        let claim = f.client.available(&routed) / 2;
+        assert!(claim > 0);
+        f.client.mock_all_auths().withdraw(&plain, &claim);
+        f.client.mock_all_auths().withdraw(&routed, &claim);
+        paid_each += claim;
+        assert_eq!(
+            token.balance(&f.recipient),
+            paid_each * 2,
+            "both legs pay the recipient from their own escrow"
+        );
+        assert_eq!(f.client.get_stream(&routed).withdrawn, paid_each);
+        assert_eq!(
+            f.client.refund_target(&routed),
+            vault,
+            "withdrawals do not disturb the routing"
+        );
+        assert_eq!(f.client.refund_target(&plain), f.sender);
+    }
+
+    // The records are the same machine with a different id: routing lives in
+    // its own key precisely so that nothing in the stream layout changes.
+    let a = f.client.get_stream(&plain);
+    let mut b = f.client.get_stream(&routed);
+    b.id = a.id;
+    assert_eq!(
+        a, b,
+        "a routed stream stores the same record as an unrouted one"
+    );
+
+    // Same deposit, same accrual, so the same remainder is on offer — only its
+    // destination differs.
+    let accrued = f.client.available(&routed);
+    assert_eq!(accrued, f.client.available(&plain));
+    let remainder = DEPOSIT - paid_each - accrued;
+    assert!(remainder > 0);
+
+    f.client.mock_all_auths().cancel_stream(&f.sender, &plain);
+    assert_eq!(
+        token.balance(&f.sender),
+        remainder,
+        "unrouted: the sender is paid"
+    );
+    assert_eq!(token.balance(&vault), 0);
+
+    f.client.mock_all_auths().cancel_stream(&f.sender, &routed);
+    assert_eq!(
+        token.balance(&vault),
+        remainder,
+        "routed: the same amount, a different address"
+    );
+    assert_eq!(token.balance(&f.sender), remainder, "one of two refunds");
+    assert_eq!(token.balance(&f.client.address), 0, "both escrows drained");
+}
+
+#[test]
+fn routing_and_sender_transfers_compose_in_the_order_they_happen() {
+    // (route first, transfer with refund rights) -> expected claim index.
+    for (routed_first, rights) in [(false, false), (false, true), (true, false), (true, true)] {
+        let f = Fixture::setup();
+        let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+        let vault = Address::generate(&f.env);
+        let new_sender = Address::generate(&f.env);
+
+        if routed_first {
+            route_refund(&f, &f.sender, id, &vault);
+        }
+        propose_transfer(&f, id, &new_sender, 7, rights);
+        f.client
+            .mock_all_auths()
+            .accept_sender_transfer(&f.recipient, &id, &7);
+
+        // Rights move only on the explicit flag; a routing that already existed
+        // survives a hop that did not ask for the claim.
+        let expected = if rights {
+            new_sender.clone()
+        } else if routed_first {
+            vault.clone()
+        } else {
+            f.sender.clone()
+        };
+        assert_eq!(
+            f.client.refund_target(&id),
+            expected,
+            "route_first {routed_first} / rights {rights}"
+        );
+
+        f.advance_time(2 * DAY);
+        let accrued = f.client.available(&id);
+        let token = TokenClient::new(&f.env, &f.token);
+        let before = token.balance(&expected);
+
+        // The role holder — not the claim holder — cancels.
+        f.client.mock_all_auths().cancel_stream(&new_sender, &id);
+        assert_eq!(
+            token.balance(&expected) - before,
+            DEPOSIT - accrued,
+            "the remainder pays the claim of record"
+        );
+        assert_eq!(token.balance(&f.client.address), 0);
+    }
+}
+
+#[test]
+fn a_terminal_stream_has_no_remainder_to_route() {
+    let f = Fixture::setup();
+    let vault = Address::generate(&f.env);
+
+    // Cancelled: the refund already went out, so there is nothing left to aim.
+    let cancelled = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    f.client
+        .mock_all_auths()
+        .cancel_stream(&f.sender, &cancelled);
+    assert_eq!(
+        f.client
+            .mock_all_auths()
+            .try_set_refund_target(&f.sender, &cancelled, &vault)
+            .unwrap_err()
+            .unwrap(),
+        StreamError::StreamNotActive
+    );
+    assert_eq!(f.client.refund_target(&cancelled), f.sender);
+
+    // Depleted: the deposit is entirely the recipient's, so a refund claim on
+    // it would be a claim on zero.
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    f.advance_time(11 * DAY);
+    assert_eq!(f.client.mock_all_auths().withdraw_max(&id), DEPOSIT);
+    assert_eq!(f.client.get_stream(&id).status, StreamStatus::Depleted);
+    assert_eq!(
+        f.client
+            .mock_all_auths()
+            .try_set_refund_target(&f.sender, &id, &vault)
+            .unwrap_err()
+            .unwrap(),
+        StreamError::StreamNotActive
+    );
+
+    // A routing taken while active still reads after the stream ends.
+    let routed = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    route_refund(&f, &f.sender, routed, &vault);
+    f.client.mock_all_auths().cancel_stream(&f.sender, &routed);
+    assert_eq!(f.client.refund_target(&routed), vault);
+}
+
+#[test]
+fn freezing_the_contract_gates_both_refund_routing_paths() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let vault = Address::generate(&f.env);
+    let now = f.env.ledger().timestamp();
+
+    f.client.mock_all_auths().set_frozen(&f.governor, &true);
+
+    assert_eq!(
+        f.client
+            .mock_all_auths()
+            .try_set_refund_target(&f.sender, &id, &vault)
+            .unwrap_err()
+            .unwrap(),
+        StreamError::ContractFrozen
+    );
+    assert_eq!(
+        f.client
+            .mock_all_auths()
+            .try_create_stream_with_refund(
+                &f.sender,
+                &f.recipient,
+                &f.token,
+                &DEPOSIT,
+                &(now + DAY),
+                &(now + 2 * DAY),
+                &false,
+                &vault,
+            )
+            .unwrap_err()
+            .unwrap(),
+        StreamError::ContractFrozen
+    );
+    // Read-only routing state stays available while frozen, like every other
+    // view: an auditor must be able to see where a refund would go.
+    assert_eq!(f.client.refund_target(&id), f.sender);
+
+    f.client.mock_all_auths().set_frozen(&f.governor, &false);
+    route_refund(&f, &f.sender, id, &vault);
+    assert_eq!(f.client.refund_target(&id), vault);
+}
+
+#[test]
+fn refund_routing_events_name_both_targets() {
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+    let vault = Address::generate(&f.env);
+    let second = Address::generate(&f.env);
+
+    // Creation routing: the previous target is the sender, by definition.
+    let id = f.client.mock_all_auths().create_stream_with_refund(
+        &f.sender,
+        &f.recipient,
+        &f.token,
+        &DEPOSIT,
+        &(now + DAY),
+        &(now + 11 * DAY),
+        &false,
+        &vault,
+    );
+    let routed_at_creation = crate::StreamRefundTargetChanged {
+        stream_id: id,
+        previous_target: f.sender.clone(),
+        new_target: vault.clone(),
+        at_creation: true,
+    };
+    let created = f.env.events().all().filter_by_contract(&f.client.address);
+    assert!(
+        created
+            .events()
+            .contains(&routed_at_creation.to_xdr(&f.env, &f.client.address)),
+        "the creation routing is announced: {created:?}"
+    );
+
+    // An amendment reports the target it replaced, not the sender.
+    let _ = f.env.events().all();
+    route_refund(&f, &f.sender, id, &second);
+    let amended = crate::StreamRefundTargetChanged {
+        stream_id: id,
+        previous_target: vault.clone(),
+        new_target: second.clone(),
+        at_creation: false,
+    };
+    assert_eq!(
+        f.env.events().all().filter_by_contract(&f.client.address),
+        [amended.to_xdr(&f.env, &f.client.address)],
+    );
+
+    // A hop that leaves the claim where it is writes the same value back and
+    // emits no routing event — the log records changes, not restatements.
+    propose_transfer(&f, id, &vault, 3, false);
+    let _ = f.env.events().all();
+    f.client
+        .mock_all_auths()
+        .accept_sender_transfer(&f.recipient, &id, &3);
+    let after_hop = f.env.events().all().filter_by_contract(&f.client.address);
+    assert_eq!(
+        after_hop.events().len(),
+        1,
+        "only the hop itself is announced"
+    );
+    assert!(
+        !after_hop.events().contains(
+            &crate::StreamRefundTargetChanged {
+                stream_id: id,
+                previous_target: second.clone(),
+                new_target: second,
+                at_creation: false,
+            }
+            .to_xdr(&f.env, &f.client.address)
+        ),
+        "a hop that restates the claim emits no routing event"
+    );
+}
+
+#[test]
+fn routing_overwrites_one_key_per_stream_and_keeps_it_warm() {
+    use soroban_sdk::testutils::storage::Persistent as _;
+
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let key = || crate::stream::DataKey::RefundTarget(id);
+    let ttl = || {
+        f.env.as_contract(&f.client.address, || {
+            f.env.storage().persistent().get_ttl(&key())
+        })
+    };
+
+    // Unrouted: no key at all, so the default fallback costs nothing on write.
+    assert!(
+        !f.env.as_contract(&f.client.address, || f
+            .env
+            .storage()
+            .persistent()
+            .has(&key())),
+        "a stream that never routed has no refund key"
+    );
+
+    let vault = Address::generate(&f.env);
+    let second = Address::generate(&f.env);
+    route_refund(&f, &f.sender, id, &vault);
+    assert!(f.env.as_contract(&f.client.address, || f
+        .env
+        .storage()
+        .persistent()
+        .has(&key())));
+    assert_eq!(ttl(), crate::stream::TTL_EXTEND_LEDGERS);
+
+    // Re-routing replaces the value under the same key rather than appending a
+    // history: the growth this feature costs is one Address per routed stream,
+    // once, however many amendments follow.
+    for _ in 0..4 {
+        route_refund(&f, &f.sender, id, &second);
+        route_refund(&f, &f.sender, id, &vault);
+    }
+    assert_eq!(f.client.refund_target(&id), vault);
+    assert!(f.env.as_contract(&f.client.address, || f
+        .env
+        .storage()
+        .persistent()
+        .has(&key())));
+
+    // Reading the routing extends the same key, so a long-lived routed stream
+    // does not go cold between amendments.
+    f.env.ledger().with_mut(|li| {
+        li.sequence_number +=
+            crate::stream::TTL_EXTEND_LEDGERS - crate::stream::TTL_THRESHOLD_LEDGERS + 1
+    });
+    assert!(ttl() < crate::stream::TTL_THRESHOLD_LEDGERS);
+    assert_eq!(f.client.refund_target(&id), vault);
+    assert_eq!(ttl(), crate::stream::TTL_EXTEND_LEDGERS);
+}
+
+#[test]
+fn refund_routing_operation_order_matches_golden() {
+    let f = Fixture::setup_quiet();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    let vault = Address::generate(&f.env);
+
+    crate::cei_trace::begin();
+    f.advance_time(2 * DAY);
+    route_refund(&f, &f.sender, id, &vault);
+    // The routed cancellation: state first, then the event, then both payout
+    // legs — the destination is resolved before anything is written.
+    f.client.mock_all_auths().cancel_stream(&f.sender, &id);
+    let lifecycle = crate::cei_trace::finish();
+    assert_eq!(
+        lifecycle,
+        include_str!("../test_orderings/refund_routing.txt").trim_end()
+    );
+}
+
+/// Random routing, hop and cancellation sequences must never let the claim of
+/// record, the authority to change it, or the escrow's conservation drift.
+#[test]
+fn random_refund_routing_keeps_claims_authority_and_the_escrow_consistent() {
+    for seed in [0x5EED_5F04, 0x5EED_5F05, 0x5EED_5F06, 0x5EED_5F07] {
+        run_routing_fuzz(seed, 60);
+    }
+}
+
+fn run_routing_fuzz(seed: u64, steps: usize) {
+    let f = Fixture::setup_quiet();
+    let mut rng = Rng(seed | 1);
+    let holders: std::vec::Vec<Address> = std::vec![
+        f.sender.clone(),
+        Address::generate(&f.env),
+        Address::generate(&f.env),
+        Address::generate(&f.env),
+    ];
+    let streams: std::vec::Vec<u64> = std::vec![
+        f.create_stream(DEPOSIT, DAY, 200 * DAY, false),
+        f.create_stream(DEPOSIT, DAY, 200 * DAY, false),
+    ];
+    // The model, kept independent of contract storage: who holds the role, who
+    // holds the refund claim, how much the contract still escrows per stream,
+    // and every leg it has ever paid out.
+    let mut role_of = std::vec![f.sender.clone(), f.sender.clone()];
+    let mut claim_of = std::vec![f.sender.clone(), f.sender.clone()];
+    let mut escrow = std::vec![DEPOSIT, DEPOSIT];
+    let mut refunded = std::vec![0i128, 0i128];
+    let mut live = std::vec![true, true];
+    let mut paid_recipient = 0i128;
+    let mut paid_claimants: std::vec::Vec<(Address, i128)> = std::vec::Vec::new();
+    let mut nonce = 0u64;
+
+    for step in 0..steps {
+        let ctx = format!("seed {seed:#x} step {step}");
+        nonce += 1;
+        let si = rng.below(streams.len() as u64) as usize;
+        let id = streams[si];
+        let client = f.client.mock_all_auths();
+
+        match rng.below(6) {
+            // Re-route as the role holder. A no-op target and a terminal stream
+            // are both refused; anything else pins the claim.
+            0 => {
+                let target = holders[rng.below(holders.len() as u64) as usize].clone();
+                let current = role_of[si].clone();
+                if !live[si] {
+                    assert_eq!(
+                        client
+                            .try_set_refund_target(&current, &id, &target)
+                            .unwrap_err()
+                            .unwrap(),
+                        StreamError::StreamNotActive,
+                        "{ctx}: a finished stream has nothing to route"
+                    );
+                } else if target == claim_of[si] {
+                    assert_eq!(
+                        client
+                            .try_set_refund_target(&current, &id, &target)
+                            .unwrap_err()
+                            .unwrap(),
+                        StreamError::RefundTargetUnchanged,
+                        "{ctx}: restating the live claim changes nothing"
+                    );
+                } else {
+                    client.set_refund_target(&current, &id, &target);
+                    claim_of[si] = target;
+                }
+            }
+            // Re-route as someone who does not hold the role. Any address that
+            // is not the sender is refused — including the current claim holder.
+            1 => {
+                let stranger = holders
+                    .iter()
+                    .find(|holder| **holder != role_of[si] && **holder != f.recipient)
+                    .cloned()
+                    .unwrap_or_else(|| Address::generate(&f.env));
+                let target = holders[rng.below(holders.len() as u64) as usize].clone();
+                let err = f
+                    .client
+                    .mock_all_auths()
+                    .try_set_refund_target(&stranger, &id, &target)
+                    .unwrap_err()
+                    .unwrap();
+                if live[si] {
+                    assert_eq!(err, StreamError::RefundTargetNotSender, "{ctx}: role only");
+                } else {
+                    assert_eq!(
+                        err,
+                        StreamError::StreamNotActive,
+                        "{ctx}: the status check outranks the role check"
+                    );
+                }
+                assert_eq!(
+                    f.client.refund_target(&id),
+                    claim_of[si],
+                    "{ctx}: a refused routing changed nothing"
+                );
+            }
+            // Consent a hop, with or without the claim.
+            2 => {
+                let target = holders[rng.below(holders.len() as u64) as usize].clone();
+                let rights = rng.below(2) == 1;
+                let current = role_of[si].clone();
+                if !live[si] {
+                    assert_eq!(
+                        client
+                            .try_propose_sender_transfer(&current, &id, &target, &nonce, &rights)
+                            .unwrap_err()
+                            .unwrap(),
+                        StreamError::StreamNotActive,
+                        "{ctx}: a finished stream cannot hop"
+                    );
+                } else if target == current || target == f.recipient {
+                    assert_eq!(
+                        client
+                            .try_propose_sender_transfer(&current, &id, &target, &nonce, &rights)
+                            .unwrap_err()
+                            .unwrap(),
+                        StreamError::InvalidTransferTarget,
+                        "{ctx}: a role collapse is refused"
+                    );
+                } else {
+                    client.propose_sender_transfer(&current, &id, &target, &nonce, &rights);
+                    client.accept_sender_transfer(&f.recipient, &id, &nonce);
+                    role_of[si] = target.clone();
+                    if rights {
+                        claim_of[si] = target;
+                    }
+                }
+            }
+            // Claim accrued funds. The destination of a refund has no say here.
+            3 => {
+                let available = f.client.available(&id);
+                if !live[si] {
+                    assert_eq!(
+                        f.client
+                            .mock_all_auths()
+                            .try_withdraw_max(&id)
+                            .unwrap_err()
+                            .unwrap(),
+                        StreamError::StreamNotActive,
+                        "{ctx}: a finished stream pays nothing"
+                    );
+                } else if available == 0 {
+                    assert_eq!(
+                        f.client
+                            .mock_all_auths()
+                            .try_withdraw_max(&id)
+                            .unwrap_err()
+                            .unwrap(),
+                        StreamError::NothingToWithdraw,
+                        "{ctx}: nothing has accrued yet"
+                    );
+                } else {
+                    assert_eq!(f.client.mock_all_auths().withdraw_max(&id), available);
+                    escrow[si] -= available;
+                    paid_recipient += available;
+                    // Claiming everything left turns the stream Depleted, and a
+                    // depleted stream has no remainder to route or cancel.
+                    live[si] = f.client.get_stream(&id).status == StreamStatus::Active;
+                }
+            }
+            // Cancel as the role holder: the remainder pays the claim of record.
+            4 => {
+                let current = role_of[si].clone();
+                if !live[si] {
+                    assert_eq!(
+                        f.client
+                            .mock_all_auths()
+                            .try_cancel_stream(&current, &id)
+                            .unwrap_err()
+                            .unwrap(),
+                        StreamError::StreamNotActive,
+                        "{ctx}: cancelling twice is refused"
+                    );
+                } else {
+                    let accrued = f.client.available(&id);
+                    let claim = claim_of[si].clone();
+                    let remainder = escrow[si] - accrued;
+                    f.client.mock_all_auths().cancel_stream(&current, &id);
+                    paid_recipient += accrued;
+                    escrow[si] = 0;
+                    refunded[si] += remainder;
+                    paid_claimants.push((claim.clone(), remainder));
+                    live[si] = false;
+                }
+            }
+            // Age the clock.
+            _ => {
+                f.advance_time(rng.below(30 * DAY) + 1);
+            }
+        }
+
+        for (model_index, id) in streams.iter().enumerate() {
+            let stream = f.client.get_stream(id);
+            assert_eq!(
+                f.client.refund_target(id),
+                claim_of[model_index],
+                "{ctx}: claim of record"
+            );
+            assert_eq!(stream.sender, role_of[model_index], "{ctx}: role");
+            assert_eq!(
+                stream.deposit, DEPOSIT,
+                "{ctx}: routing never funds or drains a stream"
+            );
+            // `withdrawn` counts only what left toward the recipient, so the
+            // record's remainder is what the contract still holds plus whatever
+            // it has already paid the claim.
+            assert_eq!(
+                stream.deposit - stream.withdrawn,
+                escrow[model_index] + refunded[model_index],
+                "{ctx}: ledger vs escrow"
+            );
+        }
+
+        // Conservation, per address rather than in aggregate: the contract
+        // holds exactly the escrow the model expects, the recipient is owed
+        // exactly the accrued legs, and every refund went to its claim and
+        // nowhere else.
+        let token = TokenClient::new(&f.env, &f.token);
+        // What the model says the contract owes `holder` in refunds.
+        let owed_to = |holder: &Address| -> i128 {
+            paid_claimants
+                .iter()
+                .filter(|(to, _)| to == holder)
+                .map(|(_, amount)| *amount)
+                .sum()
+        };
+        assert_eq!(
+            token.balance(&f.client.address),
+            escrow.iter().sum::<i128>(),
+            "{ctx}: escrow"
+        );
+        assert_eq!(
+            token.balance(&f.recipient),
+            paid_recipient,
+            "{ctx}: recipient"
+        );
+        for holder in holders.iter() {
+            assert_eq!(
+                token.balance(holder),
+                owed_to(holder),
+                "{ctx}: refunds to {holder:?}"
+            );
+        }
+    }
+}
+
+// ------------------------------------------------- batch withdraw (#205) ---
+
+/// Builds the `stream_ids` argument of a `withdraw_many` call.
+fn batch_ids(env: &Env, ids: &[u64]) -> soroban_sdk::Vec<u64> {
+    let mut v = soroban_sdk::Vec::new(env);
+    for id in ids {
+        v.push_back(*id);
+    }
+    v
+}
+
+/// A batch answer flattened, in request order, to `Ok(amount)` / `Err(code)` —
+/// the shape the assertions below read most naturally. A skipped entry carries
+/// its reason as a numeric code on the wire (see `WithdrawEntry`), so this turns
+/// it back into the variant it came from.
+pub fn batch_rows(entries: soroban_sdk::Vec<WithdrawEntry>) -> Vec<Result<i128, StreamError>> {
+    entries
+        .iter()
+        .map(|entry| {
+            if entry.code == 0 {
+                Ok(entry.amount)
+            } else {
+                Err(*StreamError::ALL
+                    .iter()
+                    .find(|error| error.code() == entry.code)
+                    .unwrap_or_else(|| panic!("batch answer carried code {}", entry.code)))
+            }
+        })
+        .collect()
+}
+
+/// Mints and re-approves so `count` streams of `DEPOSIT` can be funded by the
+/// fixture's sender (which starts with two deposits, enough for the single-stream
+/// tests but not for a full batch).
+fn fund_for_streams(f: &Fixture, count: i128) {
+    let sac = StellarAssetClient::new(&f.env, &f.token);
+    sac.mint(&f.sender, &(count * DEPOSIT));
+    sac.approve(
+        &f.sender,
+        &f.client.address,
+        &(count * DEPOSIT),
+        &1_000_000u32,
+    );
+}
+
+/// Creates a stream paying `recipient` (not necessarily the fixture's own),
+/// starting `start_in` seconds from now and running `duration` seconds.
+fn create_stream_to(f: &Fixture, recipient: &Address, start_in: u64, duration: u64) -> u64 {
+    let now = f.env.ledger().timestamp();
+    f.client.mock_all_auths().create_stream(
+        &f.sender,
+        recipient,
+        &f.token,
+        &DEPOSIT,
+        &(now + start_in),
+        &(now + start_in + duration),
+        &true,
+    )
+}
+
+#[test]
+fn withdraw_many_operation_order_matches_golden() {
+    let f = Fixture::setup_quiet();
+    let vested = f.create_stream(DEPOSIT, 0, DAY, true);
+    let cancelled = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    f.advance_time(DAY);
+    f.client
+        .mock_all_auths()
+        .cancel_stream(&f.sender, &cancelled);
+
+    crate::cei_trace::begin();
+    // One settled entry, one refused for its status, one that never existed:
+    // the trace shows the batch touching each record once, in request order,
+    // and writing only for the entry that pays.
+    f.client.mock_all_auths().withdraw_many(
+        &f.recipient,
+        &batch_ids(&f.env, &[vested, cancelled, 99]),
+        &false,
+    );
+    let actual = crate::cei_trace::finish();
+
+    assert_eq!(
+        actual,
+        include_str!("../test_orderings/withdraw_many.txt").trim_end()
+    );
+}
+
+#[test]
+fn withdraw_many_settles_eligible_streams_and_reports_the_rest() {
+    let f = Fixture::setup();
+    fund_for_streams(&f, 4);
+    // Fully vested: one day of a one-day stream.
+    let first = f.create_stream(DEPOSIT, 0, DAY, true);
+    let second = f.create_stream(DEPOSIT, 0, DAY, true);
+    // Not started yet, so nothing has accrued: skipped, not paid.
+    let later = f.create_stream(DEPOSIT, 5 * DAY, 10 * DAY, true);
+    // Cancelled before the claim: a terminal stream cannot be claimed.
+    let cancelled = f.create_stream(DEPOSIT, 0, 10 * DAY, true);
+
+    f.advance_time(DAY);
+    f.client
+        .mock_all_auths()
+        .cancel_stream(&f.sender, &cancelled);
+
+    let ids = batch_ids(&f.env, &[first, second, later, cancelled, 99]);
+    let before = TokenClient::new(&f.env, &f.token).balance(&f.recipient);
+    let rows = batch_rows(
+        f.client
+            .mock_all_auths()
+            .withdraw_many(&f.recipient, &ids, &false),
+    );
+
+    assert_eq!(
+        rows,
+        std::vec![
+            Ok(DEPOSIT),
+            Ok(DEPOSIT),
+            Err(StreamError::NothingToWithdraw),
+            Err(StreamError::StreamNotActive),
+            Err(StreamError::StreamNotFound),
+        ]
+    );
+
+    // Only the two settled entries moved tokens.
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.recipient),
+        before + 2 * DEPOSIT
+    );
+    // The skipped entries are untouched: the not-yet-started stream has never
+    // paid, and the cancelled one kept the balance its cancellation settled.
+    assert_eq!(f.client.get_stream(&later).withdrawn, 0);
+    assert_eq!(f.client.get_stream(&later).status, StreamStatus::Active);
+    assert_eq!(f.client.get_stream(&first).status, StreamStatus::Depleted);
+    assert_eq!(f.client.get_stream(&second).status, StreamStatus::Depleted);
+}
+
+/// The batch answers every requested id with a *plain map* — an amount, or the
+/// stable numeric code that skipped it — never with an `ScError`. That is a
+/// wire-format decision, not a style one: `scValToNative` in
+/// `@stellar/stellar-sdk` has no conversion for an error value, so a skipped
+/// entry carried as `Result::Err` would make the whole batch undecodable, which
+/// is the opposite of per-entry isolation. Pinned here because the frontend
+/// decode depends on it.
+#[test]
+fn withdraw_many_answers_carry_the_amount_or_the_stable_error_code() {
+    let f = Fixture::setup();
+    fund_for_streams(&f, 2);
+    let paid = f.create_stream(DEPOSIT, 0, DAY, true);
+    let cancelled = f.create_stream(DEPOSIT, 0, 10 * DAY, true);
+    f.advance_time(DAY);
+    f.client
+        .mock_all_auths()
+        .cancel_stream(&f.sender, &cancelled);
+
+    let entries = f.client.mock_all_auths().withdraw_many(
+        &f.recipient,
+        &batch_ids(&f.env, &[paid, cancelled, 99]),
+        &false,
+    );
+
+    let expected = std::vec![
+        WithdrawEntry {
+            stream_id: paid,
+            amount: DEPOSIT,
+            code: 0,
+        },
+        WithdrawEntry {
+            stream_id: cancelled,
+            amount: 0,
+            code: StreamError::StreamNotActive.code(),
+        },
+        WithdrawEntry {
+            stream_id: 99,
+            amount: 0,
+            code: StreamError::StreamNotFound.code(),
+        },
+    ];
+    // One answer per id, in the order they were requested.
+    assert_eq!(entries.iter().collect::<Vec<_>>(), expected);
+}
+
+#[test]
+fn withdraw_many_emits_one_summary_alongside_the_per_stream_events() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, 0, DAY, true);
+    f.advance_time(DAY);
+
+    f.client
+        .mock_all_auths()
+        .withdraw_many(&f.recipient, &batch_ids(&f.env, &[id]), &false);
+
+    let withdrawn = crate::Withdrawn {
+        stream_id: id,
+        recipient: f.recipient.clone(),
+        amount: DEPOSIT,
+        withdrawn_total: DEPOSIT,
+    };
+    // The batch adds exactly one event, and the per-stream event keeps its
+    // existing shape: consumers that only know `Withdrawn` see nothing change.
+    let summary = crate::BatchWithdrawSummary {
+        recipient: f.recipient.clone(),
+        settled: {
+            let mut paid = soroban_sdk::Vec::new(&f.env);
+            paid.push_back(WithdrawOutcome {
+                stream_id: id,
+                amount: DEPOSIT,
+            });
+            paid
+        },
+        total: DEPOSIT,
+        requested: 1,
+        skipped: 0,
+    };
+    assert_eq!(
+        f.env.events().all().filter_by_contract(&f.client.address),
+        [
+            withdrawn.to_xdr(&f.env, &f.client.address),
+            summary.to_xdr(&f.env, &f.client.address),
+        ]
+    );
+}
+
+#[test]
+fn withdraw_many_bounds_the_batch_and_rejects_duplicates_upfront() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, 0, DAY, true);
+    f.advance_time(DAY);
+
+    // Empty: nothing to claim, and the call says so instead of settling zero.
+    assert_eq!(
+        rejected_batch(&f, &[], false),
+        StreamError::WithdrawBatchEmpty
+    );
+
+    // One over the cap: rejected before any stream is read.
+    let oversized: Vec<u64> = (1..=MAX_WITHDRAW_BATCH + 1).map(|n| n as u64).collect();
+    assert_eq!(
+        rejected_batch(&f, &oversized, false),
+        StreamError::WithdrawBatchTooLarge
+    );
+
+    // Exactly at the cap: accepted. These ids are all above anything this
+    // fixture created, so every entry is reported — the point is that the call
+    // itself runs and answers one row per request.
+    let at_cap: Vec<u64> = (1_000..1_000 + MAX_WITHDRAW_BATCH as u64).collect();
+    let rows = batch_rows(f.client.mock_all_auths().withdraw_many(
+        &f.recipient,
+        &batch_ids(&f.env, &at_cap),
+        &false,
+    ));
+    assert_eq!(rows.len(), MAX_WITHDRAW_BATCH as usize);
+    assert!(rows
+        .iter()
+        .all(|row| *row == Err(StreamError::StreamNotFound)));
+
+    // A repeated id would let the second entry claim against state the first
+    // one just rewrote, so the whole call is refused rather than de-duplicated.
+    assert_eq!(
+        rejected_batch(&f, &[id, id], false),
+        StreamError::WithdrawDuplicateStreamIds
+    );
+
+    // The refusal is upfront: the stream is still fully unwithdrawn and the
+    // recipient still holds nothing, as if the call had never happened.
+    assert_eq!(f.client.get_stream(&id).withdrawn, 0);
+    assert_eq!(TokenClient::new(&f.env, &f.token).balance(&f.recipient), 0);
+}
+
+/// Calls `withdraw_many` expecting the whole call to be rejected, and returns
+/// the code it rejected with.
+fn rejected_batch(f: &Fixture, ids: &[u64], strict: bool) -> StreamError {
+    f.client
+        .mock_all_auths()
+        .try_withdraw_many(&f.recipient, &batch_ids(&f.env, ids), &strict)
+        .unwrap_err()
+        .unwrap()
+}
+
+#[test]
+fn withdraw_many_never_claims_another_recipients_stream() {
+    let f = Fixture::setup();
+    fund_for_streams(&f, 2);
+    let mine = f.create_stream(DEPOSIT, 0, DAY, true);
+    let stranger = Address::generate(&f.env);
+    let theirs = create_stream_to(&f, &stranger, 0, DAY);
+    f.advance_time(DAY);
+
+    // The stranger batches the fixture recipient's stream. They authorized the
+    // call as themselves, so only the per-entry ownership check stands between
+    // them and a payout — and the entry is reported, not paid.
+    let rows = batch_rows(f.client.mock_all_auths().withdraw_many(
+        &stranger,
+        &batch_ids(&f.env, &[mine]),
+        &false,
+    ));
+    assert_eq!(rows, std::vec![Err(StreamError::NotAuthorized)]);
+    assert_eq!(f.client.get_stream(&mine).withdrawn, 0);
+    assert_eq!(TokenClient::new(&f.env, &f.token).balance(&stranger), 0);
+    assert_eq!(TokenClient::new(&f.env, &f.token).balance(&f.recipient), 0);
+
+    // Their *own* stream, claimed by them, settles normally: the check is
+    // identity, not suspicion of batches — but only after the owner has been
+    // kept out of it, so the ledger below is still theirs to change.
+    let rows = batch_rows(f.client.mock_all_auths().withdraw_many(
+        &f.recipient,
+        &batch_ids(&f.env, &[mine, theirs]),
+        &false,
+    ));
+    assert_eq!(
+        rows,
+        std::vec![Ok(DEPOSIT), Err(StreamError::NotAuthorized)]
+    );
+    // The foreign entry was skipped: its ledger is byte-for-byte the record the
+    // stranger's stream still had, and nothing reached the caller who named it.
+    assert_eq!(f.client.get_stream(&theirs).withdrawn, 0);
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.recipient),
+        DEPOSIT
+    );
+    assert_eq!(TokenClient::new(&f.env, &f.token).balance(&stranger), 0);
+
+    let rows = batch_rows(f.client.mock_all_auths().withdraw_many(
+        &stranger,
+        &batch_ids(&f.env, &[theirs]),
+        &false,
+    ));
+    assert_eq!(rows, std::vec![Ok(DEPOSIT)]);
+    assert_eq!(f.client.get_stream(&theirs).withdrawn, DEPOSIT);
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&stranger),
+        DEPOSIT
+    );
+}
+
+#[test]
+fn withdraw_many_requires_the_recipients_authorization() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, 0, DAY, true);
+    f.advance_time(DAY);
+
+    // The batch is authorized by the address it pays, so signing as somebody
+    // else does not let a caller claim on a recipient's behalf.
+    let attacker = Address::generate(&f.env);
+    f.env.mock_auths(&[MockAuth {
+        address: &attacker,
+        invoke: &MockAuthInvoke {
+            contract: &f.client.address,
+            fn_name: "withdraw_many",
+            args: (attacker.clone(), batch_ids(&f.env, &[id]), false).into_val(&f.env),
+            sub_invokes: &[],
+        },
+    }]);
+    assert!(f
+        .client
+        .try_withdraw_many(&f.recipient, &batch_ids(&f.env, &[id]), &false)
+        .is_err());
+    assert_eq!(f.client.get_stream(&id).withdrawn, 0);
+    assert_eq!(TokenClient::new(&f.env, &f.token).balance(&f.recipient), 0);
+}
+
+#[test]
+fn withdraw_many_strict_aborts_the_whole_batch() {
+    let f = Fixture::setup();
+    fund_for_streams(&f, 4);
+    let first = f.create_stream(DEPOSIT, 0, DAY, true);
+    let second = f.create_stream(DEPOSIT, 0, DAY, true);
+    let stranger = Address::generate(&f.env);
+    let theirs = create_stream_to(&f, &stranger, 0, DAY);
+    f.advance_time(DAY);
+
+    // Strict, with the failure last: the two entries that would have settled
+    // are rolled back with the refused one.
+    assert_eq!(
+        rejected_batch(&f, &[first, second, theirs], true),
+        StreamError::NotAuthorized
+    );
+    assert_eq!(f.client.get_stream(&first).withdrawn, 0);
+    assert_eq!(f.client.get_stream(&second).withdrawn, 0);
+    assert_eq!(TokenClient::new(&f.env, &f.token).balance(&f.recipient), 0);
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.client.address),
+        3 * DEPOSIT
+    );
+
+    // The same batch, non-strict: partial success is the default.
+    let rows = batch_rows(f.client.mock_all_auths().withdraw_many(
+        &f.recipient,
+        &batch_ids(&f.env, &[first, second, theirs]),
+        &false,
+    ));
+    assert_eq!(
+        rows,
+        std::vec![Ok(DEPOSIT), Ok(DEPOSIT), Err(StreamError::NotAuthorized)]
+    );
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&f.recipient),
+        2 * DEPOSIT
+    );
+
+    // Strict with everything eligible settles all of it: the flag changes only
+    // the failure behaviour, never the success path.
+    let third = f.create_stream(DEPOSIT, 0, DAY, true);
+    f.advance_time(DAY);
+    let rows = batch_rows(f.client.mock_all_auths().withdraw_many(
+        &f.recipient,
+        &batch_ids(&f.env, &[third]),
+        &true,
+    ));
+    assert_eq!(rows, std::vec![Ok(DEPOSIT)]);
+}
+
+#[test]
+fn withdraw_many_settles_exactly_what_sequential_single_claims_would() {
+    // Two identical portfolios: one claimed through the batch, the other
+    // through one transaction per stream. Identical end state is the proof that
+    // the batch invents no accrual, ordering, or rounding behaviour of its own.
+    let batched = claim_portfolio(false);
+    let sequential = claim_portfolio(true);
+    assert_eq!(
+        batched, sequential,
+        "withdraw_many diverged from {} single claims",
+        MAX_WITHDRAW_BATCH
+    );
+}
+
+/// Creates [`MAX_WITHDRAW_BATCH`] streams with staggered windows, advances a
+/// shared clock, claims them all (`singles` selects one `withdraw_max`
+/// transaction per stream, otherwise one `withdraw_many`), and returns the
+/// resulting ledger plus what the recipient was paid.
+fn claim_portfolio(singles: bool) -> (Vec<(u64, i128, StreamStatus)>, i128) {
+    let f = Fixture::setup();
+    fund_for_streams(&f, MAX_WITHDRAW_BATCH as i128);
+    let mut ids = Vec::new();
+    for n in 0..MAX_WITHDRAW_BATCH {
+        let n = n as u64;
+        let start_in = (n % 3) * DAY;
+        let duration = (2 + (n % 5)) * DAY;
+        ids.push(create_stream_to(&f, &f.recipient, start_in, duration));
+    }
+    f.advance_time(3 * DAY);
+
+    if singles {
+        for id in ids.iter() {
+            f.client.mock_all_auths().withdraw_max(id);
+        }
+    } else {
+        f.client
+            .mock_all_auths()
+            .withdraw_many(&f.recipient, &batch_ids(&f.env, &ids), &false);
+    }
+
+    let ledger: Vec<(u64, i128, StreamStatus)> = ids
+        .iter()
+        .map(|id| {
+            let s = f.client.get_stream(id);
+            (s.id, s.withdrawn, s.status)
+        })
+        .collect();
+    // The paid total is compared too: identical per-stream ledgers with a
+    // different balance would mean the batch paid someone else.
+    (
+        ledger,
+        TokenClient::new(&f.env, &f.token).balance(&f.recipient),
+    )
+}
+
+/// A token that refuses the payout arrives *after* that entry's state write
+/// and event, so it cannot be reported per-entry: the whole batch reverts, and
+/// the entries that already settled are rolled back with it. Skipping a failed
+/// payout instead would mean un-writing effects after an external call — the
+/// reentrancy hazard CEI exists to prevent.
+#[test]
+fn withdraw_many_aborts_the_whole_batch_when_a_payout_is_refused() {
+    let f = RefusingFixture::setup_quiet();
+    let good = f.create(DEPOSIT, 0, 10 * DAY);
+    // A second asset, on the same network, that has stopped paying out.
+    let refusing = f.env.register(RefusingToken, ());
+    RefusingTokenClient::new(&f.env, &refusing).set_refuse(&true, &false);
+    let now = f.env.ledger().timestamp();
+    let bad = f.client.mock_all_auths().create_stream(
+        &f.sender,
+        &f.recipient,
+        &refusing,
+        &DEPOSIT,
+        &now,
+        &(now + 10 * DAY),
+        &true,
+    );
+    f.advance_time(DAY);
+
+    let mut ids = soroban_sdk::Vec::new(&f.env);
+    ids.push_back(good);
+    ids.push_back(bad);
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_withdraw_many(&f.recipient, &ids, &false)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::RecipientPayoutFailed);
+
+    // The entry that had already been written and evented is gone: the host
+    // discarded the transaction, effects included.
+    assert_eq!(f.client.get_stream(&good).withdrawn, 0);
+    assert_eq!(f.client.get_stream(&good).status, StreamStatus::Active);
+    assert_eq!(f.client.get_stream(&bad).withdrawn, 0);
+}
+
+#[test]
+fn withdraw_many_footprint_harness() {
+    // The gas report for issue #205: one batch of MAX_WITHDRAW_BATCH claims
+    // against the same claims issued as that many separate transactions.
+    //
+    // `cost_estimate()` reports the budget of the *last* host invocation, not a
+    // running total, so each separate claim is reset and read on its own and
+    // then summed — that sum is what a recipient without batching pays.
+    let f = Fixture::setup();
+    fund_for_streams(&f, MAX_WITHDRAW_BATCH as i128);
+    let mut ids = Vec::new();
+    for _ in 0..MAX_WITHDRAW_BATCH {
+        ids.push(f.create_stream(DEPOSIT, 0, DAY, true));
+    }
+    f.advance_time(DAY);
+    let batch = batch_ids(&f.env, &ids);
+
+    f.env.cost_estimate().budget().reset_unlimited();
+    f.client
+        .mock_all_auths()
+        .withdraw_many(&f.recipient, &batch, &false);
+    let batch_cpu = f.env.cost_estimate().budget().cpu_instruction_cost();
+    let batch_mem = f.env.cost_estimate().budget().memory_bytes_cost();
+
+    // An identical portfolio, claimed one stream at a time.
+    let g = Fixture::setup();
+    fund_for_streams(&g, MAX_WITHDRAW_BATCH as i128);
+    let singles: Vec<u64> = (0..MAX_WITHDRAW_BATCH)
+        .map(|_| g.create_stream(DEPOSIT, 0, DAY, true))
+        .collect();
+    g.advance_time(DAY);
+    let mut singles_cpu = 0u64;
+    let mut singles_mem = 0u64;
+    let mut one_cpu = 0u64;
+    let mut one_mem = 0u64;
+    for id in singles.iter() {
+        g.env.cost_estimate().budget().reset_unlimited();
+        g.client.mock_all_auths().withdraw_max(id);
+        let cpu = g.env.cost_estimate().budget().cpu_instruction_cost();
+        one_cpu = cpu;
+        one_mem = g.env.cost_estimate().budget().memory_bytes_cost();
+        singles_cpu += cpu;
+        singles_mem += one_mem;
+    }
+
+    std::println!(
+        "GAS_REPORT: n={} withdraw_many cpu={} mem={} | withdraw_max cpu={} mem={} | withdraw_max x n cpu={} mem={} | saved cpu={} mem={}",
+        MAX_WITHDRAW_BATCH,
+        batch_cpu,
+        batch_mem,
+        one_cpu,
+        one_mem,
+        singles_cpu,
+        singles_mem,
+        singles_cpu - batch_cpu,
+        singles_mem - batch_mem
+    );
+    assert!(
+        batch_cpu < singles_cpu,
+        "the batch cost more than {} separate claims ({batch_cpu} vs {singles_cpu})",
+        MAX_WITHDRAW_BATCH
+    );
+    // Batching must not make an individual claim more expensive: the whole
+    // point is that a recipient with many streams pays closer to one
+    // transaction's fixed overhead, not twenty.
+    assert!(
+        batch_cpu < one_cpu * MAX_WITHDRAW_BATCH as u64,
+        "the batch costs more than its own entries ({batch_cpu} for {} claims, {} each)",
+        MAX_WITHDRAW_BATCH,
+        one_cpu
+    );
+
+    // The worst case that fits the cap must actually fit the transaction
+    // budget: 20 claims across one asset, plus the summary event. Soroban's
+    // per-transaction ceiling is 100M instructions; the cap is held well below
+    // it so a full batch leaves room for the caller's own footprint and rent.
+    // 8,000,000 before pause/resume (#24): every entry now also looks up its
+    // `StreamPause` side key (8,422,620 measured, 7,213,732 without it).
+    assert!(
+        batch_cpu <= 8_600_000,
+        "withdraw_many of {MAX_WITHDRAW_BATCH} streams exceeded budget: {batch_cpu}"
+    );
+}
+
+/// Random batches — subsets, duplicates, foreign and unknown ids, both strict
+/// modes — must never pay more than accrued, never touch a stream the request
+/// did not name, and never leave the escrow inconsistent.
+#[test]
+fn random_withdraw_many_batches_never_pay_more_than_accrued() {
+    for seed in [0x5EED_2051, 0x5EED_2052, 0x5EED_2053, 0x5EED_2054] {
+        run_withdraw_many_fuzz(seed, 40);
+    }
+}
+
+fn run_withdraw_many_fuzz(seed: u64, rounds: usize) {
+    struct Entry {
+        id: u64,
+        start: u64,
+        end: u64,
+        /// The model's own claim on the stream, independent of storage.
+        withdrawn: i128,
+    }
+
+    let f = Fixture::setup_quiet();
+    let mut rng = Rng(seed | 1);
+    fund_for_streams(&f, 12);
+    let stranger = Address::generate(&f.env);
+
+    // Three streams for the batch caller, three for somebody else: a batch can
+    // mix them freely, and only the caller's own may ever pay.
+    let mut mine: Vec<Entry> = Vec::new();
+    let mut theirs: Vec<Entry> = Vec::new();
+    for side in 0..6 {
+        let now = f.env.ledger().timestamp();
+        let start_in = rng.below(3 * DAY);
+        let duration = DAY + rng.below(4 * DAY);
+        let owner = if side < 3 { &f.recipient } else { &stranger };
+        let id = create_stream_to(&f, owner, start_in, duration);
+        let entry = Entry {
+            id,
+            start: now + start_in,
+            end: now + start_in + duration,
+            withdrawn: 0,
+        };
+        if side < 3 {
+            mine.push(entry);
+        } else {
+            theirs.push(entry);
+        }
+    }
+    for round in 0..rounds {
+        let ctx = format!("seed {seed:#x} round {round}");
+        f.advance_time(1 + rng.below(DAY));
+        let now = f.env.ledger().timestamp();
+
+        // A request of 1..=8 ids over the caller's streams, the stranger's, and
+        // ids that were never created — with duplicates mixed in sometimes.
+        let len = 1 + rng.below(8) as usize;
+        let mut request: Vec<u64> = Vec::new();
+        for i in 0..len {
+            let pick = rng.below(4);
+            let id = match pick {
+                0 => mine[rng.below(mine.len() as u64) as usize].id,
+                1 => theirs[rng.below(theirs.len() as u64) as usize].id,
+                // A previously chosen id, to exercise the duplicate gate.
+                2 if !request.is_empty() => request[rng.below(request.len() as u64) as usize],
+                _ => 900 + i as u64,
+            };
+            request.push(id);
+        }
+        let duplicates = {
+            let mut sorted = request.clone();
+            sorted.sort();
+            sorted.dedup();
+            sorted.len() != request.len()
+        };
+        let strict = rng.below(2) == 1;
+
+        let recipient_before = TokenClient::new(&f.env, &f.token).balance(&f.recipient);
+        let stranger_before = TokenClient::new(&f.env, &f.token).balance(&stranger);
+
+        // `Ok(rows)` — the batch ran, and each row carries its own verdict.
+        // `Err(code)` — the call itself was refused, so nothing settled.
+        let outcome: Result<soroban_sdk::Vec<WithdrawEntry>, StreamError> = match f
+            .client
+            .mock_all_auths()
+            .try_withdraw_many(&f.recipient, &batch_ids(&f.env, &request), &strict)
+        {
+            Ok(Ok(rows)) => Ok(rows),
+            Ok(Err(undecoded)) => {
+                panic!("{ctx}: the outcome vector did not decode: {undecoded:?}")
+            }
+            Err(rejected) => Err(rejected.unwrap()),
+        };
+
+        if duplicates {
+            match outcome {
+                Err(err) => assert_eq!(
+                    err,
+                    StreamError::WithdrawDuplicateStreamIds,
+                    "{ctx}: the duplicate gate returned the wrong code"
+                ),
+                Ok(_) => panic!("{ctx}: a duplicate id must reject the whole call"),
+            }
+        } else {
+            match outcome {
+                Err(err) => {
+                    assert!(strict, "{ctx}: a non-strict batch never aborts: {err:?}");
+                    // The abort is total: no entry paid, so nothing moved.
+                    assert_eq!(
+                        TokenClient::new(&f.env, &f.token).balance(&f.recipient),
+                        recipient_before,
+                        "{ctx}: a strict abort still paid out"
+                    );
+                }
+                Ok(outcomes) => {
+                    let rows = batch_rows(outcomes);
+                    assert_eq!(rows.len(), request.len(), "{ctx}: one row per request");
+
+                    // Walk the batch the way the contract does: each entry is judged
+                    // against the state the previous entries left behind.
+                    let mut paid = 0i128;
+                    for (row, id) in rows.iter().zip(request.iter()) {
+                        let owned = mine.iter().position(|e| e.id == *id);
+                        let foreign = theirs.iter().position(|e| e.id == *id);
+                        match (owned, foreign) {
+                            (Some(i), _) => {
+                                let duration = mine[i].end - mine[i].start;
+                                let elapsed = now.saturating_sub(mine[i].start).min(duration);
+                                let accrued = streamed_at(DEPOSIT, duration, elapsed).unwrap();
+                                if mine[i].withdrawn == DEPOSIT {
+                                    // Fully claimed: the record is Depleted, and a
+                                    // terminal stream is refused on status, not amount.
+                                    assert_eq!(
+                                        *row,
+                                        Err(StreamError::StreamNotActive),
+                                        "{ctx}: depleted {id}"
+                                    );
+                                } else if accrued <= mine[i].withdrawn {
+                                    assert_eq!(
+                                        *row,
+                                        Err(StreamError::NothingToWithdraw),
+                                        "{ctx}: nothing accrued yet for {id}"
+                                    );
+                                } else {
+                                    let expected = accrued - mine[i].withdrawn;
+                                    assert_eq!(*row, Ok(expected), "{ctx}: paid amount for {id}");
+                                    mine[i].withdrawn += expected;
+                                    paid += expected;
+                                }
+                            }
+                            (None, Some(_)) => {
+                                assert_eq!(
+                                    *row,
+                                    Err(StreamError::NotAuthorized),
+                                    "{ctx}: foreign {id}"
+                                );
+                            }
+                            (None, None) => {
+                                assert_eq!(
+                                    *row,
+                                    Err(StreamError::StreamNotFound),
+                                    "{ctx}: unknown {id}"
+                                );
+                            }
+                        }
+                    }
+
+                    // What the batch reports as paid is exactly what arrived.
+                    assert_eq!(
+                        TokenClient::new(&f.env, &f.token).balance(&f.recipient),
+                        recipient_before + paid,
+                        "{ctx}: recipient balance vs the reported rows"
+                    );
+                    assert_eq!(
+                        TokenClient::new(&f.env, &f.token).balance(&stranger),
+                        stranger_before,
+                        "{ctx}: a batch by one recipient paid another"
+                    );
+                }
+            }
+        }
+
+        // Every stored record matches the model, streams outside the request
+        // included — isolation must not leak into its neighbours.
+        for entry in mine.iter().chain(theirs.iter()) {
+            let s = f.client.get_stream(&entry.id);
+            assert_eq!(
+                s.withdrawn, entry.withdrawn,
+                "{ctx}: ledger for {}",
+                entry.id
+            );
+        }
+
+        // Conservation: the contract escrows exactly what nobody has claimed.
+        let escrow = TokenClient::new(&f.env, &f.token).balance(&f.client.address);
+        let still_escrowed: i128 = mine
+            .iter()
+            .chain(theirs.iter())
+            .map(|e| DEPOSIT - e.withdrawn)
+            .sum();
+        assert_eq!(escrow, still_escrowed, "{ctx}: escrow");
+    }
+}
+
+// -------------------------------------------- release-line storage reads ----
+
+/// The struct-field symbol the SDK keys a `Stream` record by for the oracle
+/// flag — a map key, not a Rust name, on the wire.
+fn oracle_key() -> soroban_sdk::xdr::ScVal {
+    soroban_sdk::xdr::ScVal::Symbol(soroban_sdk::xdr::ScSymbol("use_oracle".try_into().unwrap()))
+}
+
+/// The `Stream` record as an already-deployed instance wrote it: this build's
+/// own encoding of `s` with the `use_oracle` key removed. Derived by
+/// subtraction rather than written out field by field, so it stays the
+/// pre-oracle shape even as the rest of the struct moves.
+fn pre_oracle_stream_record(env: &Env, s: &Stream) -> soroban_sdk::xdr::ScVal {
+    use soroban_sdk::xdr::{self, VecM};
+    use soroban_sdk::{TryFromVal, TryIntoVal, Val};
+
+    let val: Val = s.try_into_val(env).expect("encode stream");
+    let written = xdr::ScVal::try_from_val(env, &val).expect("stream scval");
+    let map = match written {
+        xdr::ScVal::Map(Some(ref m)) => m.clone(),
+        other => panic!("a stream is not encoded as a map: {other:?}"),
+    };
+    let entries: Vec<xdr::ScMapEntry> = map
+        .0
+        .iter()
+        .filter(|e| e.key != oracle_key())
+        .cloned()
+        .collect();
+    assert_eq!(
+        map.0.len() - entries.len(),
+        1,
+        "the current encoding must carry exactly one `use_oracle` key to drop"
+    );
+    xdr::ScVal::Map(Some(xdr::ScMap(
+        VecM::try_from(entries).expect("pre-oracle map"),
+    )))
+}
+
+/// `use_oracle` was added to the persisted `Stream` struct as a required field,
+/// which made every record written before it existed undecodable: a struct
+/// field Rust requires and the wire does not carry is a conversion error, so
+/// `get_stream` failed on pre-oracle streams and the migration that was meant
+/// to fix them read those same records through the failing typed door. The
+/// field is now `Option<bool>`. This pins the reads that fix restores, at both
+/// decode doors a storage hit goes through, and pins that migration backfills
+/// the key rather than leaving it absent.
+#[test]
+fn pre_oracle_stream_records_decode_and_migrate() {
+    use crate::stream::{self as store, DataKey};
+    use soroban_sdk::xdr::ScVal;
+    use soroban_sdk::{TryFromVal, TryIntoVal, Val};
+
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 30 * DAY, true);
+    let current = f.client.get_stream(&id);
+    assert_eq!(current.use_oracle, Some(false));
+
+    // A record this build writes carries the flag as a bool, never a void: the
+    // stored layout of new streams is unchanged by the widening to `Option`.
+    let current_val: Val = current.try_into_val(&f.env).expect("encode stream");
+    let written = ScVal::try_from_val(&f.env, &current_val).expect("stream scval");
+    let map = match &written {
+        ScVal::Map(Some(m)) => m.clone(),
+        other => panic!("a stream is not encoded as a map: {other:?}"),
+    };
+    let flag = map
+        .0
+        .iter()
+        .find(|e| e.key == oracle_key())
+        .expect("`use_oracle` key on a newly written record");
+    assert_eq!(flag.val, ScVal::Bool(false));
+
+    let legacy = pre_oracle_stream_record(&f.env, &current);
+
+    // Door 1: raw XDR, the one the storage-layout corpus is decoded through.
+    let from_xdr = Stream::try_from_val(&f.env, &legacy)
+        .expect("a pre-oracle record must decode with the current types");
+    assert_eq!(from_xdr.use_oracle, None);
+    assert!(!from_xdr.uses_oracle());
+    assert_eq!(
+        from_xdr,
+        Stream {
+            use_oracle: None,
+            ..current.clone()
+        },
+        "only the oracle flag may differ from the record it was built from"
+    );
+
+    // Door 2: host `Val`, the one a typed storage read goes through.
+    let legacy_val = Val::try_from_val(&f.env, &legacy).expect("pre-oracle record as Val");
+    let from_val = Stream::try_from_val(&f.env, &legacy_val)
+        .expect("a pre-oracle record must decode from a host map object");
+    assert_eq!(from_val, from_xdr);
+
+    // The contract's own read path over that record, before any migration.
+    let key = DataKey::Stream(id);
+    f.env.as_contract(&f.client.address, || {
+        f.env.storage().persistent().set(&key, &legacy_val);
+        let s = store::get_stream(&f.env, id).expect("typed get on a pre-oracle record");
+        assert_eq!(s.use_oracle, None);
+        assert_eq!(s.deposit, DEPOSIT);
+        store::set_schema_version(&f.env, INITIAL_SCHEMA_VERSION);
+    });
+
+    // Migration backfills the key, so the record leaves the v1 shape on-chain
+    // and reads as an explicit flag afterwards.
+    f.client.mock_all_auths().set_frozen(&f.governor, &true);
+    let status = f
+        .client
+        .mock_all_auths()
+        .migrate_storage(&f.governor, &id, &1);
+    assert!(status.is_complete);
+    assert_eq!(f.client.schema_version(), TARGET_SCHEMA_VERSION);
+
+    f.env.as_contract(&f.client.address, || {
+        let s = store::get_stream(&f.env, id).expect("typed get after migration");
+        assert_eq!(
+            s.use_oracle,
+            Some(false),
+            "migration writes the flag it backfilled"
+        );
+        assert_eq!(
+            s,
+            Stream {
+                use_oracle: Some(false),
+                ..current.clone()
+            },
+            "backfilling the flag must not disturb the accounting fields"
+        );
+    });
+}
+
+// ------------------------------------------------------------ pause / resume
+
+#[test]
+fn pause_freezes_accrual_and_resume_continues_from_the_frozen_point() {
+    let f = Fixture::setup_quiet();
+    let id = f.create_stream(DEPOSIT, 0, 10 * DAY, false);
+    f.advance_time(2 * DAY);
+    let before = f.client.available(&id);
+    assert_eq!(before, DEPOSIT / 5);
+
+    f.client.mock_all_auths().pause_stream(&f.sender, &id);
+    f.advance_time(3 * DAY);
+    assert_eq!(f.client.available(&id), before, "accrual must freeze");
+
+    f.client.mock_all_auths().resume_stream(&f.sender, &id);
+    let s = f.client.get_stream(&id);
+    assert_eq!(s.end_time - s.start_time, 10 * DAY, "rate is unchanged");
+    assert_eq!(f.client.available(&id), before);
+
+    f.advance_time(DAY);
+    assert_eq!(f.client.available(&id), 3 * DEPOSIT / 10);
+
+    // The full deposit still streams, three days later than planned.
+    f.advance_time(7 * DAY);
+    assert_eq!(f.client.available(&id), DEPOSIT);
+}
+
+#[test]
+fn withdraw_and_cancel_while_paused_use_the_frozen_amount() {
+    let f = Fixture::setup_quiet();
+    let id = f.create_stream(DEPOSIT, 0, 10 * DAY, true);
+    f.advance_time(DAY);
+    f.client.mock_all_auths().pause_stream(&f.sender, &id);
+    f.advance_time(DAY);
+    let frozen = DEPOSIT / 10;
+    f.client.mock_all_auths().withdraw(&id, &frozen);
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_withdraw(&id, &1)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::AmountExceedsAvailable);
+
+    f.client.mock_all_auths().cancel_stream(&f.sender, &id);
+    let s = f.client.get_stream(&id);
+    assert_eq!(s.withdrawn, frozen);
+}
+
+#[test]
+fn pause_and_resume_follow_the_oracle_clock_on_an_oracle_time_stream() {
+    let f = Fixture::setup_quiet();
+    let publisher = soroban_sdk::Address::generate(&f.env);
+    let mut publishers = soroban_sdk::Vec::new(&f.env);
+    publishers.push_back(publisher.clone());
+    // Wide staleness window: every report below stays fresh, and the
+    // future-timestamp guard admits an oracle clock days ahead of the ledger.
+    let max_stale = 30 * DAY;
+    f.client
+        .mock_all_auths()
+        .set_oracle_config(&f.governor, &publishers, &1, &max_stale);
+
+    let t0 = f.env.ledger().timestamp();
+    let id = f.create_stream_with_oracle(DEPOSIT, 0, 10 * DAY, false, true);
+
+    // The oracle clock runs two days ahead of the ledger; accrual follows it.
+    f.client
+        .mock_all_auths()
+        .submit_oracle_time(&publisher, &(t0 + 2 * DAY));
+    assert!(f.client.mock_all_auths().resolve_time(&id, &true).is_oracle);
+    assert_eq!(f.client.available(&id), DEPOSIT / 5);
+
+    // The freeze point is the oracle time, not the (earlier) ledger time.
+    f.client.mock_all_auths().pause_stream(&f.sender, &id);
+    f.client
+        .mock_all_auths()
+        .submit_oracle_time(&publisher, &(t0 + 5 * DAY));
+    assert_eq!(
+        f.client.available(&id),
+        DEPOSIT / 5,
+        "accrual must freeze while the oracle clock keeps moving"
+    );
+
+    // Resume shifts the window by the paused length measured on the oracle
+    // clock (three days), while the ledger has not moved at all.
+    assert_eq!(f.env.ledger().timestamp(), t0);
+    f.client.mock_all_auths().resume_stream(&f.sender, &id);
+    let s = f.client.get_stream(&id);
+    assert_eq!(s.start_time, t0 + 3 * DAY);
+    assert_eq!(s.end_time, t0 + 13 * DAY);
+    assert_eq!(f.client.available(&id), DEPOSIT / 5);
+
+    // Accrual continues from the frozen amount at the original rate.
+    f.client
+        .mock_all_auths()
+        .submit_oracle_time(&publisher, &(t0 + 6 * DAY));
+    assert_eq!(f.client.available(&id), 3 * DEPOSIT / 10);
+}
+
+#[test]
+fn only_the_sender_pauses_and_double_transitions_are_rejected() {
+    let f = Fixture::setup_quiet();
+    let id = f.create_stream(DEPOSIT, 0, 10 * DAY, false);
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_pause_stream(&f.recipient, &id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::NotAuthorized);
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_resume_stream(&f.sender, &id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::InvalidPauseTransition);
+    f.client.mock_all_auths().pause_stream(&f.sender, &id);
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_pause_stream(&f.sender, &id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::InvalidPauseTransition);
 }

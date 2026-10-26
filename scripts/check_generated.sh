@@ -7,6 +7,7 @@
 #   bash scripts/check_generated.sh surface    # docs/ERROR_SURFACE.md
 #   bash scripts/check_generated.sh catalog    # docs/errors.md, docs/errors/*, frontend/lib/errors.ts
 #   bash scripts/check_generated.sh vectors    # tests/vectors/accrual_vectors.json
+#   bash scripts/check_generated.sh events     # schemas/events/, docs/EVENTS.md, generated TS
 #
 # This is the single source of truth for the "generated files are fresh" gates:
 # CI calls it per area (in the job that already has the right toolchain) and
@@ -80,17 +81,35 @@ run_vectors() {
   check_drift "tests/vectors" tests/vectors
 }
 
+run_events() {
+  say "event schema registry (in-crate generator + scripts/generate_event_types.mjs)"
+  command -v cargo >/dev/null 2>&1 || { echo "    cargo not found — skipping events area"; return 0; }
+  command -v node >/dev/null 2>&1 || { echo "    node not found — skipping events area"; return 0; }
+  # The generator is an #[ignore]d test in the contract crate (the same
+  # test-as-generator shape as the error-surface table): it parses the
+  # #[contractevent] structs out of src/ and writes schemas/events/.
+  cargo test -q -p streampay-contract --lib --locked event_registry::generate -- --ignored
+  node scripts/generate_event_types.mjs
+  # Only the generated files: schemas/events/README.md and CHANGELOG.md are
+  # hand-written prose that lives in the same directory.
+  check_drift "schemas/events + docs/EVENTS.md + generated TS" \
+    schemas/events/registry.json schemas/events/v1 docs/EVENTS.md \
+    indexer/src/generated frontend/lib/generated
+}
+
 case "$AREA" in
   surface) run_surface ;;
   catalog) run_catalog ;;
   vectors) run_vectors ;;
+  events) run_events ;;
   all)
     run_surface
     run_catalog
     run_vectors
+    run_events
     ;;
   *)
-    die "unknown area '$AREA' (expected: surface | catalog | vectors | all)"
+    die "unknown area '$AREA' (expected: surface | catalog | vectors | events | all)"
     exit 2
     ;;
 esac
