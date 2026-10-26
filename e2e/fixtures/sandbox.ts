@@ -486,7 +486,7 @@ export async function setupSandbox(): Promise<SandboxContext> {
       );
       if (fs.existsSync(wasmPath)) {
         const out = execSync(
-          `stellar contract deploy --wasm "${wasmPath}" --source "${DEPLOYER_KEYPAIR.secret()}" --network-passphrase "${networkPassphrase}" --rpc-url "${rpcUrl}"`,
+          `stellar contract deploy --wasm "${wasmPath}" --source "${DEPLOYER_KEYPAIR.secret()}" --network-passphrase "${networkPassphrase}" --rpc-url "${rpcUrl}" -- --governor "${DEPLOYER_KEYPAIR.publicKey()}"`,
           { encoding: "utf-8" }
         ).trim();
         const lines = out.split(String.fromCharCode(10));
