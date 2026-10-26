@@ -1,11 +1,12 @@
 //! Events emitted by StreamPay.
 //!
 //! Per-stream events are keyed by `stream_id`; `StreamsCreated` is keyed by
-//! sender and carries the batch ids. Non-topic fields are event data.
+//! sender and carries the batch ids, and `BatchWithdrawSummary` is keyed by the
+//! recipient of a `withdraw_many` call. Non-topic fields are event data.
 
 use soroban_sdk::{contractevent, Address, BytesN, Vec};
 
-use crate::stream::OwnershipRole;
+use crate::stream::{OwnershipRole, WithdrawOutcome};
 
 #[cfg_attr(
     not(target_family = "wasm"),
@@ -57,6 +58,50 @@ pub struct Withdrawn {
 
 #[cfg_attr(
     not(target_family = "wasm"),
+    doc = " Emitted once after a `withdraw_many` batch settles, alongside the"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " per-stream [`Withdrawn`] events. The per-stream shape is unchanged so"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " existing consumers keep working; this event is the batch-level view: every"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " entry that paid, the total, and how many of the requested ids were skipped."
+)]
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchWithdrawSummary {
+    #[topic]
+    pub recipient: Address,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Entries that settled, in request order. A skipped entry appears only in"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " the entrypoint's return value, never here — nothing was paid for it."
+    )]
+    pub settled: Vec<WithdrawOutcome>,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Sum of the delivered amounts: the total the recipient received."
+    )]
+    pub total: i128,
+    #[cfg_attr(not(target_family = "wasm"), doc = " Ids the caller asked for.")]
+    pub requested: u32,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " `requested - settled.len()`: entries skipped with a per-entry error."
+    )]
+    pub skipped: u32,
+}
+
+#[cfg_attr(
+    not(target_family = "wasm"),
     doc = " Emitted when a stream is cancelled. The recipient's accrued balance and"
 )]
 #[cfg_attr(
@@ -94,6 +139,42 @@ pub struct StreamToppedUp {
     pub amount: i128,
     #[cfg_attr(not(target_family = "wasm"), doc = " Stream deposit after the top-up.")]
     pub new_deposit: i128,
+}
+
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " Emitted when the sender pauses a stream, freezing accrual at `paused_at`."
+)]
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamPaused {
+    #[topic]
+    pub stream_id: u64,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Stream-clock timestamp at which accrual was frozen."
+    )]
+    pub paused_at: u64,
+}
+
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " Emitted when the sender resumes a paused stream. The window shifts by"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " the paused length, so accrual continues from the frozen point."
+)]
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamResumed {
+    #[topic]
+    pub stream_id: u64,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The stream's `end_time` after shifting it by the paused length."
+    )]
+    pub new_end_time: u64,
 }
 
 #[cfg_attr(
@@ -648,6 +729,31 @@ pub struct StorageMigrated {
 
 #[cfg_attr(
     not(target_family = "wasm"),
+    doc = " Emitted when a single stream's storage record is re-encoded under a new"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " layout version. Only fired when a rewrite actually happened: an"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " already-current record migrates as a silent no-op, so the absence of this"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " event is what makes repeated `migrate_stream_version` calls idempotent."
+)]
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamRecordMigrated {
+    #[topic]
+    pub stream_id: u64,
+    pub from_version: u32,
+    pub to_version: u32,
+}
+
+#[cfg_attr(
+    not(target_family = "wasm"),
     doc = " Emitted when a stream policy floor/ceiling configuration is updated."
 )]
 #[contractevent]
@@ -986,4 +1092,136 @@ pub struct GovernanceActionExecuted {
     pub action: crate::governance::GovernanceAction,
     pub signers: Vec<Address>,
     pub executed_by: Address,
+}
+
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " Emitted when the sender proposes handing the payer role to a new address."
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " Unlike [`OwnershipProposed`], this handoff is not completed by the target's"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " acceptance: the *recipient* consents, because changing who pays them (and"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " who can cancel on them) is their risk to take."
+)]
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SenderTransferProposed {
+    #[topic]
+    pub stream_id: u64,
+    pub sender_from: Address,
+    pub new_sender: Address,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The proposal's freshness marker, which the consenting call must repeat."
+    )]
+    pub nonce: u64,
+    pub expires_at: u64,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Whether consenting also moves the refund claim for the existing deposit."
+    )]
+    pub transfer_refund_rights: bool,
+}
+
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " Emitted when the recipient's consent executes a proposed sender transfer."
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " `sender_from` / `sender_to` name both sides of the hop; the accounting"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " fields of the stream are untouched."
+)]
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SenderTransferred {
+    #[topic]
+    pub stream_id: u64,
+    pub sender_from: Address,
+    pub sender_to: Address,
+    pub nonce: u64,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " False when the deposit's refund claim stayed with the original sender —"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " the default, and the reason this is a field rather than an inference."
+    )]
+    pub refund_rights_transferred: bool,
+}
+
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " Emitted when a proposal that aged out of its acceptance window is reclaimed,"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " freeing its storage. The role never moved."
+)]
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SenderTransferExpired {
+    #[topic]
+    pub stream_id: u64,
+    pub sender_from: Address,
+    pub new_sender: Address,
+    pub nonce: u64,
+}
+
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " Emitted whenever the refund claim of a stream is pinned to a new address —"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " at creation (`create_stream_with_refund`) or later by the sender"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " (`set_refund_target`). The unstreamed remainder of the deposit is paid to"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " `new_target` on cancellation instead of to the sender. Accrual, the"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " recipient's claims and who may cancel are untouched: this is a destination"
+)]
+#[cfg_attr(not(target_family = "wasm"), doc = " change, not a value change.")]
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamRefundTargetChanged {
+    #[topic]
+    pub stream_id: u64,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The address that held the claim before this change: the previous"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " `new_target`, or the sender on the first routing of a stream."
+    )]
+    pub previous_target: Address,
+    pub new_target: Address,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " True when the routing was set by `create_stream_with_refund`, so a"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " reader can tell a creation-time destination from a later amendment."
+    )]
+    pub at_creation: bool,
 }

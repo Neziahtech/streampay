@@ -1,5 +1,6 @@
 read instance ContractFrozen
 read persistent Stream(1)
+read persistent StreamPause(1)
 transfer_from token
 write persistent Stream(1)
 write persistent RateSegments(1)

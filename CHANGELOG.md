@@ -10,6 +10,18 @@ interface: they are only ever appended to, never renumbered or reused.
 ## [Unreleased]
 
 ### Added
+- Stream pause / resume (#24): `pause_stream` and `resume_stream`, sender only.
+  While a stream is paused its accrual is frozen at the pause point (on the
+  stream's own clock, so oracle-time streams freeze at the oracle time);
+  `withdraw`, `withdraw_max`, `withdraw_many`, `cancel_stream` and rate changes
+  all evaluate against the frozen time, so a paused stream cannot be drained.
+  Resuming shifts the window (and any rate segments) forward by the paused
+  length, so accrual continues from the frozen amount at the original rate and
+  the full deposit still streams. Pause state lives in a new persistent
+  `StreamPause(id)` side key rather than in `Stream`, so records written by a
+  deployed build keep decoding. Adds the `stream_paused` / `stream_resumed`
+  events and error code 99 `InvalidPauseTransition` (pause while paused, or
+  resume while not paused); only `Active` streams can pause.
 - Two-step rate renegotiation (#54): `propose_rate_change`,
   `accept_rate_change`, `cancel_rate_change`, and the `pending_rate_change` and
   `rate_segments` read views. Either party can propose a new
@@ -64,6 +76,104 @@ interface: they are only ever appended to, never renumbered or reused.
 - New `StreamError` variants (appended): `NoPendingOwnership` (60),
   `OwnershipProposalExpired` (61), `InvalidTransferTarget` (62), and
   `OwnershipProposalPending` (63).
+- Explicit **storage record versioning**: every stream record is written as a
+  tagged `VersionedStream { version, stream }` envelope rather than a bare
+  `Stream`, so a record's layout is declared by the bytes instead of inferred
+  from them. Untagged pre-versioning records keep reading (as v1); a tag this
+  build has never seen fails closed on every path — reads, withdrawals,
+  cancellation, top-ups and the migration path itself — with the appended
+  `StreamError::SchemaVersionUnsupported` (87). New entrypoints
+  `migrate_stream_version(stream_id)` (permissionless, one record per call,
+  idempotent: re-running it on a current record is a byte-for-byte no-op) and
+  the `stream_record_version(stream_id)` view, plus the
+  `StreamRecordMigrated { stream_id, from_version, to_version }` event.
+  An XDR-level test hand-encodes a v1 blob, migrates it and asserts the result
+  is field-for-field identical to a natively-written record; accrual across the
+  two layouts is property-tested at window boundaries.
+- Off-chain migration planner: `scripts/migrate_audit.ts` (+
+  `scripts/migrate_audit.sh`) walks the per-address discovery indexes, decodes
+  every stream record it reaches and classifies its layout
+  (current / legacy / future / unrecognised), printing the plan as a table or
+  Markdown. The classification lives in `frontend/lib/migration-report.ts` and
+  is shared with the frontend; the golden report is
+  [`docs/MIGRATION_AUDIT.md`](docs/MIGRATION_AUDIT.md), regenerated and diffed
+  in CI. Documented in `docs/UPGRADES.md`.
+- **Consented sender-role transfer**: `propose_sender_transfer(stream_id,
+  new_sender, nonce, transfer_refund_rights)` (current sender only) records a
+  proposal with the same seven-day window, and `accept_sender_transfer(stream_id,
+  nonce)` executes it only on the *recipient's* consent — the party that loses
+  its counterparty when the payer changes. Anyone may reclaim an aged-out
+  proposal with `expire_sender_transfer(stream_id)`, which returns the nonce it
+  removed; a live proposal refuses (`SenderTransferNotExpired`). Only `sender`
+  moves: deposit, withdrawn, token and window are untouched, so accrual and the
+  `0 ≤ withdrawn ≤ streamed ≤ deposit` invariant are identical across a hop.
+  Each executed hop is appended to the stream's immutable `SenderHistory` log
+  (`sender_at_creation` never changes) and re-points *both* sides of the sender
+  discovery index through the shared index writers, TTL-extending each page.
+  The refund claim of the existing deposit is **not** implied by the role
+  change: it stays with whoever held it unless the proposal sets
+  `transfer_refund_rights`, and `refund_target(stream_id)` always reports where
+  the cancellation remainder would go. `cancel_stream` pays that target with the
+  same CEI ordering and conservation properties as before, at the cost of one
+  extra persistent read (`docs/FOOTPRINT.md`, Candidate 5).
+- New storage keys (append-only): `PendingSenderTransfer(id)`,
+  `SenderHistory(id)`, `RefundTarget(id)`.
+- Append-only events: `SenderTransferProposed`, `SenderTransferred`,
+  `SenderTransferExpired` (all with the `stream_id` topic; the executed event
+  carries `sender_from` / `sender_to`).
+- New `StreamError` variants (appended): `SenderTransferNotFound` (88),
+  `SenderTransferExpired` (89), `SenderTransferNotExpired` (90),
+  `SenderTransferNonceMismatch` (91), `SenderTransferPending` (92),
+  `SenderTransferNotConsenter` (93).
+- Randomised hop sequences (fixed seeds in `contracts/streaming-payments`)
+  assert after every step that the proposal slot, the role, the append-only log,
+  the refund claim, the escrow balance and every address index agree with an
+  independent model. Documented in `docs/ARCHITECTURE.md` §18.
+- **Refund routing**: `create_stream_with_refund(…, refund_to)` pins the
+  remainder destination at creation and `set_refund_target(stream_id, refund_to)`
+  amends it later — sender-role holder only, active streams only, and routing to
+  the address that already holds the claim is refused as a no-op
+  (`RefundTargetUnchanged`). The routing changes *where cancellation money goes*
+  and nothing else: it grants no authority (the new holder still cannot cancel,
+  top up or withdraw), it never enters the accrual math (a routed and an
+  unrouted twin stream produce identical records and identical remainders), and
+  `cancel_stream` pays the routed address with the same CEI ordering and the same
+  conservation identity as before. Amendments overwrite the single
+  `DataKey::RefundTarget(id)` key, so storage grows by at most one address per
+  routed stream rather than per amendment. Append-only:
+  `StreamRefundTargetChanged { previous_target, new_target, at_creation }`,
+  `StreamError::RefundTargetNotSender` (94) and `RefundTargetUnchanged` (95).
+  The indexer projects the routing into `streams.refund_target`, the stream
+  detail page warns when the destination differs from the sender, and randomised
+  route/cancel/transfer sequences are fuzzed against an independent model.
+  Documented in `docs/ARCHITECTURE.md` §19.
+- **Batch claiming**: `withdraw_many(recipient, stream_ids, strict)` settles up to
+  `MAX_WITHDRAW_BATCH` (20) streams in one transaction, running the *same*
+  per-stream claim path as `withdraw_max` (shared `settle_accrued` tail) so
+  accrual math, TTL extension and the `Withdrawn` event are identical by
+  construction rather than restated. It answers one entry per requested id, in
+  request order — `{ stream_id, amount, code }`, `code` being `0` for a stream
+  that paid and otherwise the `StreamError` that skipped it — so a stream that
+  cannot pay is skipped instead of reverting its siblings; `strict` makes any
+  per-entry rejection revert the whole call. The code travels as a number rather
+  than as a `Result` because a ScVal carrying an `ScError` has no off-chain
+  decoder, so one skipped entry would otherwise make the whole batch undecodable.
+  One authorization covers the batch
+  and every entry must belong to the caller, so a holder cannot claim a
+  counterparty's stream by listing its id. The bounds are checked before any
+  state is read: empty (89), over-cap (90) and duplicate ids (91) each revert
+  outright, because a repeated id would claim against state its first entry had
+  already rewritten. A refused *payout* is the one error that aborts rather than
+  skips: its state write and event precede the token call, as CEI requires, and
+  cannot be undone for a single entry. Append-only:
+  `BatchWithdrawSummary { recipient(topic), settled, total, requested, skipped }`
+  alongside the unchanged per-stream events. The indexer subscribes to the
+  summary and journals it without projecting it — the per-stream `withdrawn`
+  rows stay authoritative — and the stream list gains multi-select batch claims
+  behind `NEXT_PUBLIC_BATCH_CLAIM`. Measured: 20 claims in one call cost 6.27M
+  CPU against 7.99M as 20 transactions (`docs/FOOTPRINT.md` §4.1), asserted by
+  `withdraw_many_footprint_harness`; randomised batches over duplicates, foreign
+  streams and mixed tokens are fuzzed against an independent model.
 - Frontend (opt-in) **fee-aware claim scheduling**: a recipient can queue a
   signed `withdraw_max` intent and have the client submit it when the Soroban
   inclusion-fee percentile drops under a budget, with a deadline fallback so a

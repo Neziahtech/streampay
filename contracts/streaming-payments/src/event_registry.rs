@@ -557,6 +557,7 @@ fn collect_items(file: &File, defs: &mut BTreeMap<String, DefKind>, events: &mut
                 if let Some((_, content)) = &m.content {
                     let nested = File {
                         shebang: None,
+                        frontmatter: None,
                         attrs: vec![],
                         items: content.clone(),
                     };

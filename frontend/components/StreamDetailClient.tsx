@@ -2,7 +2,11 @@
 
 import Link from "next/link";
 import { useEffect, useId, useRef, useState } from "react";
-import { readAvailableAction, readStreamAction } from "@/app/actions";
+import {
+  readAvailableAction,
+  readRefundTargetAction,
+  readStreamAction,
+} from "@/app/actions";
 import { describeError } from "@/lib/errors";
 import { type StreamSnapshot } from "@/lib/accrual";
 import {
@@ -42,6 +46,7 @@ export default function StreamDetailClient({
   const [address, setAddress] = useState<string | null>(null);
   const [status, setStatus] = useState("");
   const [actionError, setActionError] = useState("");
+  const [refundTarget, setRefundTarget] = useState<string | null>(null);
   const engineRef = useRef<LiveAccrual | null>(null);
 
   useEffect(() => {
@@ -73,6 +78,7 @@ export default function StreamDetailClient({
   const withdrawMaxHintId = useId();
   const cancelHeadingId = useId();
   const cancelWarningId = useId();
+  const refundWarningId = useId();
   const tableCapId = useId();
   const progressId = useId();
 
@@ -90,6 +96,22 @@ export default function StreamDetailClient({
     return () => {
       engineRef.current = null;
       engine.stop();
+    };
+  }, [id]);
+
+  // The refund routing is an annotation on the cancel card, not part of the
+  // accrual clock, so it is read separately and a failed read shows nothing.
+  useEffect(() => {
+    let active = true;
+    readRefundTargetAction(id)
+      .then((value) => {
+        if (active) setRefundTarget(value);
+      })
+      .catch(() => {
+        if (active) setRefundTarget(null);
+      });
+    return () => {
+      active = false;
     };
   }, [id]);
 
@@ -197,6 +219,10 @@ export default function StreamDetailClient({
   }
 
   const isStreaming = stream.status === "Active";
+  // The contract's `refund_target` view answers with the sender for an
+  // unrouted stream, so "differs from sender" is the only signal that a routing
+  // exists. A failed read (null) says nothing and shows nothing.
+  const refundRouted = refundTarget !== null && refundTarget !== stream.sender;
 
   return (
     <main className="wrap">
@@ -385,10 +411,24 @@ export default function StreamDetailClient({
             Pays the recipient everything accrued and refunds the sender the
             rest, atomically. This is irreversible.
           </p>
+          {refundRouted && (
+            <p id={refundWarningId} className="warn" role="note">
+              <span aria-hidden="true">⚠</span>
+              <span>
+                Warning: the refund of the remainder is routed to{" "}
+                <code>{refundTarget}</code>, not to the current sender. The
+                sender role and who can cancel are unaffected.
+              </span>
+            </p>
+          )}
           <button
             type="button"
             onClick={() => void doCancel()}
-            aria-describedby={cancelWarningId}
+            aria-describedby={
+              refundRouted
+                ? `${cancelWarningId} ${refundWarningId}`
+                : cancelWarningId
+            }
           >
             Cancel stream
           </button>

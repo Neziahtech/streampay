@@ -17,10 +17,14 @@ jobs:
     name: Contract — test / fmt / clippy / wasm
     runs-on: ubuntu-latest
     env:
+      # The upgrade-replay test needs the built in-development wasm to compare
+      # against. Without this it prints a skip locally; with it, a missing
+      # artifact fails the gate instead of silently dropping the replay.
+      STORAGE_GOLDEN_REQUIRE_WASM: 1
       # Single source of truth for the Wasm size budget (KB). The rule is:
       # the smallest whole KB that the current public interface fits, so the
-      # ratchet stays as tight as the interface allows. 90 KB = this build's
-      # 91,534 B + 2,606 B of headroom. History: issue #58's techniques took the
+      # ratchet stays as tight as the interface allows. 105 KB = this build's
+      # 103,314 B + 4,206 B of headroom. History: issue #58's techniques took the
       # contract from 91,004 B to 60,386 B, upstream's ownership-transfer +
       # vault surface added 3,757 B (gate: 63 KB), and the governance timelock
       # that has now merged adds 14,123 B more — 10,005 B of `code`, 3,072 B of
@@ -37,9 +41,26 @@ jobs:
       # accrual helpers), 1,512 B of structural `contractspecv0` entries (5
       # entrypoints, 2 events, 2 stored structs, 4 error codes), 537 B of `data`
       # event symbols, 107 B of exports and 29 B of meta. Merged together the two
-      # feature branches produce 91,534 B (89.4 KB → 90 KB gate). The next
-      # entrypoint addition should trigger the split discussion, not a bump.
-      WASM_SIZE_BUDGET_KB: 90
+      # feature branches produce 91,534 B (89.4 KB → 90 KB gate). #426 is the
+      # entrypoint addition that comment predicted: 15 new entrypoints (sender
+      # transfer, ownership transfer, refund routing, `withdraw_many`, schema
+      # migration), 6 new events, 12 new error codes (87-98) and 3 new `DataKey`
+      # variants, no new dependencies, measured 101,691 B with the pinned
+      # stellar-cli 28.1.0 — +10,157 B, ~680 B per entrypoint, and
+      # `gate_interface_docs.py --check` reports 0 groups on that tree, so no
+      # Technique 1 recovery is left. The gate moves to 100 KB and the split
+      # discussion is now overdue rather than merely triggered: see
+      # docs/WASM_SIZE.md ("Gate decision — #426"). The next interface addition
+      # should split the contract, not raise this number again. It arrived as
+      # #407 (pause/resume: 2 entrypoints over one private body, 2 events, error
+      # code 99, one `DataKey::StreamPause` side key, no new dependencies) and
+      # measured 103,314 B — 914 B over, with every in-feature shrink measured
+      # and rejected. The gate moves to 105 KB as a recorded maintainer decision
+      # (docs/WASM_SIZE.md, "Gate decision — #407"); the strict smallest-whole-KB
+      # reading of that rule would be 101 KB, and 105 is taken deliberately to
+      # leave room for #407's review fixes. #441 (contract split) is now a
+      # prerequisite for further interface growth, not a recommendation.
+      WASM_SIZE_BUDGET_KB: 105
     steps:
       - uses: actions/checkout@v7
 
@@ -103,6 +124,28 @@ jobs:
       - name: Clippy (deny warnings)
         run: cargo clippy --all-targets -- -D warnings
 
+      # Built BEFORE the test steps: the storage-layout upgrade replay boots the
+      # committed release-line wasm and swaps the live instance over to this
+      # artifact through the contract's own execute_upgrade, so the gate needs
+      # the bytes on disk. soroban-sdk 28 rejects a plain
+      # `cargo build --target wasm32v1-none` (its build script requires the
+      # stellar-cli >= 25.2 spec-shaking v2 handshake), so the supported build
+      # path is `stellar contract build`.
+      #
+      # This is the job's ONLY install/build pair: the artifact lands in
+      # target/wasm32v1-none/release/ and stays there for the size budget check
+      # and the artifact upload further down, so repeating it would just pay the
+      # build twice.
+      - name: Install stellar-cli
+        run: |
+          curl -fsSL https://github.com/stellar/stellar-cli/releases/download/v28.1.0/stellar-cli-28.1.0-x86_64-unknown-linux-gnu.tar.gz | tar xz
+          sudo install stellar /usr/local/bin/stellar
+          stellar --version
+
+      - name: Wasm build (stellar contract build)
+        working-directory: contracts/streaming-payments
+        run: stellar contract build
+
       - name: Unit + property tests
         run: cargo test --workspace --locked
 
@@ -121,6 +164,48 @@ jobs:
       - name: Error-surface table is up to date
         run: bash scripts/check_generated.sh surface
 
+      # The golden corpus is a pinned RELEASE-LINE artifact (v0.3.0 shape), and
+      # the `#[ignore]`d generator writes the layout of whatever build it runs
+      # on. Regenerating it here and diffing could therefore never pass: the
+      # first layout change since the cut makes the dev build emit a different
+      # (still-valid) shape, and the step would fail on the corpus being
+      # current rather than on anything wrong. It also rewrites the pinned
+      # blobs inside the CI workspace, which is the one artifact whose whole
+      # value is that it does not move.
+      #
+      # The unreviewed-layout-change signal this step claimed to own is already
+      # enforced, with better failure messages, by the storage_golden tests in
+      # "Unit + property tests" above: `decode` fails if a release-line record
+      # stops decoding (that is how the `use_oracle` widening was caught),
+      # `mid_enum` catches renames and semantic shifts a typed decode cannot
+      # see, and `replay` proves every untouched record survives the upgrade
+      # byte-for-byte. Accepting a real layout change is the procedure in
+      # docs/STORAGE_LAYOUT.md, which re-captures the corpus from a release-line
+      # checkout — never from the build under review.
+      - name: Storage-layout corpus is intact
+        run: |
+          python3 - <<'PY'
+          import json, pathlib, sys
+          root = pathlib.Path("test_fixtures/storage")
+          manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+          entries = list(manifest["records"]) + list(manifest["events"])
+          listed = {e["file"] for e in entries}
+          on_disk = {p.relative_to(root).as_posix()
+                     for p in list(root.glob("records/*.bin")) + list(root.glob("events/*.bin"))}
+          problems = [f"manifest names {f} but no such blob is committed" for f in sorted(listed - on_disk)]
+          problems += [f"{f} is committed but the manifest does not cover it" for f in sorted(on_disk - listed)]
+          problems += [f"{f} is empty" for f in sorted(on_disk) if (root / f).stat().st_size == 0]
+          baseline = root / "baseline" / "streampay-v0.3.0-baseline.wasm"
+          if not (baseline.is_file() and baseline.stat().st_size > 0):
+              problems.append("the baseline wasm the replay boots is missing or empty")
+          for p in problems:
+              print(f"::error::{p}")
+          if problems:
+              sys.exit(1)
+          print(f"corpus intact: {len(manifest['records'])} records, "
+                f"{len(manifest['events'])} events, baseline wasm present")
+          PY
+
       - name: Coverage
         uses: taiki-e/install-action@cargo-llvm-cov
         with:
@@ -128,19 +213,6 @@ jobs:
 
       - name: llvm-cov (summary)
         run: cargo llvm-cov --workspace --summary-only
-
-      # soroban-sdk 28 rejects a plain `cargo build --target wasm32v1-none`
-      # (its build script requires the stellar-cli >= 25.2 spec-shaking v2
-      # handshake), so the supported build path is `stellar contract build`.
-      - name: Install stellar-cli
-        run: |
-          curl -fsSL https://github.com/stellar/stellar-cli/releases/download/v28.1.0/stellar-cli-28.1.0-x86_64-unknown-linux-gnu.tar.gz | tar xz
-          sudo install stellar /usr/local/bin/stellar
-          stellar --version
-
-      - name: Wasm build (stellar contract build)
-        working-directory: contracts/streaming-payments
-        run: stellar contract build
 
       # Issue #58's Technique 1 invariant, as a gate rather than a one-off edit:
       # no `#[contracttype]`/`#[contracterror]`/`#[contractevent]` item and no
@@ -462,6 +534,14 @@ jobs:
       # SECURITY.md, the runbooks, and the audit docs form intact.
       - name: Check internal markdown links
         run: node scripts/check_docs_links.mjs
+
+      # The migration plan operators read (docs/MIGRATION_AUDIT.md) is generated
+      # from a captured record-layout snapshot, so changing the classifier or the
+      # snapshot without regenerating the report is drift. Regenerate and diff,
+      # with the same one command contributors run locally. Needs no npm install:
+      # the layout classifier is dependency-free by design.
+      - name: Migration audit report is up to date
+        run: bash scripts/migrate_audit.sh --check
 
       # A JSON file with the same key twice is valid JSON: `JSON.parse` and npm
       # keep the LAST occurrence and drop the earlier one without a word. Every

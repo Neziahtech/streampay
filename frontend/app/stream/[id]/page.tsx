@@ -10,6 +10,7 @@ import {
   isNativeXlm,
   readAvailable,
   readBeneficiaryKey,
+  readRefundTarget,
   readSponsor,
   readStream,
   RELAY_URL,
@@ -66,6 +67,23 @@ export default function StreamDetail() {
   const [refreshing, setRefreshing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [discoveryModalOpen, setDiscoveryModalOpen] = useState<boolean>(false);
+  const [refundTarget, setRefundTarget] = useState<string | null>(null);
+
+  // Separate, non-fatal read: the routing only annotates the cancel card.
+  useEffect(() => {
+    if (!id) return;
+    let active = true;
+    readRefundTarget(id)
+      .then((value) => {
+        if (active) setRefundTarget(value);
+      })
+      .catch(() => {
+        if (active) setRefundTarget(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [id]);
 
   useEffect(() => {
     if (!id) return;
@@ -189,6 +207,7 @@ export default function StreamDetail() {
     deposit > 0n ? Math.min(100, Number((withdrawn * 100n) / deposit)) : 0;
   const isRecipient = address !== null && address === stream.recipient;
   const isSender = address !== null && address === stream.sender;
+  const refundRouted = refundTarget !== null && refundTarget !== stream.sender;
   const consentEnrolled =
     consentPub !== "" && enrolledKey !== null && enrolledKey === consentPub;
   const sponsorFundsThisToken =
@@ -572,6 +591,12 @@ export default function StreamDetail() {
               Pays the recipient everything accrued and refunds the sender the
               rest, atomically. This is irreversible.
             </p>
+            {refundRouted && (
+              <p className="warn" role="note">
+                The unspent deposit on this stream is routed to{" "}
+                <span className="mono">{refundTarget}</span>, not to the sender.
+              </p>
+            )}
             <button onClick={() => void doCancel()} disabled={submitting}>
               {submitting ? "Cancelling…" : "Cancel stream"}
             </button>

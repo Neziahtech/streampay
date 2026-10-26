@@ -24,7 +24,7 @@ use crate::stream::{streamed_at, DataKey};
 use crate::surface::{trace, Branch, Reachability, RETIRED_CODES};
 use crate::test::{Fixture, RefusingFixture};
 use crate::{
-    StreamError, MAX_DURATION_SECONDS, MAX_FEE_BPS, MAX_RATE_SEGMENTS,
+    StreamError, MAX_DURATION_SECONDS, MAX_FEE_BPS, MAX_RATE_SEGMENTS, MAX_WITHDRAW_BATCH,
     OWNERSHIP_PROPOSAL_TTL_SECONDS, RATE_PROPOSAL_TTL_SECONDS,
 };
 
@@ -90,6 +90,23 @@ macro_rules! rejected {
             .expect_err("expected the contract to reject the call")
             .unwrap()
     };
+}
+
+/// Reads the per-entry rejection out of a `withdraw_many` batch that itself
+/// succeeded — reporting an entry as skipped *is* success for the call, which
+/// is exactly what per-entry isolation means.
+macro_rules! skipped {
+    ($call:expr) => {{
+        let rows = crate::test::batch_rows(
+            $call
+                .expect("expected the batch call to succeed")
+                .expect("expected no whole-batch rejection"),
+        );
+        match rows.first() {
+            Some(Err(error)) => *error,
+            _ => panic!("expected the entry to be skipped"),
+        }
+    }};
 }
 
 // ------------------------------------------- sponsorship probe scaffolding ---
@@ -1488,6 +1505,207 @@ fn probe(branch: Branch) -> Option<StreamError> {
                 .mock_all_auths()
                 .try_set_fee_bps(&g.f.governor, &100)))
         }
+        Branch::SchemaVersionUnsupported => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            let stream = f.client.get_stream(&id);
+            // Forge a record tagged with a layout this build has never seen —
+            // exactly what a downgrade (or a corrupted write) would produce.
+            let future = crate::stream::VersionedStream {
+                version: crate::stream::CURRENT_STREAM_RECORD_VERSION + 1,
+                stream,
+            };
+            f.env.as_contract(&f.client.address, || {
+                f.env
+                    .storage()
+                    .persistent()
+                    .set(&DataKey::Stream(id), &future);
+            });
+            Some(rejected!(f.client.mock_all_auths().try_get_stream(&id)))
+        }
+        Branch::SenderTransferNotFound => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_accept_sender_transfer(&f.recipient, &id, &1)))
+        }
+        Branch::SenderTransferExpired => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            let new_sender = soroban_sdk::Address::generate(&f.env);
+            f.client.mock_all_auths().propose_sender_transfer(
+                &f.sender,
+                &id,
+                &new_sender,
+                &1,
+                &false,
+            );
+            f.advance_time(OWNERSHIP_PROPOSAL_TTL_SECONDS);
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_accept_sender_transfer(&f.recipient, &id, &1)))
+        }
+        Branch::SenderTransferNotExpired => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            let new_sender = soroban_sdk::Address::generate(&f.env);
+            f.client.mock_all_auths().propose_sender_transfer(
+                &f.sender,
+                &id,
+                &new_sender,
+                &1,
+                &false,
+            );
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_expire_sender_transfer(&id)))
+        }
+        Branch::SenderTransferNonceMismatch => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            let new_sender = soroban_sdk::Address::generate(&f.env);
+            f.client.mock_all_auths().propose_sender_transfer(
+                &f.sender,
+                &id,
+                &new_sender,
+                &1,
+                &false,
+            );
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_accept_sender_transfer(&f.recipient, &id, &2)))
+        }
+        Branch::SenderTransferPending => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            let first = soroban_sdk::Address::generate(&f.env);
+            let second = soroban_sdk::Address::generate(&f.env);
+            f.client
+                .mock_all_auths()
+                .propose_sender_transfer(&f.sender, &id, &first, &1, &false);
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_propose_sender_transfer(
+                    &f.sender, &id, &second, &2, &false
+                )))
+        }
+        Branch::SenderTransferNotConsenter => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            let new_sender = soroban_sdk::Address::generate(&f.env);
+            f.client.mock_all_auths().propose_sender_transfer(
+                &f.sender,
+                &id,
+                &new_sender,
+                &1,
+                &false,
+            );
+            // The incoming sender is not the party whose consent executes it.
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_accept_sender_transfer(&new_sender, &id, &1)))
+        }
+        // ------------------------------------------------ refund routing
+        Branch::RefundTargetNotSender => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            let stranger = soroban_sdk::Address::generate(&f.env);
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_set_refund_target(&stranger, &id, &stranger)))
+        }
+        Branch::RefundTargetUnchanged => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            // The sender already holds the claim, so routing to them is the
+            // no-op this branch exists to refuse.
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_set_refund_target(&f.sender, &id, &f.sender)))
+        }
+        // ------------------------------------------------ batch withdraw
+        Branch::WithdrawManyEmpty => {
+            let f = Fixture::setup_quiet();
+            let ids = soroban_sdk::Vec::new(&f.env);
+            Some(rejected!(f.client.mock_all_auths().try_withdraw_many(
+                &f.recipient,
+                &ids,
+                &false
+            )))
+        }
+        Branch::WithdrawManyTooLarge => {
+            let f = Fixture::setup_quiet();
+            let mut ids = soroban_sdk::Vec::new(&f.env);
+            for id in 1u64..=(MAX_WITHDRAW_BATCH as u64 + 1) {
+                ids.push_back(id);
+            }
+            Some(rejected!(f.client.mock_all_auths().try_withdraw_many(
+                &f.recipient,
+                &ids,
+                &false
+            )))
+        }
+        Branch::WithdrawManyDuplicateIds => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, 0, 10 * DAY, false);
+            let mut ids = soroban_sdk::Vec::new(&f.env);
+            ids.push_back(id);
+            ids.push_back(id);
+            Some(rejected!(f.client.mock_all_auths().try_withdraw_many(
+                &f.recipient,
+                &ids,
+                &false
+            )))
+        }
+        Branch::WithdrawManyNotStreamRecipient => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, 0, 10 * DAY, false);
+            let mut ids = soroban_sdk::Vec::new(&f.env);
+            ids.push_back(id);
+            // A stranger batching a known id cannot claim someone else's
+            // accrual; the entry is reported, not paid.
+            let other = soroban_sdk::Address::generate(&f.env);
+            Some(skipped!(f
+                .client
+                .mock_all_auths()
+                .try_withdraw_many(&other, &ids, &false)))
+        }
+        Branch::WithdrawManyTotalOverflow => None,
+        // ------------------------------------------------------- pause / resume
+        Branch::PauseNotAuthorized => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_pause_stream(&f.recipient, &id)))
+        }
+        Branch::PauseAlreadyPaused => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            f.client.mock_all_auths().pause_stream(&f.sender, &id);
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_pause_stream(&f.sender, &id)))
+        }
+        Branch::ResumeNotPaused => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_resume_stream(&f.sender, &id)))
+        }
     }
 }
 
@@ -1585,6 +1803,7 @@ fn defensive_branches_are_exactly_documented() {
             Branch::PayoutOverflow,
             Branch::RateSegmentSumOverflow,
             Branch::RateHeadroomUnderflow,
+            Branch::WithdrawManyTotalOverflow,
         ],
         "the defensive set changed; update the matrix test and docs/ERROR_SURFACE.md"
     );
@@ -1667,6 +1886,7 @@ fn stream_error_variant_list_is_exhaustive() {
             | StreamError::RateProposalExpired
             | StreamError::RateProposalPending
             | StreamError::TooManyRateSegments
+            | StreamError::InvalidPauseTransition
             | StreamError::GovernanceNotInitialized
             | StreamError::GovernanceAlreadyInitialized
             | StreamError::NotGovernanceSigner
@@ -1682,7 +1902,19 @@ fn stream_error_variant_list_is_exhaustive() {
             | StreamError::GovernanceAlreadyExecuted
             | StreamError::GovernanceDuplicateSignature
             | StreamError::GovernanceSignaturesInsufficient
-            | StreamError::GovernanceTimelockRequired => StreamError::ALL.contains(&e),
+            | StreamError::GovernanceTimelockRequired
+            | StreamError::SchemaVersionUnsupported
+            | StreamError::SenderTransferNotFound
+            | StreamError::SenderTransferExpired
+            | StreamError::SenderTransferNotExpired
+            | StreamError::SenderTransferNonceMismatch
+            | StreamError::SenderTransferPending
+            | StreamError::SenderTransferNotConsenter
+            | StreamError::RefundTargetNotSender
+            | StreamError::RefundTargetUnchanged
+            | StreamError::WithdrawBatchEmpty
+            | StreamError::WithdrawBatchTooLarge
+            | StreamError::WithdrawDuplicateStreamIds => StreamError::ALL.contains(&e),
         }
     }
 

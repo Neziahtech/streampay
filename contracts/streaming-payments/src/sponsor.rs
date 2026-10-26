@@ -499,7 +499,7 @@ pub fn sponsored_withdraw(
     if amount <= 0 {
         return Err(surface::reject(Branch::SponsoredWithdrawAmountNonPositive));
     }
-    let resolved = crate::oracle::resolve_stream_time(&env, stream_id, s.use_oracle);
+    let resolved = crate::oracle::resolve_stream_time(&env, stream_id, s.uses_oracle());
     let available = stream::available_amount_with_plan(&env, &s, resolved.timestamp)?;
     if amount > available {
         return Err(surface::reject(

@@ -33,6 +33,22 @@ export interface StreamPolicy {
   min_deposit: bigint;
 }
 
+/** Contract struct `WithdrawOutcome` (referenced by event fields; fingerprint `sha256:234c2963a101dacf36f77557359232fcdf3319040d9fcfb164d94a9986a333b4`). */
+export interface WithdrawOutcome {
+  stream_id: bigint;
+  amount: bigint;
+}
+
+/** Emitted once after a `withdraw_many` batch settles, alongside the per-stream [`Withdrawn`] events. The per-stream shape is unchanged so existing consumers keep working; this event is the batch-level view: every entry that paid, the total, and how many of the requested ids were skipped. */
+/** Event key `batch_withdraw_summary` — fingerprint `sha256:59b5ba85df9a81a2bcce7610b21b724aa1e5093d0d44a54cd46370ae0dfb6860`. */
+export interface BatchWithdrawSummaryEvent {
+  recipient: string;
+  settled: WithdrawOutcome[];
+  total: bigint;
+  requested: number;
+  skipped: number;
+}
+
 /** Emitted when a beneficiary binds an ed25519 consent key, and again whenever they rotate it. Keyed by the beneficiary address. */
 /** Event key `beneficiary_enrolled` — fingerprint `sha256:8a457d9c30ee67b51c5709af2eb838deacb19d55dc53a93055734d920e77e7d7`. */
 export interface BeneficiaryEnrolledEvent {
@@ -283,6 +299,36 @@ export interface ScheduledStreamExecutedEvent {
   fee_paid: bigint;
 }
 
+/** Emitted when a proposal that aged out of its acceptance window is reclaimed, freeing its storage. The role never moved. */
+/** Event key `sender_transfer_expired` — fingerprint `sha256:52f1ec5001642966297a3a1d96e94c2a155edfeccf6622164a0834724863ba60`. */
+export interface SenderTransferExpiredEvent {
+  stream_id: bigint;
+  sender_from: string;
+  new_sender: string;
+  nonce: bigint;
+}
+
+/** Emitted when the sender proposes handing the payer role to a new address. Unlike [`OwnershipProposed`], this handoff is not completed by the target's acceptance: the *recipient* consents, because changing who pays them (and who can cancel on them) is their risk to take. */
+/** Event key `sender_transfer_proposed` — fingerprint `sha256:7012eae001bbc92c7ecce6275cab31714970ba85e5ab1bde135e93dff4ec0f92`. */
+export interface SenderTransferProposedEvent {
+  stream_id: bigint;
+  sender_from: string;
+  new_sender: string;
+  nonce: bigint;
+  expires_at: bigint;
+  transfer_refund_rights: boolean;
+}
+
+/** Emitted when the recipient's consent executes a proposed sender transfer. `sender_from` / `sender_to` name both sides of the hop; the accounting fields of the stream are untouched. */
+/** Event key `sender_transferred` — fingerprint `sha256:db820aba8791ee0f230ae1ae551812251458457ad061bd13b996b21a2c18cf0d`. */
+export interface SenderTransferredEvent {
+  stream_id: bigint;
+  sender_from: string;
+  sender_to: string;
+  nonce: bigint;
+  refund_rights_transferred: boolean;
+}
+
 /** Emitted when a sponsor pauses or resumes its budget. */
 /** Event key `sponsor_active_set` — fingerprint `sha256:7bbd39680d30fd7bd9d76fcd1adbf06561b0a338af9de46d09960a87476ba8a5`. */
 export interface SponsorActiveSetEvent {
@@ -345,12 +391,43 @@ export interface StreamCreatedEvent {
   cancelable: boolean;
 }
 
+/** Emitted when the sender pauses a stream, freezing accrual at `paused_at`. */
+/** Event key `stream_paused` — fingerprint `sha256:0d457030c164b4e062b06573927350f9782f0cb22409977ae4d6f01e17fb557e`. */
+export interface StreamPausedEvent {
+  stream_id: bigint;
+  paused_at: bigint;
+}
+
 /** Emitted when a stream policy floor/ceiling configuration is updated. */
 /** Event key `stream_policy_set` — fingerprint `sha256:b351d5e8904e7e12bdd4a02f67b7d93fd47f2c8609661a1414965244a22fcb20`. */
 export interface StreamPolicySetEvent {
   token: string | null;
   old_policy: StreamPolicy | null;
   new_policy: StreamPolicy;
+}
+
+/** Emitted when a single stream's storage record is re-encoded under a new layout version. Only fired when a rewrite actually happened: an already-current record migrates as a silent no-op, so the absence of this event is what makes repeated `migrate_stream_version` calls idempotent. */
+/** Event key `stream_record_migrated` — fingerprint `sha256:e1a41c8e2201e81e259bd5f52b1fc85482d3657d3dc15b8385ef9a6ec16c5659`. */
+export interface StreamRecordMigratedEvent {
+  stream_id: bigint;
+  from_version: number;
+  to_version: number;
+}
+
+/** Emitted whenever the refund claim of a stream is pinned to a new address — at creation (`create_stream_with_refund`) or later by the sender (`set_refund_target`). The unstreamed remainder of the deposit is paid to `new_target` on cancellation instead of to the sender. Accrual, the recipient's claims and who may cancel are untouched: this is a destination change, not a value change. */
+/** Event key `stream_refund_target_changed` — fingerprint `sha256:20f8ba96f8e86083b6e7f70644ec49d8958349f8dc3b1ee7462e3868dae8d943`. */
+export interface StreamRefundTargetChangedEvent {
+  stream_id: bigint;
+  previous_target: string;
+  new_target: string;
+  at_creation: boolean;
+}
+
+/** Emitted when the sender resumes a paused stream. The window shifts by the paused length, so accrual continues from the frozen point. */
+/** Event key `stream_resumed` — fingerprint `sha256:76526b2a695c524df20dcea647e64f0cd38a3f8322d5196a26b10134ca4158c0`. */
+export interface StreamResumedEvent {
+  stream_id: bigint;
+  new_end_time: bigint;
 }
 
 /** Emitted when a sender pre-authorizes a future (optionally recurring) stream creation and escrows the deposit plus keeper fee budget. */
@@ -413,6 +490,7 @@ export interface WithdrawnEvent {
 
 /** The topic symbol each event publishes as its name. */
 export const EVENT_KEYS = {
+  BatchWithdrawSummary: "batch_withdraw_summary",
   BeneficiaryEnrolled: "beneficiary_enrolled",
   ContractFrozenStateChanged: "contract_frozen_state_changed",
   ContractUpgraded: "contract_upgraded",
@@ -443,13 +521,20 @@ export const EVENT_KEYS = {
   ScheduledIntentCancelled: "scheduled_intent_cancelled",
   ScheduledIntentExpired: "scheduled_intent_expired",
   ScheduledStreamExecuted: "scheduled_stream_executed",
+  SenderTransferExpired: "sender_transfer_expired",
+  SenderTransferProposed: "sender_transfer_proposed",
+  SenderTransferred: "sender_transferred",
   SponsorActiveSet: "sponsor_active_set",
   SponsorClaim: "sponsor_claim",
   SponsorRegistered: "sponsor_registered",
   StorageMigrated: "storage_migrated",
   StreamCancelled: "stream_cancelled",
   StreamCreated: "stream_created",
+  StreamPaused: "stream_paused",
   StreamPolicySet: "stream_policy_set",
+  StreamRecordMigrated: "stream_record_migrated",
+  StreamRefundTargetChanged: "stream_refund_target_changed",
+  StreamResumed: "stream_resumed",
   StreamScheduled: "stream_scheduled",
   StreamToppedUp: "stream_topped_up",
   StreamsCreated: "streams_created",
@@ -462,7 +547,7 @@ export const EVENT_KEYS = {
 export type ContractEventName = (typeof EVENT_KEYS)[keyof typeof EVENT_KEYS];
 
 /** Every event this registry knows about, even if a consumer ignores it. */
-export const ALL_CONTRACT_EVENT_NAMES: readonly ContractEventName[] = ["beneficiary_enrolled", "contract_frozen_state_changed", "contract_upgraded", "dispute_expired", "dispute_raised", "dispute_resolved", "fee_charged", "fee_withdrawn", "governance_action_executed", "governance_action_proposed", "governance_action_signed", "governance_action_vetoed", "governance_signers_set", "operator_key_rotated", "oracle_config_updated", "oracle_stale_fallback", "oracle_time_reported", "ownership_accepted", "ownership_proposed", "policy_asset_executed", "policy_asset_queued", "policy_handoff_accepted", "policy_handoff_cancelled", "policy_handoff_proposed", "policy_initialized", "rate_change_accepted", "rate_change_proposed", "scheduled_intent_cancelled", "scheduled_intent_expired", "scheduled_stream_executed", "sponsor_active_set", "sponsor_claim", "sponsor_registered", "storage_migrated", "stream_cancelled", "stream_created", "stream_policy_set", "stream_scheduled", "stream_topped_up", "streams_created", "upgrade_cancelled", "upgrade_proposed", "withdrawn"] as const;
+export const ALL_CONTRACT_EVENT_NAMES: readonly ContractEventName[] = ["batch_withdraw_summary", "beneficiary_enrolled", "contract_frozen_state_changed", "contract_upgraded", "dispute_expired", "dispute_raised", "dispute_resolved", "fee_charged", "fee_withdrawn", "governance_action_executed", "governance_action_proposed", "governance_action_signed", "governance_action_vetoed", "governance_signers_set", "operator_key_rotated", "oracle_config_updated", "oracle_stale_fallback", "oracle_time_reported", "ownership_accepted", "ownership_proposed", "policy_asset_executed", "policy_asset_queued", "policy_handoff_accepted", "policy_handoff_cancelled", "policy_handoff_proposed", "policy_initialized", "rate_change_accepted", "rate_change_proposed", "scheduled_intent_cancelled", "scheduled_intent_expired", "scheduled_stream_executed", "sender_transfer_expired", "sender_transfer_proposed", "sender_transferred", "sponsor_active_set", "sponsor_claim", "sponsor_registered", "storage_migrated", "stream_cancelled", "stream_created", "stream_paused", "stream_policy_set", "stream_record_migrated", "stream_refund_target_changed", "stream_resumed", "stream_scheduled", "stream_topped_up", "streams_created", "upgrade_cancelled", "upgrade_proposed", "withdrawn"] as const;
 
 /** Narrow an arbitrary RPC event name to a registered contract event. */
 export function isContractEventName(name: string): name is ContractEventName {
@@ -471,6 +556,7 @@ export function isContractEventName(name: string): name is ContractEventName {
 
 /** Decode helper: name the struct behind a registered event key. */
 export const EVENT_STRUCT_BY_KEY: Record<ContractEventName, string> = {
+  "batch_withdraw_summary": "BatchWithdrawSummary",
   "beneficiary_enrolled": "BeneficiaryEnrolled",
   "contract_frozen_state_changed": "ContractFrozenStateChanged",
   "contract_upgraded": "ContractUpgraded",
@@ -501,13 +587,20 @@ export const EVENT_STRUCT_BY_KEY: Record<ContractEventName, string> = {
   "scheduled_intent_cancelled": "ScheduledIntentCancelled",
   "scheduled_intent_expired": "ScheduledIntentExpired",
   "scheduled_stream_executed": "ScheduledStreamExecuted",
+  "sender_transfer_expired": "SenderTransferExpired",
+  "sender_transfer_proposed": "SenderTransferProposed",
+  "sender_transferred": "SenderTransferred",
   "sponsor_active_set": "SponsorActiveSet",
   "sponsor_claim": "SponsorClaim",
   "sponsor_registered": "SponsorRegistered",
   "storage_migrated": "StorageMigrated",
   "stream_cancelled": "StreamCancelled",
   "stream_created": "StreamCreated",
+  "stream_paused": "StreamPaused",
   "stream_policy_set": "StreamPolicySet",
+  "stream_record_migrated": "StreamRecordMigrated",
+  "stream_refund_target_changed": "StreamRefundTargetChanged",
+  "stream_resumed": "StreamResumed",
   "stream_scheduled": "StreamScheduled",
   "stream_topped_up": "StreamToppedUp",
   "streams_created": "StreamsCreated",
@@ -535,6 +628,7 @@ export interface EventShape {
 }
 
 export const EVENT_SHAPES: Record<ContractEventName, EventShape> = {
+  "batch_withdraw_summary": { struct: "BatchWithdrawSummary", eventKey: "batch_withdraw_summary", fingerprint: "sha256:59b5ba85df9a81a2bcce7610b21b724aa1e5093d0d44a54cd46370ae0dfb6860", topics: [{"name":"recipient","type":"Address"}], data: [{"name":"settled","type":"Vec<WithdrawOutcome>"},{"name":"total","type":"i128"},{"name":"requested","type":"u32"},{"name":"skipped","type":"u32"}] },
   "beneficiary_enrolled": { struct: "BeneficiaryEnrolled", eventKey: "beneficiary_enrolled", fingerprint: "sha256:8a457d9c30ee67b51c5709af2eb838deacb19d55dc53a93055734d920e77e7d7", topics: [{"name":"beneficiary","type":"Address"},{"name":"kind","type":"Symbol"}], data: [{"name":"public_key","type":"BytesN<32>"}] },
   "contract_frozen_state_changed": { struct: "ContractFrozenStateChanged", eventKey: "contract_frozen_state_changed", fingerprint: "sha256:090c0be66d60a23f3122acb9d4df26f1c2efea8c18828a5d48614b93692f8f7f", topics: [{"name":"frozen","type":"bool"}], data: [{"name":"changed_by","type":"Address"}] },
   "contract_upgraded": { struct: "ContractUpgraded", eventKey: "contract_upgraded", fingerprint: "sha256:0228c88243ed185f32359dd32f813d0c1df5ef393fbe5416fc120720020dc2fe", topics: [{"name":"new_wasm_hash","type":"BytesN<32>"}], data: [{"name":"executed_by","type":"Address"}] },
@@ -565,13 +659,20 @@ export const EVENT_SHAPES: Record<ContractEventName, EventShape> = {
   "scheduled_intent_cancelled": { struct: "ScheduledIntentCancelled", eventKey: "scheduled_intent_cancelled", fingerprint: "sha256:fe727619a69c546daa9f512a6cbe4162453a8404bd8dba614384557f162e5f0e", topics: [{"name":"intent_id","type":"u64"}], data: [{"name":"sender","type":"Address"},{"name":"refund","type":"i128"}] },
   "scheduled_intent_expired": { struct: "ScheduledIntentExpired", eventKey: "scheduled_intent_expired", fingerprint: "sha256:708a995061ac8713d9a6fc7ea04f7c39eee313276cc42fb0cd9268f3210500ee", topics: [{"name":"intent_id","type":"u64"}], data: [{"name":"sender","type":"Address"},{"name":"refund","type":"i128"}] },
   "scheduled_stream_executed": { struct: "ScheduledStreamExecuted", eventKey: "scheduled_stream_executed", fingerprint: "sha256:318937479fdb35060d6640657c70d51fcda211fc4408f5902b7eac1224f89f06", topics: [{"name":"intent_id","type":"u64"}], data: [{"name":"keeper","type":"Address"},{"name":"stream_id","type":"u64"},{"name":"occurrence_index","type":"u32"},{"name":"occurrences_remaining","type":"u32"},{"name":"fee_paid","type":"i128"}] },
+  "sender_transfer_expired": { struct: "SenderTransferExpired", eventKey: "sender_transfer_expired", fingerprint: "sha256:52f1ec5001642966297a3a1d96e94c2a155edfeccf6622164a0834724863ba60", topics: [{"name":"stream_id","type":"u64"}], data: [{"name":"sender_from","type":"Address"},{"name":"new_sender","type":"Address"},{"name":"nonce","type":"u64"}] },
+  "sender_transfer_proposed": { struct: "SenderTransferProposed", eventKey: "sender_transfer_proposed", fingerprint: "sha256:7012eae001bbc92c7ecce6275cab31714970ba85e5ab1bde135e93dff4ec0f92", topics: [{"name":"stream_id","type":"u64"}], data: [{"name":"sender_from","type":"Address"},{"name":"new_sender","type":"Address"},{"name":"nonce","type":"u64"},{"name":"expires_at","type":"u64"},{"name":"transfer_refund_rights","type":"bool"}] },
+  "sender_transferred": { struct: "SenderTransferred", eventKey: "sender_transferred", fingerprint: "sha256:db820aba8791ee0f230ae1ae551812251458457ad061bd13b996b21a2c18cf0d", topics: [{"name":"stream_id","type":"u64"}], data: [{"name":"sender_from","type":"Address"},{"name":"sender_to","type":"Address"},{"name":"nonce","type":"u64"},{"name":"refund_rights_transferred","type":"bool"}] },
   "sponsor_active_set": { struct: "SponsorActiveSet", eventKey: "sponsor_active_set", fingerprint: "sha256:7bbd39680d30fd7bd9d76fcd1adbf06561b0a338af9de46d09960a87476ba8a5", topics: [{"name":"sponsor","type":"Address"},{"name":"kind","type":"Symbol"}], data: [{"name":"active","type":"bool"}] },
   "sponsor_claim": { struct: "SponsorClaim", eventKey: "sponsor_claim", fingerprint: "sha256:0fcc98031e4670bce6e2722764f5033590803a9c84681e2f7dccf74f8457c864", topics: [{"name":"sponsor","type":"Address"},{"name":"kind","type":"Symbol"},{"name":"stream_id","type":"u64"}], data: [{"name":"beneficiary","type":"Address"},{"name":"amount","type":"i128"},{"name":"nonce","type":"u64"}] },
   "sponsor_registered": { struct: "SponsorRegistered", eventKey: "sponsor_registered", fingerprint: "sha256:d725d4b0decb76963259805f48770b81d0c2530094f16d2241daa27e41bc28c5", topics: [{"name":"sponsor","type":"Address"},{"name":"kind","type":"Symbol"}], data: [{"name":"token","type":"Address"},{"name":"per_period_limit","type":"i128"},{"name":"per_beneficiary_limit","type":"i128"},{"name":"window_seconds","type":"u64"}] },
   "storage_migrated": { struct: "StorageMigrated", eventKey: "storage_migrated", fingerprint: "sha256:3e0dc77f4cd7ab650f0239a9420df76cb30b78707cd25dcbdabe542c9d37baae", topics: [{"name":"from_version","type":"u32"},{"name":"to_version","type":"u32"}], data: [{"name":"start_id","type":"u64"},{"name":"end_id","type":"u64"},{"name":"is_complete","type":"bool"}] },
   "stream_cancelled": { struct: "StreamCancelled", eventKey: "stream_cancelled", fingerprint: "sha256:2b3062308e34986aea101c7c25e12965e40b9b9143475359a87741417bca71a7", topics: [{"name":"stream_id","type":"u64"}], data: [{"name":"cancelled_by","type":"Address"},{"name":"recipient_amount","type":"i128"},{"name":"sender_amount","type":"i128"}] },
   "stream_created": { struct: "StreamCreated", eventKey: "stream_created", fingerprint: "sha256:8e7e6d5ab578b8a656ecf6a58e712d15546c6bd95abc5030009597abb0ee5012", topics: [{"name":"stream_id","type":"u64"}], data: [{"name":"sender","type":"Address"},{"name":"recipient","type":"Address"},{"name":"token","type":"Address"},{"name":"deposit","type":"i128"},{"name":"start_time","type":"u64"},{"name":"end_time","type":"u64"},{"name":"cancelable","type":"bool"}] },
+  "stream_paused": { struct: "StreamPaused", eventKey: "stream_paused", fingerprint: "sha256:0d457030c164b4e062b06573927350f9782f0cb22409977ae4d6f01e17fb557e", topics: [{"name":"stream_id","type":"u64"}], data: [{"name":"paused_at","type":"u64"}] },
   "stream_policy_set": { struct: "StreamPolicySet", eventKey: "stream_policy_set", fingerprint: "sha256:b351d5e8904e7e12bdd4a02f67b7d93fd47f2c8609661a1414965244a22fcb20", topics: [], data: [{"name":"token","type":"Option<Address>"},{"name":"old_policy","type":"Option<StreamPolicy>"},{"name":"new_policy","type":"StreamPolicy"}] },
+  "stream_record_migrated": { struct: "StreamRecordMigrated", eventKey: "stream_record_migrated", fingerprint: "sha256:e1a41c8e2201e81e259bd5f52b1fc85482d3657d3dc15b8385ef9a6ec16c5659", topics: [{"name":"stream_id","type":"u64"}], data: [{"name":"from_version","type":"u32"},{"name":"to_version","type":"u32"}] },
+  "stream_refund_target_changed": { struct: "StreamRefundTargetChanged", eventKey: "stream_refund_target_changed", fingerprint: "sha256:20f8ba96f8e86083b6e7f70644ec49d8958349f8dc3b1ee7462e3868dae8d943", topics: [{"name":"stream_id","type":"u64"}], data: [{"name":"previous_target","type":"Address"},{"name":"new_target","type":"Address"},{"name":"at_creation","type":"bool"}] },
+  "stream_resumed": { struct: "StreamResumed", eventKey: "stream_resumed", fingerprint: "sha256:76526b2a695c524df20dcea647e64f0cd38a3f8322d5196a26b10134ca4158c0", topics: [{"name":"stream_id","type":"u64"}], data: [{"name":"new_end_time","type":"u64"}] },
   "stream_scheduled": { struct: "StreamScheduled", eventKey: "stream_scheduled", fingerprint: "sha256:fcfb97a34e2115fabfcea45aa6a1a8e807ab85dd467186eb5e25e494fe490487", topics: [{"name":"intent_id","type":"u64"}], data: [{"name":"sender","type":"Address"},{"name":"recipient","type":"Address"},{"name":"token","type":"Address"},{"name":"deposit","type":"i128"},{"name":"start_time","type":"u64"},{"name":"end_time","type":"u64"},{"name":"cancelable","type":"bool"},{"name":"interval","type":"u64"},{"name":"occurrences","type":"u32"},{"name":"fee_budget","type":"i128"},{"name":"execute_after","type":"u64"},{"name":"expires_at","type":"u64"}] },
   "stream_topped_up": { struct: "StreamToppedUp", eventKey: "stream_topped_up", fingerprint: "sha256:846293901988cf6cfb2fc5e8a7821a66f8c61c2496e7e4c52c0e2f099df932c9", topics: [{"name":"stream_id","type":"u64"}], data: [{"name":"sender","type":"Address"},{"name":"amount","type":"i128"},{"name":"new_deposit","type":"i128"}] },
   "streams_created": { struct: "StreamsCreated", eventKey: "streams_created", fingerprint: "sha256:affd0ccd120eb20fa19a2b6072ab17bb95cf1349fdc89898e4eb9187583fbdd3", topics: [{"name":"sender","type":"Address"}], data: [{"name":"stream_ids","type":"Vec<u64>"}] },
@@ -582,6 +683,7 @@ export const EVENT_SHAPES: Record<ContractEventName, EventShape> = {
 
 /** Registry fingerprints keyed by event struct, for drift reporting. */
 export const EVENT_FINGERPRINTS: Record<string, string> = {
+  "BatchWithdrawSummary": "sha256:59b5ba85df9a81a2bcce7610b21b724aa1e5093d0d44a54cd46370ae0dfb6860",
   "BeneficiaryEnrolled": "sha256:8a457d9c30ee67b51c5709af2eb838deacb19d55dc53a93055734d920e77e7d7",
   "ContractFrozenStateChanged": "sha256:090c0be66d60a23f3122acb9d4df26f1c2efea8c18828a5d48614b93692f8f7f",
   "ContractUpgraded": "sha256:0228c88243ed185f32359dd32f813d0c1df5ef393fbe5416fc120720020dc2fe",
@@ -612,13 +714,20 @@ export const EVENT_FINGERPRINTS: Record<string, string> = {
   "ScheduledIntentCancelled": "sha256:fe727619a69c546daa9f512a6cbe4162453a8404bd8dba614384557f162e5f0e",
   "ScheduledIntentExpired": "sha256:708a995061ac8713d9a6fc7ea04f7c39eee313276cc42fb0cd9268f3210500ee",
   "ScheduledStreamExecuted": "sha256:318937479fdb35060d6640657c70d51fcda211fc4408f5902b7eac1224f89f06",
+  "SenderTransferExpired": "sha256:52f1ec5001642966297a3a1d96e94c2a155edfeccf6622164a0834724863ba60",
+  "SenderTransferProposed": "sha256:7012eae001bbc92c7ecce6275cab31714970ba85e5ab1bde135e93dff4ec0f92",
+  "SenderTransferred": "sha256:db820aba8791ee0f230ae1ae551812251458457ad061bd13b996b21a2c18cf0d",
   "SponsorActiveSet": "sha256:7bbd39680d30fd7bd9d76fcd1adbf06561b0a338af9de46d09960a87476ba8a5",
   "SponsorClaim": "sha256:0fcc98031e4670bce6e2722764f5033590803a9c84681e2f7dccf74f8457c864",
   "SponsorRegistered": "sha256:d725d4b0decb76963259805f48770b81d0c2530094f16d2241daa27e41bc28c5",
   "StorageMigrated": "sha256:3e0dc77f4cd7ab650f0239a9420df76cb30b78707cd25dcbdabe542c9d37baae",
   "StreamCancelled": "sha256:2b3062308e34986aea101c7c25e12965e40b9b9143475359a87741417bca71a7",
   "StreamCreated": "sha256:8e7e6d5ab578b8a656ecf6a58e712d15546c6bd95abc5030009597abb0ee5012",
+  "StreamPaused": "sha256:0d457030c164b4e062b06573927350f9782f0cb22409977ae4d6f01e17fb557e",
   "StreamPolicySet": "sha256:b351d5e8904e7e12bdd4a02f67b7d93fd47f2c8609661a1414965244a22fcb20",
+  "StreamRecordMigrated": "sha256:e1a41c8e2201e81e259bd5f52b1fc85482d3657d3dc15b8385ef9a6ec16c5659",
+  "StreamRefundTargetChanged": "sha256:20f8ba96f8e86083b6e7f70644ec49d8958349f8dc3b1ee7462e3868dae8d943",
+  "StreamResumed": "sha256:76526b2a695c524df20dcea647e64f0cd38a3f8322d5196a26b10134ca4158c0",
   "StreamScheduled": "sha256:fcfb97a34e2115fabfcea45aa6a1a8e807ab85dd467186eb5e25e494fe490487",
   "StreamToppedUp": "sha256:846293901988cf6cfb2fc5e8a7821a66f8c61c2496e7e4c52c0e2f099df932c9",
   "StreamsCreated": "sha256:affd0ccd120eb20fa19a2b6072ab17bb95cf1349fdc89898e4eb9187583fbdd3",

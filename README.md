@@ -73,6 +73,7 @@ Metrics, alerting stack, and operational diagnosis: [`docs/RUNBOOK.md`](./docs/R
 | `create_streams(sender, inputs: Vec<StreamInput>) → Vec<u64>` | anyone (sender auth required) | one pull per token | `StreamsCreated`; `FeeCharged` per charged stream |
 | `withdraw(stream_id, amount)` | recipient | pays out ≤ accrued | `Withdrawn` |
 | `withdraw_max(stream_id) → i128` | recipient | pays out all accrued, atomically | `Withdrawn` |
+| `withdraw_many(recipient, stream_ids: Vec<u64>, strict) → Vec<WithdrawEntry>` | recipient of every listed stream | pays out each settled stream's accrued balance, in one transaction | `Withdrawn` per settled stream; `BatchWithdrawSummary` |
 | `cancel_stream(caller, stream_id)` | sender; recipient iff `cancelable` | pro-rata split, atomic | `StreamCancelled` |
 | `top_up(stream_id, amount)` | sender | pulls added funds | `StreamToppedUp` |
 | `raise_dispute(stream_id)` | recipient | pulls escalating anti-griefing bond in | `DisputeRaised` |
@@ -84,6 +85,11 @@ Metrics, alerting stack, and operational diagnosis: [`docs/RUNBOOK.md`](./docs/R
 | `propose_rate_change(caller, stream_id, amount_per_second)` | sender or recipient | — (records a pending offer) | `RateChangeProposed` |
 | `accept_rate_change(caller, stream_id)` | named counterparty only (an increase also consumes sender auth) | pulls the shortfall or refunds the freed escrow, atomically | `RateChangeAccepted` |
 | `cancel_rate_change(caller, stream_id)` | proposer only | — (clears the pending offer) | — |
+| `propose_sender_transfer(caller, stream_id, new_sender, nonce, transfer_refund_rights)` | current sender | — (records a pending proposal) | `SenderTransferProposed` |
+| `accept_sender_transfer(caller, stream_id, nonce)` | recipient only | — (moves the payer role) | `SenderTransferred` |
+| `expire_sender_transfer(stream_id) → u64` | anyone, after the window | — (clears a dead proposal) | `SenderTransferExpired` |
+| `create_stream_with_refund(sender, recipient, token, deposit, start, end, cancelable, refund_to) → u64` | anyone (sender auth required) | pulls deposit in | `StreamCreated`; `StreamRefundTargetChanged` |
+| `set_refund_target(caller, stream_id, refund_to)` | sender-role holder, active streams | — (moves the refund destination) | `StreamRefundTargetChanged` |
 | `get_stream(stream_id) → Stream` | — (read-only) | — | — |
 | `get_dispute(stream_id) → Dispute` | — (read-only) | — | — |
 | `required_dispute_bond(stream_id) → i128` | — (read-only) | — | — |
@@ -91,6 +97,9 @@ Metrics, alerting stack, and operational diagnosis: [`docs/RUNBOOK.md`](./docs/R
 | `pending_ownership_transfer(stream_id) → Option<PendingOwnership>` | — (read-only) | — | — |
 | `pending_rate_change(stream_id) → Option<PendingRateChange>` | — (read-only) | — | — |
 | `rate_segments(stream_id) → Vec<RateSegment>` | — (read-only) | — | — |
+| `pending_sender_transfer(stream_id) → Option<PendingSenderTransfer>` | — (read-only) | — | — |
+| `sender_history(stream_id) → SenderHistory` | — (read-only) | — | — |
+| `refund_target(stream_id) → Address` | — (read-only) | — | — |
 | `recipient_streams(address, offset, limit) → Vec<u64>` | — (read-only) | — | — |
 | `sender_streams(address, offset, limit) → Vec<u64>` | — (read-only) | — | — |
 | `schedule_stream(sender, recipient, token, deposit, start, end, cancelable, interval, occurrences, fee_budget, execute_after, expires_at) → u64` | anyone (sender auth required) | pulls `(deposit+fee)×occurrences` in | `StreamScheduled` |
@@ -127,6 +136,31 @@ individual `StreamCreated` events; fee-enabled batches still emit one
 [Protocol fees](#protocol-fees-optional) below. Soroban transaction resource
 limits bound the practical maximum batch size.
 
+`withdraw_many(recipient, stream_ids, strict)` (#205) settles up to
+`MAX_WITHDRAW_BATCH = 20` streams in one transaction and answers with one entry
+per requested id, in request order: `{ stream_id, amount, code: 0 }` for a stream
+that paid, `{ stream_id, amount: 0, code }` for one it skipped. The code is the
+numeric `StreamError` discriminant rather than an error *value* on purpose —
+`scValToNative` cannot convert a ScVal carrying an `ScError`, so a `Result` in
+that vector would make a batch with one skipped stream undecodable off-chain.
+Every entry runs the same code path as `withdraw_max` — the same accrual math,
+TTL extension and `Withdrawn` event — so partial success is the default and one
+exhausted stream no longer blocks the other nineteen. `strict` promotes any
+per-entry rejection into a revert of the whole call. Three bounds are checked
+before any state is read: an empty list (`WithdrawBatchEmpty`, 96), a list over
+the cap (`WithdrawBatchTooLarge`, 97) and a repeated id
+(`WithdrawDuplicateStreamIds`, 98) each revert the call outright, because a
+second entry for an id would claim against state its first entry had already
+rewritten. A per-entry `code` is one of the pre-payout rejections the
+single-stream path returns — the stream is unknown, not yours, not active, or has
+nothing accrued — and that entry pays nothing. A refused *payout* is the one
+failure that aborts the batch instead of skipping an entry: its `withdrawn`
+update and `Withdrawn` event were written before the token was called, as CEI
+requires, and neither can be un-written for a single entry, so the transaction
+reverts whole. Batching is cheaper as well as shorter: 20 claims in one call
+measured 6.27M CPU against 7.99M for the same 20 claims as 20 transactions
+([`docs/FOOTPRINT.md`](./docs/FOOTPRINT.md) §4.1).
+
 `recipient_streams` / `sender_streams` are on-chain discovery indexes:
 append-only, creation-ordered stream-id lists per address, paginated
 (`limit` clamped to `MAX_PAGE_SIZE = 50`). Terminal streams keep their ids —
@@ -134,7 +168,9 @@ read each stream's `status` for lifecycle state. Ownership transfers follow
 the same append-only rule: the new holder's index gains the id on acceptance
 and the previous holder keeps its historical entry, so readers must check the
 current `sender` / `recipient` fields on `get_stream` before acting on an
-indexed id.
+indexed id. A consented **sender-role transfer** (#201) is the exception: it
+re-points the payer index on both sides, so the outgoing sender's page stops
+listing the stream and the incoming sender's starts listing it.
 
 ### Two-step ownership transfer
 
@@ -178,6 +214,56 @@ on-chain money cannot disagree. See
 math and the exactness argument, and
 [`docs/adr/0012-piecewise-rate-schedule-storage.md`](./docs/adr/0012-piecewise-rate-schedule-storage.md)
 for why the schedule lives under its own storage key.
+### Consented sender-role transfer
+
+`propose_ownership_transfer` hands a role to the address that will hold it, so
+the target consents. A **sender-role transfer** is the other case: the payer
+changes, and the party who loses their counterparty is the recipient, so the
+*recipient* consents.
+
+1. The current sender calls `propose_sender_transfer(stream_id, new_sender,
+   nonce, transfer_refund_rights)`, which stores a proposal with the same
+   7-day window. The stream is unchanged; a second proposal is refused while
+   one is live (`SenderTransferPending`, code 92).
+2. The stream's recipient — and only the recipient — calls
+   `accept_sender_transfer(stream_id, nonce)` with that nonce. Any other
+   caller gets `SenderTransferNotConsenter` (93); a nonce that is not the
+   stored one gets `SenderTransferNonceMismatch` (91), so a replaced proposal
+   can never be executed with a stale consent.
+3. If the window lapses, the proposal cannot execute (`SenderTransferExpired`,
+   82) and anyone may reclaim the storage with
+   `expire_sender_transfer(stream_id)` (83 while it is still live), which
+   returns the nonce it removed.
+
+Only `sender` moves: deposit, `withdrawn`, token and window are untouched, so
+accrual is identical before and after a hop. Every executed hop is appended to
+the stream's immutable `SenderHistory` log, whose `sender_at_creation` keeps
+answering "who funded this deposit?" however many roles pass by. The refund
+claim of the original deposit is **not** implied by the role change: it stays
+with whoever held it unless the proposal sets `transfer_refund_rights`, and
+`refund_target(stream_id)` always reports where the cancellation remainder
+would go. Both discovery index pages are rewritten and TTL-extended by the
+same shared index writers the creation path uses.
+
+### Refund routing
+
+The destination that paragraph defers to is directly addressable. A stream can
+be created with its refund already routed — `create_stream_with_refund(...,
+refund_to)` — and re-pointed later by whoever currently holds the sender role
+with `set_refund_target(stream_id, refund_to)`, which refuses a finished stream
+(`StreamNotActive`, 5), a caller outside the payer role (`RefundTargetNotSender`,
+94), and a routing to the address that already holds the claim
+(`RefundTargetUnchanged`, 95).
+
+Routing moves *where cancellation money goes* and nothing else: it grants no
+authority (the routed address still cannot cancel, top up or withdraw), and it
+never enters the accrual math, so a routed stream and an unrouted twin have
+identical records and identical remainders — only the destination differs. It
+composes with a sender-role hop in the order the two happen: a hop that does not
+move refund rights preserves the routing, a hop that does replaces it. Note the
+trap that follows: a pinned destination drains whatever the pot holds, so routing
+the claim before a later sender tops the stream up sends that larger remainder
+to the pinned address. See [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) §19.
 
 Any SEP-41-compatible asset can fund a stream: an issued asset via its
 Stellar Asset Contract id (e.g. USDC on testnet) or **native XLM** via its
@@ -399,7 +485,7 @@ CHANGELOG.md                    release history (Keep a Changelog)
   governor-gated withdrawals, open verification
   (`verify_treasury` + `scripts/verify-fees.ts`), ✅ incident response drills
   and runbook (testnet simulation)
-- **v1.0** — external audit, mainnet deployment guide
+- **v1.0** — external audit ([`docs/AUDIT_SCOPE.md`](./docs/AUDIT_SCOPE.md)), mainnet deployment guide
 
 Feature requests live in [`.github/ISSUE_TEMPLATE/`](./.github/ISSUE_TEMPLATE/) — good first issues are tagged [`good first issue`](https://github.com/Neziahtech/streampay/labels/good%20first%20issue) and documented in [`docs/GOOD_FIRST_ISSUES.md`](./docs/GOOD_FIRST_ISSUES.md).
 

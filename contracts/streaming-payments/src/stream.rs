@@ -17,7 +17,7 @@
 //! `test::empty_plan_matches_single_window_formula` proves by exhaustive
 //! comparison.
 
-use soroban_sdk::{contracttype, Address, BytesN, Env, MuxedAddress, Vec};
+use soroban_sdk::{contracttype, Address, BytesN, Env, MuxedAddress, TryFromVal, Val, Vec};
 
 use crate::errors::StreamError;
 use crate::surface::{self, Branch};
@@ -33,6 +33,21 @@ pub const TARGET_SCHEMA_VERSION: u32 = 2;
 
 /// Maximum number of streams processed per migration call.
 pub const MAX_MIGRATION_BATCH_SIZE: u32 = 50;
+
+/// Storage-record layout of the original, **untagged** stream entries: the
+/// value stored under [`DataKey::Stream`] was a bare [`Stream`] struct, so its
+/// version could only be *inferred* from the absence of a version tag.
+pub const STREAM_RECORD_VERSION_V1: u32 = 1;
+
+/// Storage-record layout that carries an explicit version tag: the stored value
+/// is a [`VersionedStream`], so every record states its own layout version on
+/// write instead of leaving readers to guess.
+pub const STREAM_RECORD_VERSION_V2: u32 = 2;
+
+/// The record layout this build writes. Appending a field to [`Stream`] means
+/// bumping this constant (and, if the field is not an `Option`, adding a
+/// migration step in [`migrate_stream_record`]).
+pub const CURRENT_STREAM_RECORD_VERSION: u32 = STREAM_RECORD_VERSION_V2;
 
 /// Maximum supported stream duration: 100 years, including leap days
 /// (36,525 days). Bounds worst-case rate multiplications and rejects
@@ -54,6 +69,18 @@ pub const MIN_BATCH: u32 = 1;
 /// size is ~15.5 KB, safely within Soroban's network limit of 16,384 bytes (16 KB),
 /// and consumes ~16.2M CPU instructions (~16% of the 100M transaction budget).
 pub const MAX_BATCH: u32 = 25;
+
+/// Maximum number of stream ids a single `withdraw_many` call may carry.
+///
+/// Tighter than [`MAX_BATCH`] (creation) because each claim entry costs more
+/// than a creation entry: it reads a stream record, extends its TTL, resolves
+/// oracle time for streams that use an oracle, rewrites the record, emits both
+/// a per-stream `Withdrawn` event and a `transfer`, and pays out. 20 is sized so
+/// the measured worst case — 20 fully accrued claims plus the summary event —
+/// runs at 6.27M CPU against Soroban's 100M-instruction transaction ceiling,
+/// leaving room for the caller's own footprint and rent; see
+/// `test.rs::withdraw_many_footprint_harness` and `docs/FOOTPRINT.md` §4.1.
+pub const MAX_WITHDRAW_BATCH: u32 = 20;
 
 /// Lifetime of a pending ownership proposal, in seconds (7 days).
 ///
@@ -150,6 +177,156 @@ pub struct PendingOwnership {
         doc = " Ledger timestamp at or after which the proposal is stale."
     )]
     pub expires_at: u64,
+}
+
+#[cfg_attr(not(target_family = "wasm"), doc = " Lifecycle state of a stream.")]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " A pending sender-role transfer that the *recipient* must consent to."
+)]
+#[cfg_attr(not(target_family = "wasm"), doc = "")]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " [`PendingOwnership`] moves a role with only the incoming holder's"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " acceptance; a sender change is different in kind, because the recipient's"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " counterparty — who they get paid by, and who can cancel the stream — is"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " being swapped under them. So the transfer is proposed by the current"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " sender and only executes on the recipient's consent"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " (`accept_sender_transfer`), inside the proposal's window."
+)]
+#[cfg_attr(not(target_family = "wasm"), doc = "")]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " `nonce` is the caller's freshness marker: it is stored with the proposal,"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " echoed by every event in its lifecycle, and must be repeated exactly by the"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " consenting call. A proposal that was replaced (and so carries a different"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " nonce) cannot be executed by accident."
+)]
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingSenderTransfer {
+    pub stream_id: u64,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The sender at the time the proposal was made, and the address whose"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " authorization is required to propose it."
+    )]
+    pub sender_from: Address,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The address that will hold the sender role once the recipient consents."
+    )]
+    pub new_sender: Address,
+    pub nonce: u64,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Ledger timestamp at or after which the proposal is stale."
+    )]
+    pub expires_at: u64,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Whether consenting also moves the refund claim for the existing deposit"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " (see [`SenderTransferRecord::refund_rights_transferred`]). Fixed at"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " proposal time so the recipient consents to exactly one meaning."
+    )]
+    pub transfer_refund_rights: bool,
+}
+
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " One executed sender transfer, appended to [`SenderHistory::transfers`]."
+)]
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SenderTransferRecord {
+    pub sender_from: Address,
+    pub sender_to: Address,
+    pub nonce: u64,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Ledger timestamp at which the recipient's consent executed the transfer."
+    )]
+    pub at: u64,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " True when the amendment explicitly moved the refund claim for the"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " existing deposit to `sender_to`. False means the deposit keeps accruing"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " to the original sender's claim even though the role moved — refund"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " rights are only ever moved on purpose, never implied by a role change."
+    )]
+    pub refund_rights_transferred: bool,
+}
+
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " Append-only ledger of who held the sender role for one stream."
+)]
+#[cfg_attr(not(target_family = "wasm"), doc = "")]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " `sender_at_creation` is the first entry of the record kept for a stream, and"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " the log is never rewritten: consenting to a transfer appends exactly one"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " [`SenderTransferRecord`]. That is what lets an auditor answer \"who funded"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " this deposit?\" after several hops, which the mutable `Stream::sender` field"
+)]
+#[cfg_attr(not(target_family = "wasm"), doc = " alone cannot.")]
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SenderHistory {
+    pub stream_id: u64,
+    pub sender_at_creation: Address,
+    pub transfers: Vec<SenderTransferRecord>,
 }
 
 #[cfg_attr(not(target_family = "wasm"), doc = " Lifecycle state of a stream.")]
@@ -330,6 +507,20 @@ pub struct PendingRateChange {
 }
 
 #[cfg_attr(not(target_family = "wasm"), doc = " Full state of a payment stream.")]
+#[cfg_attr(not(target_family = "wasm"), doc = "")]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " Field order and names are the storage wire format: appending a field is a"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " schema change that bumps [`CURRENT_STREAM_RECORD_VERSION`], and the field"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " must be an `Option` (or defaulted by a migration) so older records keep"
+)]
+#[cfg_attr(not(target_family = "wasm"), doc = " decoding.")]
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Stream {
@@ -359,7 +550,23 @@ pub struct Stream {
         not(target_family = "wasm"),
         doc = " If true, settles against external oracle time feed instead of ledger time."
     )]
-    pub use_oracle: bool,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Optional because records written before the oracle clock existed carry no"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " `use_oracle` key at all; the SDK decodes an absent field as `None`, which"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " means ledger time. Every stream this build writes sets `Some(_)`, so the"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " on-ledger shape of new records is unchanged."
+    )]
+    pub use_oracle: Option<bool>,
 }
 
 impl Stream {
@@ -368,6 +575,71 @@ impl Stream {
     pub fn duration(&self) -> u64 {
         self.end_time - self.start_time
     }
+
+    /// The oracle flag as behaviour. `None` is a pre-oracle record and settles
+    /// against ledger time, exactly like `Some(false)`.
+    pub fn uses_oracle(&self) -> bool {
+        self.use_oracle.unwrap_or(false)
+    }
+}
+
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " Parameters for creating a single stream within a batch creation call."
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " A persisted [`Stream`] record together with the storage layout version it was"
+)]
+#[cfg_attr(not(target_family = "wasm"), doc = " written under.")]
+#[cfg_attr(not(target_family = "wasm"), doc = "")]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " This is the value stored under [`DataKey::Stream`] for every record written"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " by [`put_stream`]; the `version` field is written explicitly, never inferred."
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " [`get_stream_record`] decodes the legacy untagged [`STREAM_RECORD_VERSION_V1`]"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " layout as well, so records created before versioned writes landed keep"
+)]
+#[cfg_attr(not(target_family = "wasm"), doc = " working until they are migrated.")]
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VersionedStream {
+    pub version: u32,
+    pub stream: Stream,
+}
+
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " Outcome of [`migrate_stream_record`]: which layout a single stream moved"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " from and to, and whether it moved at all."
+)]
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamVersionReport {
+    pub stream_id: u64,
+    pub from_version: u32,
+    pub to_version: u32,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " False when the record already carried the current layout, so nothing was"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " rewritten — the proof that migration is idempotent."
+    )]
+    pub migrated: bool,
 }
 
 #[cfg_attr(
@@ -384,6 +656,97 @@ pub struct BatchEntry {
     pub start_time: u64,
     pub end_time: u64,
     pub cancelable: bool,
+}
+
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " Proposed contract upgrade pending timelock expiration."
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " One settled entry of a `withdraw_many` batch claim."
+)]
+#[cfg_attr(not(target_family = "wasm"), doc = "")]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " `withdraw_many` answers every requested id (see [`WithdrawEntry`]) and this"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " type describes money that actually moved, so it is also what the batch's"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " [`crate::BatchWithdrawSummary`] event lists."
+)]
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WithdrawOutcome {
+    pub stream_id: u64,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The whole accrued-but-unwithdrawn balance delivered for this stream."
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Always positive: an entry that had nothing to pay is an `Err`, not a"
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = " zero-amount outcome.")]
+    pub amount: i128,
+}
+
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " The per-entry answer of [`crate::StreamingPayments::withdraw_many`], one per"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " requested id and in request order."
+)]
+#[cfg_attr(not(target_family = "wasm"), doc = "")]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " This is deliberately a struct carrying an amount *or* a code, rather than a"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " `Vec<Result<WithdrawOutcome, StreamError>>`. Soroban encodes `Result::Err` as"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " an `ScError`, and the off-chain ScVal decoder (`scValToNative` in"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " `@stellar/stellar-sdk`) has no conversion for it, so a batch with even one"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " skipped entry would arrive as a decode failure instead of a partial result —"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " defeating the point of per-entry isolation. A map per entry always decodes,"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " and `code` is the same stable discriminant the contract reports on a revert."
+)]
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WithdrawEntry {
+    pub stream_id: u64,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Tokens delivered for this stream; `0` when the entry was skipped."
+    )]
+    pub amount: i128,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " `0` once the entry settled, otherwise the [`crate::StreamError`] that"
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = " skipped it, as its numeric code.")]
+    pub code: u32,
 }
 
 #[cfg_attr(
@@ -421,6 +784,18 @@ pub enum DataKey {
     )]
     NextStreamId,
     #[cfg_attr(not(target_family = "wasm"), doc = " The stream with the given id.")]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The stream with the given id. Stored as a [`VersionedStream`] by"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " current builds; [`STREAM_RECORD_VERSION_V1`] records (a bare [`Stream`]"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " with no version tag) remain readable until migrated."
+    )]
     Stream(u64),
     #[cfg_attr(
         not(target_family = "wasm"),
@@ -569,6 +944,97 @@ pub enum DataKey {
         doc = " rate, so accrual for every pre-renegotiation stream never reads this key."
     )]
     RateSegments(u64),
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The pending recipient-consented sender transfer for the given stream."
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Kept outside [`Stream`] so proposing changes no accounting field, and"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " so the record layout tag of a stream is untouched by role plumbing."
+    )]
+    PendingSenderTransfer(u64),
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Append-only sender-role transfer log for the given stream. Absent until"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " the first transfer executes for that stream, which is also when"
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = " `sender_at_creation` is fixed.")]
+    SenderHistory(u64),
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The address whose deposit-backed claim receives cancellation refunds for"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " the given stream. Absent means \"the current sender\"; the key is written"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " only when the answer must differ from that, which keeps reads of"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " untouched streams free of extra storage."
+    )]
+    RefundTarget(u64),
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Freeze point of a paused stream. Present only while the stream is"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " paused, so accrual for a running stream never depends on this key."
+    )]
+    StreamPause(u64),
+}
+
+/// Freeze point of stream `id` while it is paused; `None` while it streams.
+#[inline(never)]
+pub fn get_paused_at(env: &Env, id: u64) -> Option<u64> {
+    #[cfg(test)]
+    crate::cei_trace::record(&std::format!("read persistent StreamPause({id})"));
+    env.storage().persistent().get(&DataKey::StreamPause(id))
+}
+
+/// Records (`Some`) or clears (`None`) the freeze point of stream `id`.
+pub fn set_paused_at(env: &Env, id: u64, paused_at: Option<u64>) {
+    #[cfg(test)]
+    crate::cei_trace::record(&std::format!(
+        "{} persistent StreamPause({id})",
+        if paused_at.is_some() {
+            "write"
+        } else {
+            "remove"
+        }
+    ));
+    let key = DataKey::StreamPause(id);
+    match paused_at {
+        Some(t) => {
+            env.storage().persistent().set(&key, &t);
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+        }
+        None => env.storage().persistent().remove(&key),
+    }
+}
+
+/// The timestamp accrual is evaluated at: `now`, or the freeze point while the
+/// stream is paused. Resuming shifts the window forward by the paused length,
+/// so accrual continues from the frozen amount at the original rate.
+#[inline(never)]
+pub fn accrual_now(env: &Env, id: u64, now: u64) -> u64 {
+    match get_paused_at(env, id) {
+        Some(t) => now.min(t),
+        None => now,
+    }
 }
 
 /// Seconds elapsed of the stream window at the given timestamp `now`.
@@ -835,7 +1301,10 @@ pub fn cancel_amounts_at(stream: &Stream, now: u64) -> Result<(i128, i128), Stre
 /// The recipient receives their accrued-but-unwithdrawn balance; the sender is
 /// refunded the unaccrued remainder.
 pub fn cancel_amounts(env: &Env, stream: &Stream) -> Result<(i128, i128), StreamError> {
-    cancel_amounts_at(stream, env.ledger().timestamp())
+    cancel_amounts_at(
+        stream,
+        accrual_now(env, stream.id, env.ledger().timestamp()),
+    )
 }
 
 /// Address helper: token transfer destinations are muxed addresses.
@@ -863,21 +1332,91 @@ pub fn reserve_stream_ids(env: &Env, count: u32) -> Result<u64, StreamError> {
 }
 
 /// Loads a stream, or returns [`StreamError::StreamNotFound`].
+///
+/// A thin wrapper over [`get_stream_record`] that discards the layout version.
 pub fn get_stream(env: &Env, id: u64) -> Result<Stream, StreamError> {
-    #[cfg(test)]
-    crate::cei_trace::record(&std::format!("read persistent Stream({id})"));
-    env.storage()
-        .persistent()
-        .get(&DataKey::Stream(id))
-        .ok_or_else(|| surface::reject(Branch::StreamNotFound))
+    Ok(get_stream_record(env, id)?.stream)
 }
 
-/// Persists a stream and extends its storage TTL.
+/// Loads a stream together with the storage layout version its record carries.
+///
+/// Both layouts are readable: the current [`VersionedStream`] tag and the
+/// legacy untagged [`Stream`] map (reported as [`STREAM_RECORD_VERSION_V1`]).
+/// The probe order is deliberate — the tagged layout is tried first, and a
+/// record that decodes as *neither* layout is refused with
+/// [`StreamError::SchemaVersionUnsupported`] rather than being guessed at.
+/// That is the fail-closed half of versioning: a record written by a future
+/// build with fields this build has never seen can never be silently
+/// mis-decoded into a present-day [`Stream`].
+pub fn get_stream_record(env: &Env, id: u64) -> Result<VersionedStream, StreamError> {
+    #[cfg(test)]
+    crate::cei_trace::record(&std::format!("read persistent Stream({id})"));
+    let key = DataKey::Stream(id);
+    // Reading as a raw `Val` cannot fail: shape probing happens below with
+    // fallible conversions, not through the storage getter's infallible ones.
+    let Some(raw): Option<Val> = env.storage().persistent().get(&key) else {
+        return Err(surface::reject(Branch::StreamNotFound));
+    };
+    if let Ok(record) = VersionedStream::try_from_val(env, &raw) {
+        // Unknown tags — from the future *or* malformed — are refused: only a
+        // layout this build actually understands may be decoded.
+        if record.version < STREAM_RECORD_VERSION_V1
+            || record.version > CURRENT_STREAM_RECORD_VERSION
+        {
+            return Err(surface::reject(Branch::SchemaVersionUnsupported));
+        }
+        return Ok(record);
+    }
+    if let Ok(stream) = Stream::try_from_val(env, &raw) {
+        return Ok(VersionedStream {
+            version: STREAM_RECORD_VERSION_V1,
+            stream,
+        });
+    }
+    Err(surface::reject(Branch::SchemaVersionUnsupported))
+}
+
+/// The storage layout version of one stream record.
+pub fn stream_record_version(env: &Env, id: u64) -> Result<u32, StreamError> {
+    Ok(get_stream_record(env, id)?.version)
+}
+
+/// Re-encodes one stream record under [`CURRENT_STREAM_RECORD_VERSION`].
+///
+/// Idempotent by construction: a record that already carries the current layout
+/// is reported with `migrated = false` and left untouched (no rewrite, so no
+/// storage delta and no event). Callable by anyone — it changes no accounting,
+/// only the encoding of a record that is already provably equivalent — and it
+/// touches exactly one storage entry, which is what bounds its gas.
+pub fn migrate_stream_record(env: &Env, id: u64) -> Result<StreamVersionReport, StreamError> {
+    let record = get_stream_record(env, id)?;
+    if record.version == CURRENT_STREAM_RECORD_VERSION {
+        return Ok(StreamVersionReport {
+            stream_id: id,
+            from_version: record.version,
+            to_version: record.version,
+            migrated: false,
+        });
+    }
+    put_stream(env, &record.stream);
+    Ok(StreamVersionReport {
+        stream_id: id,
+        from_version: record.version,
+        to_version: CURRENT_STREAM_RECORD_VERSION,
+        migrated: true,
+    })
+}
+
+/// Persists a stream under the current versioned layout and extends its storage TTL.
 pub fn put_stream(env: &Env, stream: &Stream) {
     #[cfg(test)]
     crate::cei_trace::record(&std::format!("write persistent Stream({})", stream.id));
     let key = DataKey::Stream(stream.id);
-    env.storage().persistent().set(&key, stream);
+    let record = VersionedStream {
+        version: CURRENT_STREAM_RECORD_VERSION,
+        stream: stream.clone(),
+    };
+    env.storage().persistent().set(&key, &record);
     env.storage()
         .persistent()
         .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
@@ -898,6 +1437,13 @@ pub fn index_stream(env: &Env, stream: &Stream) {
 /// an accepted ownership transfer installs a new sender.
 pub fn index_sender(env: &Env, sender: &Address, id: u64) {
     push_to_index(env, &DataKey::SenderStreams(sender.clone()), id);
+}
+
+/// Drops `id` from a sender's discovery index — the prune half of a sender-role
+/// transfer, so the outgoing sender's listing stops offering a stream they no
+/// longer control while the incoming sender's starts offering it.
+pub fn unindex_sender(env: &Env, sender: &Address, id: u64) {
+    remove_from_index(env, &DataKey::SenderStreams(sender.clone()), id);
 }
 
 /// Appends `id` to the recipient's discovery index. Called on creation and
@@ -948,6 +1494,19 @@ pub fn get_pending_rate_change(env: &Env, id: u64) -> Option<PendingRateChange> 
     Some(pending)
 }
 
+/// Loads the pending sender transfer for `id`, if one exists, and extends its
+/// storage TTL (the same read-then-extend shape as [`get_pending_ownership`]:
+/// extending a key that is absent fails).
+pub fn get_pending_sender_transfer(env: &Env, id: u64) -> Option<PendingSenderTransfer> {
+    #[cfg(test)]
+    crate::cei_trace::record(&std::format!("read persistent PendingSenderTransfer({id})"));
+    let key = DataKey::PendingSenderTransfer(id);
+    let storage = env.storage().persistent();
+    let pending: PendingSenderTransfer = storage.get(&key)?;
+    storage.extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+    Some(pending)
+}
+
 /// Persists a pending rate-change proposal and extends its storage TTL.
 pub fn put_pending_rate_change(env: &Env, pending: &PendingRateChange) {
     #[cfg(test)]
@@ -956,6 +1515,20 @@ pub fn put_pending_rate_change(env: &Env, pending: &PendingRateChange) {
         pending.stream_id
     ));
     let key = DataKey::PendingRateChange(pending.stream_id);
+    env.storage().persistent().set(&key, pending);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+}
+
+/// Persists a pending sender transfer and extends its storage TTL.
+pub fn put_pending_sender_transfer(env: &Env, pending: &PendingSenderTransfer) {
+    #[cfg(test)]
+    crate::cei_trace::record(&std::format!(
+        "write persistent PendingSenderTransfer({})",
+        pending.stream_id
+    ));
+    let key = DataKey::PendingSenderTransfer(pending.stream_id);
     env.storage().persistent().set(&key, pending);
     env.storage()
         .persistent()
@@ -1012,6 +1585,43 @@ pub fn put_rate_segments(env: &Env, id: u64, segments: &Vec<RateSegment>) {
         .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
 }
 
+/// Removes a pending sender transfer. No-op if none exists.
+pub fn remove_pending_sender_transfer(env: &Env, id: u64) {
+    #[cfg(test)]
+    crate::cei_trace::record(&std::format!(
+        "remove persistent PendingSenderTransfer({id})"
+    ));
+    env.storage()
+        .persistent()
+        .remove(&DataKey::PendingSenderTransfer(id));
+}
+
+/// The address whose refund claim the remaining deposit belongs to.
+///
+/// Falls back to `stream.sender` when no explicit target is stored, so every
+/// stream that never had a role change or a refund amendment keeps today's
+/// behavior with no extra storage read cost in layout terms.
+pub fn refund_target(env: &Env, stream: &Stream) -> Address {
+    let key = DataKey::RefundTarget(stream.id);
+    let storage = env.storage().persistent();
+    if let Some(target) = storage.get::<DataKey, Address>(&key) {
+        storage.extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+        return target;
+    }
+    stream.sender.clone()
+}
+
+/// Pins the refund claim of `id` to `target`.
+pub fn put_refund_target(env: &Env, id: u64, target: &Address) {
+    #[cfg(test)]
+    crate::cei_trace::record(&std::format!("write persistent RefundTarget({id})"));
+    let key = DataKey::RefundTarget(id);
+    env.storage().persistent().set(&key, target);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+}
+
 /// Accrued-but-unwithdrawn balance at `now`, honoring the stored schedule.
 pub fn available_amount_with_plan(
     env: &Env,
@@ -1019,7 +1629,7 @@ pub fn available_amount_with_plan(
     now: u64,
 ) -> Result<i128, StreamError> {
     let segments = get_rate_segments(env, stream.id);
-    available_amount_at_segments(stream, now, &segments)
+    available_amount_at_segments(stream, accrual_now(env, stream.id, now), &segments)
 }
 
 /// Cancellation split at `now`, honoring the stored schedule.
@@ -1029,7 +1639,7 @@ pub fn cancel_amounts_with_plan(
     now: u64,
 ) -> Result<(i128, i128), StreamError> {
     let segments = get_rate_segments(env, stream.id);
-    cancel_amounts_at_segments(stream, now, &segments)
+    cancel_amounts_at_segments(stream, accrual_now(env, stream.id, now), &segments)
 }
 
 /// Adds `amount` of freshly escrowed funds to the window that is currently
@@ -1062,6 +1672,97 @@ pub fn segments_after_topup(
     Ok(segments)
 }
 
+/// The sender-role log for one stream.
+///
+/// A stream whose role has never moved has no log: the view then reports the
+/// current sender as `sender_at_creation` with an empty history, which is what
+/// the append-only log would have been seeded with.
+pub fn sender_history(env: &Env, stream: &Stream) -> SenderHistory {
+    get_sender_history(env, stream)
+}
+
+fn get_sender_history(env: &Env, stream: &Stream) -> SenderHistory {
+    let key = DataKey::SenderHistory(stream.id);
+    let storage = env.storage().persistent();
+    if let Some(history) = storage.get::<DataKey, SenderHistory>(&key) {
+        storage.extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+        return history;
+    }
+    SenderHistory {
+        stream_id: stream.id,
+        sender_at_creation: stream.sender.clone(),
+        transfers: Vec::new(env),
+    }
+}
+
+/// Appends one executed transfer to the stream's log. The existing entries are
+/// copied unchanged — the log is append-only, never rewritten.
+fn append_sender_history(env: &Env, stream: &Stream, record: &SenderTransferRecord) {
+    #[cfg(test)]
+    crate::cei_trace::record(&std::format!(
+        "write persistent SenderHistory({})",
+        stream.id
+    ));
+    let key = DataKey::SenderHistory(stream.id);
+    let mut history = get_sender_history(env, stream);
+    history.transfers.push_back(record.clone());
+    env.storage().persistent().set(&key, &history);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+}
+
+/// Executes a consented sender transfer: the role moves to `new_sender`, the
+/// discovery indexes are re-pointed, the refund claim follows only when the
+/// proposal said it should, and the transfer is appended to the immutable log.
+///
+/// The caller has already checked consent, nonce and expiry; this is the
+/// effects half, kept separate so the CEI order (reads, then state writes, then
+/// the event, then nothing) is readable in one place.
+pub fn apply_sender_transfer(
+    env: &Env,
+    stream: &Stream,
+    pending: &PendingSenderTransfer,
+) -> Result<Stream, StreamError> {
+    let previous_target = refund_target(env, stream);
+    let mut updated = stream.clone();
+    updated.sender = pending.new_sender.clone();
+    put_stream(env, &updated);
+
+    // Index migration for the one hop: the outgoing sender's discovery page
+    // stops listing the stream, the incoming sender's starts listing it, and
+    // both pages get their TTL extended by the write (`index_sender` and
+    // `unindex_sender` share the same append/prune helpers).
+    unindex_sender(env, &pending.sender_from, updated.id);
+    index_sender(env, &pending.new_sender, updated.id);
+
+    // Refund rights move only on purpose: an amendment that did not ask for it
+    // pins the claim to whatever it was before the hop — the original sender's.
+    put_refund_target(
+        env,
+        updated.id,
+        if pending.transfer_refund_rights {
+            &pending.new_sender
+        } else {
+            &previous_target
+        },
+    );
+
+    append_sender_history(
+        env,
+        stream,
+        &SenderTransferRecord {
+            sender_from: pending.sender_from.clone(),
+            sender_to: pending.new_sender.clone(),
+            nonce: pending.nonce,
+            at: env.ledger().timestamp(),
+            refund_rights_transferred: pending.transfer_refund_rights,
+        },
+    );
+
+    Ok(updated)
+}
+
 pub(crate) fn push_to_index(env: &Env, key: &DataKey, id: u64) {
     let mut ids: Vec<u64> = env
         .storage()
@@ -1073,6 +1774,36 @@ pub(crate) fn push_to_index(env: &Env, key: &DataKey, id: u64) {
     env.storage()
         .persistent()
         .extend_ttl(key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+}
+
+/// Removes the first occurrence of `id` from an address index, sharing
+/// [`push_to_index`]'s read-modify-write-and-extend shape.
+///
+/// Returns false when the address has no index entry or never listed `id`, and
+/// leaves storage untouched in that case. Order of the remaining ids is
+/// preserved, so an index page stays in creation order after a prune.
+pub(crate) fn remove_from_index(env: &Env, key: &DataKey, id: u64) -> bool {
+    let storage = env.storage().persistent();
+    let Some(ids): Option<Vec<u64>> = storage.get(key) else {
+        return false;
+    };
+    let mut kept: Vec<u64> = Vec::new(env);
+    let mut pruned = false;
+    for index in 0..ids.len() {
+        let Some(value) = ids.get(index) else {
+            continue;
+        };
+        if !pruned && value == id {
+            pruned = true;
+            continue;
+        }
+        kept.push_back(value);
+    }
+    if pruned {
+        storage.set(key, &kept);
+        storage.extend_ttl(key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
+    }
+    pruned
 }
 
 /// Returns one page of stream ids from an address index, in creation order.

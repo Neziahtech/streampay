@@ -6,6 +6,7 @@ Every event the contract emits, with its on-chain topic layout and decoded data 
 
 | Event key | Struct | Topics (positional) | Data fields | Fingerprint |
 | --- | --- | --- | --- | --- |
+| `batch_withdraw_summary` | `BatchWithdrawSummary` | `recipient: Address` | `settled: Vec<WithdrawOutcome>`, `total: i128`, `requested: u32`, `skipped: u32` | `sha256:59b5ba85df9…` |
 | `beneficiary_enrolled` | `BeneficiaryEnrolled` | `beneficiary: Address`, `kind: Symbol` | `public_key: BytesN<32>` | `sha256:8a457d9c30e…` |
 | `contract_frozen_state_changed` | `ContractFrozenStateChanged` | `frozen: bool` | `changed_by: Address` | `sha256:090c0be66d6…` |
 | `contract_upgraded` | `ContractUpgraded` | `new_wasm_hash: BytesN<32>` | `executed_by: Address` | `sha256:0228c88243e…` |
@@ -36,13 +37,20 @@ Every event the contract emits, with its on-chain topic layout and decoded data 
 | `scheduled_intent_cancelled` | `ScheduledIntentCancelled` | `intent_id: u64` | `sender: Address`, `refund: i128` | `sha256:fe727619a69…` |
 | `scheduled_intent_expired` | `ScheduledIntentExpired` | `intent_id: u64` | `sender: Address`, `refund: i128` | `sha256:708a995061a…` |
 | `scheduled_stream_executed` | `ScheduledStreamExecuted` | `intent_id: u64` | `keeper: Address`, `stream_id: u64`, `occurrence_index: u32`, `occurrences_remaining: u32`, `fee_paid: i128` | `sha256:318937479fd…` |
+| `sender_transfer_expired` | `SenderTransferExpired` | `stream_id: u64` | `sender_from: Address`, `new_sender: Address`, `nonce: u64` | `sha256:52f1ec50016…` |
+| `sender_transfer_proposed` | `SenderTransferProposed` | `stream_id: u64` | `sender_from: Address`, `new_sender: Address`, `nonce: u64`, `expires_at: u64`, `transfer_refund_rights: bool` | `sha256:7012eae001b…` |
+| `sender_transferred` | `SenderTransferred` | `stream_id: u64` | `sender_from: Address`, `sender_to: Address`, `nonce: u64`, `refund_rights_transferred: bool` | `sha256:db820aba879…` |
 | `sponsor_active_set` | `SponsorActiveSet` | `sponsor: Address`, `kind: Symbol` | `active: bool` | `sha256:7bbd39680d3…` |
 | `sponsor_claim` | `SponsorClaim` | `sponsor: Address`, `kind: Symbol`, `stream_id: u64` | `beneficiary: Address`, `amount: i128`, `nonce: u64` | `sha256:0fcc98031e4…` |
 | `sponsor_registered` | `SponsorRegistered` | `sponsor: Address`, `kind: Symbol` | `token: Address`, `per_period_limit: i128`, `per_beneficiary_limit: i128`, `window_seconds: u64` | `sha256:d725d4b0dec…` |
 | `storage_migrated` | `StorageMigrated` | `from_version: u32`, `to_version: u32` | `start_id: u64`, `end_id: u64`, `is_complete: bool` | `sha256:3e0dc77f4cd…` |
 | `stream_cancelled` | `StreamCancelled` | `stream_id: u64` | `cancelled_by: Address`, `recipient_amount: i128`, `sender_amount: i128` | `sha256:2b3062308e3…` |
 | `stream_created` | `StreamCreated` | `stream_id: u64` | `sender: Address`, `recipient: Address`, `token: Address`, `deposit: i128`, `start_time: u64`, `end_time: u64`, `cancelable: bool` | `sha256:8e7e6d5ab57…` |
+| `stream_paused` | `StreamPaused` | `stream_id: u64` | `paused_at: u64` | `sha256:0d457030c16…` |
 | `stream_policy_set` | `StreamPolicySet` | — | `token: Option<Address>`, `old_policy: Option<StreamPolicy>`, `new_policy: StreamPolicy` | `sha256:b351d5e8904…` |
+| `stream_record_migrated` | `StreamRecordMigrated` | `stream_id: u64` | `from_version: u32`, `to_version: u32` | `sha256:e1a41c8e220…` |
+| `stream_refund_target_changed` | `StreamRefundTargetChanged` | `stream_id: u64` | `previous_target: Address`, `new_target: Address`, `at_creation: bool` | `sha256:20f8ba96f8e…` |
+| `stream_resumed` | `StreamResumed` | `stream_id: u64` | `new_end_time: u64` | `sha256:76526b2a695…` |
 | `stream_scheduled` | `StreamScheduled` | `intent_id: u64` | `sender: Address`, `recipient: Address`, `token: Address`, `deposit: i128`, `start_time: u64`, `end_time: u64`, `cancelable: bool`, `interval: u64`, `occurrences: u32`, `fee_budget: i128`, `execute_after: u64`, `expires_at: u64` | `sha256:fcfb97a34e2…` |
 | `stream_topped_up` | `StreamToppedUp` | `stream_id: u64` | `sender: Address`, `amount: i128`, `new_deposit: i128` | `sha256:84629390198…` |
 | `streams_created` | `StreamsCreated` | `sender: Address` | `stream_ids: Vec<u64>` | `sha256:affd0ccd120…` |
@@ -54,6 +62,7 @@ Every event the contract emits, with its on-chain topic layout and decoded data 
 - `GovernanceAction` (payload_enum): one of `SetFeeBps(u32)`, `SetStreamPolicy(Option<Address>, StreamPolicy)`, `SetFrozen(bool)`, `WithdrawTreasury(Address, Address, i128)`, `NominateGovernor(Address)`, `ProposeUpgrade(BytesN<32>, u64)`, `ExecuteUpgrade`, `MigrateStorage(u64, u32)`, `SetOracleConfig(Vec<Address>, u32, u64)`, `SetSigners(Vec<Address>)`, `SetVetoWindow(u64)` (fingerprint `sha256:0f26e7841b3…`)
 - `OwnershipRole` (enum): one of `Recipient`, `Sender` (fingerprint `sha256:9a35d395186…`)
 - `StreamPolicy` (struct): `min_rate: i128`, `max_rate: i128`, `min_duration: u64`, `max_duration: u64`, `min_deposit: i128` (fingerprint `sha256:c3619acbaa1…`)
+- `WithdrawOutcome` (struct): `stream_id: u64`, `amount: i128` (fingerprint `sha256:234c2963a10…`)
 
 Decoding: the first topic is always the event key symbol; remaining topics are positional
 per the table above; the event value is a map keyed by the data field names.
