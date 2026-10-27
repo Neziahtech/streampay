@@ -26,15 +26,13 @@ from typing import Dict, List, Optional, Tuple
 
 def demangle_symbol(name: str) -> str:
     """
-    Demangles Rust symbols (legacy _ZN and v0 _R mangling) and strips
-    compiler-generated hash suffixes (::h[0-9a-f]{16}) so that compiler
-    re-runs with identical source code match cleanly.
+    Demangles Rust symbols (legacy _ZN and v0 _R mangling) preserving
+    hash suffixes (::h[0-9a-f]{16}) so that compiler monomorphizations
+    do not collide.
     """
     if not name:
         return "unnamed_function"
 
-    # Try external c++filt / rustfilt if available
-    # But implement pure Python demangler for resilience and zero-dependency CI
     demangled = name
 
     # Legacy Rust mangling: _ZN...E
@@ -43,9 +41,6 @@ def demangle_symbol(name: str) -> str:
     # Rust v0 mangling: _R...
     elif name.startswith("_R"):
         demangled = _demangle_rust_v0(name)
-
-    # Strip any remaining 16-hex hash suffix like "::h5d438ef5cf013061" or ".h5d438ef5cf013061"
-    demangled = re.sub(r'(?:::|\.)h[0-9a-fA-F]{16}\b', '', demangled)
 
     return demangled
 
@@ -63,12 +58,8 @@ def _demangle_rust_legacy(mangled: str) -> str:
         if not len_str:
             break
         length = int(len_str)
-        part = mangled[pos : pos + length]
+        part = mangled[pos : min(pos + length, end)]
         pos += length
-
-        # Check for trailing hash: 17 chars, starting with 'h', rest hex
-        if part.startswith("h") and len(part) == 17 and all(c in "0123456789abcdefABCDEF" for c in part[1:]):
-            continue
 
         # Handle special replacements
         part = (part.replace("$SP$", "@")
@@ -94,7 +85,7 @@ def _demangle_rust_v0(mangled: str) -> str:
     s = re.sub(r'Cs[0-9a-zA-Z]+_', '', s)
     # Clean up identifiers
     parts = re.findall(r'[a-zA-Z_][a-zA-Z0-9_]*', s)
-    filtered = [p for p in parts if len(p) > 1 and not (p.startswith('h') and len(p) == 17)]
+    filtered = [p for p in parts if len(p) > 1]
     return "::".join(filtered) if filtered else mangled
 
 
@@ -312,77 +303,219 @@ def parse_wasm_functions(wasm_path: str) -> Tuple[List[WasmFunction], Dict[str, 
 # 3. Disassembly Normalization & Turbopack-Style Churn Detection
 # ==============================================================================
 
+def _read_u32_leb128_from_bytes(data: bytes, pos: int) -> Tuple[int, int]:
+    """Reads u32 LEB128 from data starting at pos. Returns (val, new_pos)."""
+    result = 0
+    shift = 0
+    while pos < len(data):
+        b = data[pos]
+        pos += 1
+        result |= (b & 0x7F) << shift
+        if (b & 0x80) == 0:
+            return result, pos
+        shift += 7
+    raise ValueError("Unexpected EOF reading u32 LEB128")
+
+
+def _read_i32_leb128_from_bytes(data: bytes, pos: int) -> Tuple[bytes, int]:
+    """Reads signed 32-bit LEB128, returning (raw_bytes, new_pos)."""
+    start = pos
+    while pos < len(data):
+        b = data[pos]
+        pos += 1
+        if (b & 0x80) == 0:
+            return data[start:pos], pos
+    raise ValueError("Unexpected EOF reading i32 LEB128")
+
+
+def _read_i64_leb128_from_bytes(data: bytes, pos: int) -> Tuple[bytes, int]:
+    """Reads signed 64-bit LEB128, returning (raw_bytes, new_pos)."""
+    start = pos
+    while pos < len(data):
+        b = data[pos]
+        pos += 1
+        if (b & 0x80) == 0:
+            return data[start:pos], pos
+    raise ValueError("Unexpected EOF reading i64 LEB128")
+
+
 def compute_body_fingerprint(raw_body: bytes) -> str:
     """
     Computes a normalized SHA-256 fingerprint of the function body bytecode.
-    Normalizes call instructions and variable operands so that functions
-    whose bodies are identical except for relocation shifts or function
-    re-indexing yield the exact same fingerprint.
+    Accurately decodes all WebAssembly opcodes and operands.
+    Blanks ONLY the call target index for call (0x10, 0x12, 0xD2) instructions
+    so that relocated call targets normalize without misreading operand bytes as opcodes.
+    Does NOT blank local variable indices (local.get/set/tee).
+    Fails loudly on malformed bytecode.
     """
-    # Simple linear pass over bytecode
-    # Wasm bytecode: opcodes 0x10 (call) has u32 varuint operand
-    # 0x02/0x03/0x04/0x0b (block/loop/if/end)
-    # Mask out the specific call indices to normalize call targets
-    normalized_bytes = bytearray()
     i = 0
-    # Skip local declarations at start of body
-    # local_count (varuint32)
-    # for each: count (varuint32), valtype (1 byte)
-    try:
-        # Read local count
-        local_groups, shift = 0, 0
-        while i < len(raw_body):
-            b = raw_body[i]
-            i += 1
-            local_groups |= (b & 0x7F) << shift
-            if (b & 0x80) == 0:
-                break
-            shift += 7
+    # Read local groups at start of function body
+    local_groups, i = _read_u32_leb128_from_bytes(raw_body, i)
+    for _ in range(local_groups):
+        _, i = _read_u32_leb128_from_bytes(raw_body, i)  # count
+        if i >= len(raw_body):
+            raise ValueError("Unexpected EOF reading local valtype")
+        i += 1  # valtype (1 byte)
 
-        for _ in range(local_groups):
-            # count
-            while i < len(raw_body):
-                b = raw_body[i]
-                i += 1
-                if (b & 0x80) == 0:
-                    break
-            # valtype (1 byte)
-            if i < len(raw_body):
-                i += 1
-    except Exception:
-        i = 0  # Fallback to entire body if malformed
-
+    normalized_bytes = bytearray()
     while i < len(raw_body):
         op = raw_body[i]
-        normalized_bytes.append(op)
         i += 1
 
-        # Normalize call (0x10) - mask the target index
-        if op == 0x10:
+        # 1. Calls: blank ONLY target funcidx
+        if op == 0x10:  # call
+            _, i = _read_u32_leb128_from_bytes(raw_body, i)
+            normalized_bytes.append(0x10)
+            normalized_bytes.append(0x00)  # masked target index
+        elif op == 0x12:  # return_call (tail call)
+            _, i = _read_u32_leb128_from_bytes(raw_body, i)
+            normalized_bytes.append(0x12)
+            normalized_bytes.append(0x00)
+        elif op == 0xD2:  # ref.func
+            _, i = _read_u32_leb128_from_bytes(raw_body, i)
+            normalized_bytes.append(0xD2)
+            normalized_bytes.append(0x00)
+
+        # 2. Local variables: DO NOT blank localidx
+        elif op in (0x20, 0x21, 0x22):  # local.get, local.set, local.tee
+            start = i
+            _, i = _read_u32_leb128_from_bytes(raw_body, i)
+            normalized_bytes.append(op)
+            normalized_bytes.extend(raw_body[start:i])
+
+        # 3. Global variables and tables
+        elif op in (0x23, 0x24, 0x25, 0x26):  # global.get, global.set, table.get, table.set
+            start = i
+            _, i = _read_u32_leb128_from_bytes(raw_body, i)
+            normalized_bytes.append(op)
+            normalized_bytes.extend(raw_body[start:i])
+
+        # 4. Control flow blocks: block (0x02), loop (0x03), if (0x04)
+        elif op in (0x02, 0x03, 0x04):
+            start = i
             while i < len(raw_body):
                 b = raw_body[i]
                 i += 1
                 if (b & 0x80) == 0:
                     break
-            normalized_bytes.append(0x00)  # masked call target
-        # Normalize local.get (0x20), local.set (0x21), local.tee (0x22)
-        elif op in (0x20, 0x21, 0x22):
-            while i < len(raw_body):
-                b = raw_body[i]
+            normalized_bytes.append(op)
+            normalized_bytes.extend(raw_body[start:i])
+
+        # 5. Branching
+        elif op in (0x0C, 0x0D):  # br, br_if
+            start = i
+            _, i = _read_u32_leb128_from_bytes(raw_body, i)
+            normalized_bytes.append(op)
+            normalized_bytes.extend(raw_body[start:i])
+        elif op == 0x0E:  # br_table
+            start = i
+            count, i = _read_u32_leb128_from_bytes(raw_body, i)
+            for _ in range(count):
+                _, i = _read_u32_leb128_from_bytes(raw_body, i)
+            _, i = _read_u32_leb128_from_bytes(raw_body, i)  # default
+            normalized_bytes.append(op)
+            normalized_bytes.extend(raw_body[start:i])
+
+        # 6. Indirect calls
+        elif op in (0x11, 0x13):  # call_indirect, return_call_indirect
+            start = i
+            _, i = _read_u32_leb128_from_bytes(raw_body, i)  # typeidx
+            _, i = _read_u32_leb128_from_bytes(raw_body, i)  # tableidx
+            normalized_bytes.append(op)
+            normalized_bytes.extend(raw_body[start:i])
+
+        # 7. Typed select
+        elif op == 0x1C:  # select t*
+            start = i
+            count, i = _read_u32_leb128_from_bytes(raw_body, i)
+            i += count  # count valtypes
+            normalized_bytes.append(op)
+            normalized_bytes.extend(raw_body[start:i])
+
+        # 8. Memory loads and stores (memarg: align u32 LEB128, offset u32 LEB128)
+        elif 0x28 <= op <= 0x3E:
+            start = i
+            _, i = _read_u32_leb128_from_bytes(raw_body, i)  # align
+            _, i = _read_u32_leb128_from_bytes(raw_body, i)  # offset
+            normalized_bytes.append(op)
+            normalized_bytes.extend(raw_body[start:i])
+
+        # 9. Memory size and grow
+        elif op in (0x3F, 0x40):  # memory.size, memory.grow
+            start = i
+            _, i = _read_u32_leb128_from_bytes(raw_body, i)
+            normalized_bytes.append(op)
+            normalized_bytes.extend(raw_body[start:i])
+
+        # 10. Constants
+        elif op == 0x41:  # i32.const
+            raw_c, i = _read_i32_leb128_from_bytes(raw_body, i)
+            normalized_bytes.append(op)
+            normalized_bytes.extend(raw_c)
+        elif op == 0x42:  # i64.const
+            raw_c, i = _read_i64_leb128_from_bytes(raw_body, i)
+            normalized_bytes.append(op)
+            normalized_bytes.extend(raw_c)
+        elif op == 0x43:  # f32.const
+            if i + 4 > len(raw_body):
+                raise ValueError("Unexpected EOF reading f32.const")
+            normalized_bytes.append(op)
+            normalized_bytes.extend(raw_body[i : i + 4])
+            i += 4
+        elif op == 0x44:  # f64.const
+            if i + 8 > len(raw_body):
+                raise ValueError("Unexpected EOF reading f64.const")
+            normalized_bytes.append(op)
+            normalized_bytes.extend(raw_body[i : i + 8])
+            i += 8
+
+        # 11. Reference types
+        elif op == 0xD0:  # ref.null
+            if i >= len(raw_body):
+                raise ValueError("Unexpected EOF reading ref.null")
+            normalized_bytes.append(op)
+            normalized_bytes.append(raw_body[i])
+            i += 1
+
+        # 12. Prefixed instructions: 0xFC
+        elif op == 0xFC:
+            start = i
+            sub_op, i = _read_u32_leb128_from_bytes(raw_body, i)
+            if sub_op in (8, 10, 12, 14):  # memory.init, memory.copy, table.init, table.copy
+                _, i = _read_u32_leb128_from_bytes(raw_body, i)
+                _, i = _read_u32_leb128_from_bytes(raw_body, i)
+            elif sub_op in (9, 11, 13, 15, 16, 17):  # data.drop, memory.fill, elem.drop, table.*
+                _, i = _read_u32_leb128_from_bytes(raw_body, i)
+            normalized_bytes.append(op)
+            normalized_bytes.extend(raw_body[start:i])
+
+        # 13. Prefixed instructions: 0xFD (SIMD)
+        elif op == 0xFD:
+            start = i
+            sub_op, i = _read_u32_leb128_from_bytes(raw_body, i)
+            if sub_op in (12, 13):  # v128.const or i8x16.shuffle
+                if i + 16 > len(raw_body):
+                    raise ValueError("Unexpected EOF in SIMD 16-byte payload")
+                i += 16
+            elif sub_op <= 0x53:  # SIMD load/store with memarg
+                _, i = _read_u32_leb128_from_bytes(raw_body, i)
+                _, i = _read_u32_leb128_from_bytes(raw_body, i)
+            elif 0x54 <= sub_op <= 0x5B:  # lane load/store
+                _, i = _read_u32_leb128_from_bytes(raw_body, i)
+                _, i = _read_u32_leb128_from_bytes(raw_body, i)
+                if i >= len(raw_body):
+                    raise ValueError("Unexpected EOF in SIMD lane index")
                 i += 1
-                if (b & 0x80) == 0:
-                    break
-            normalized_bytes.append(0x01)
-        # Normalize i32.const (0x41), i64.const (0x42)
-        elif op in (0x41, 0x42):
-            val_bytes = []
-            while i < len(raw_body):
-                b = raw_body[i]
+            elif sub_op in (21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34):
+                if i >= len(raw_body):
+                    raise ValueError("Unexpected EOF in SIMD lane index")
                 i += 1
-                val_bytes.append(b)
-                if (b & 0x80) == 0:
-                    break
-            normalized_bytes.extend(val_bytes)
+            normalized_bytes.append(op)
+            normalized_bytes.extend(raw_body[start:i])
+
+        # 14. All other opcodes (0-operand instructions: 0x00, 0x01, 0x05, 0x0B, 0x0F, 0x1A, 0x1B, 0x45..0xC4, 0xD1)
+        else:
+            normalized_bytes.append(op)
 
     return hashlib.sha256(normalized_bytes).hexdigest()
 
@@ -393,7 +526,7 @@ def compute_body_fingerprint(raw_body: bytes) -> str:
 
 @dataclass
 class FunctionDiff:
-    status: str  # NEW, REMOVED, GROWN, SHRUNK, UNCHANGED, CHURN
+    status: str  # NEW, REMOVED, GROWN, SHRUNK, UNCHANGED, CHURN, MODIFIED
     name: str
     demangled_signature: str
     base_size: int
@@ -450,12 +583,19 @@ def diff_wasm_functions(
             pct = ((delta / matched_base.size) * 100.0) if matched_base.size > 0 else 0.0
 
             if delta == 0:
-                is_churn = True
-                status = "CHURN"
-                if h.offset != matched_base.offset or h.index != matched_base.index or h.name != matched_base.name:
-                    notes = "Identical logic (offset/index/symbol shifted)"
+                if h.raw_body == matched_base.raw_body:
+                    if h.index != matched_base.index:
+                        status = "CHURN"
+                        is_churn = True
+                        notes = "Identical logic (index shifted)"
+                    else:
+                        status = "UNCHANGED"
+                        is_churn = False
+                        notes = "Identical logic (0 B delta)"
                 else:
-                    notes = "Identical logic (0 B delta)"
+                    status = "MODIFIED"
+                    is_churn = False
+                    notes = "Function modified (0 B delta)"
             elif delta > 0:
                 status = "GROWN"
                 is_churn = False
@@ -546,6 +686,7 @@ def diff_wasm_functions(
         "removed": sum(1 for d in diffs if d.status == "REMOVED"),
         "grown": sum(1 for d in diffs if d.status == "GROWN"),
         "shrunk": sum(1 for d in diffs if d.status == "SHRUNK"),
+        "modified": sum(1 for d in diffs if d.status == "MODIFIED"),
         "unchanged": sum(1 for d in diffs if d.status == "UNCHANGED"),
         "churn": sum(1 for d in diffs if d.status == "CHURN"),
     }
@@ -563,10 +704,7 @@ def diff_wasm_functions(
 def disassemble_wasm(wasm_path: str, output_dis_path: Optional[str] = None, preferred_tool: str = "wasm-objdump") -> str:
     """
     Disassembles a Wasm binary using wasm-objdump (preferred) or wasm-dis.
-    Justification:
-    - wasm-objdump (wabt) directly annotates functions with their Code section
-      byte sizes, binary offsets, and linear instructions.
-    - wasm-dis (binaryen) emits WAT S-expressions, which lack binary byte boundaries.
+    Fails loudly with RuntimeError if no tool is available or disassembly fails.
     """
     tools = [preferred_tool]
     if preferred_tool == "wasm-objdump":
@@ -574,20 +712,21 @@ def disassemble_wasm(wasm_path: str, output_dis_path: Optional[str] = None, pref
     else:
         tools.append("wasm-objdump")
 
-    for tool in tools:
-        if shutil.which(tool):
-            try:
-                cmd = [tool, "-d", wasm_path] if tool == "wasm-objdump" else [tool, wasm_path]
-                res = subprocess.run(cmd, capture_output=True, text=True, check=True)
-                disassembly_text = res.stdout
-                if output_dis_path:
-                    with open(output_dis_path, "w", encoding="utf-8") as f:
-                        f.write(disassembly_text)
-                return disassembly_text
-            except Exception as e:
-                print(f"Warning: Disassembly with {tool} failed: {e}", file=sys.stderr)
+    available_tool = next((t for t in tools if shutil.which(t)), None)
+    if not available_tool:
+        raise RuntimeError("No Wasm disassembler found on PATH (expected wasm-objdump or wasm-dis)")
 
-    return ""
+    cmd = [available_tool, "-d", wasm_path] if available_tool == "wasm-objdump" else [available_tool, wasm_path]
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Disassembly with {available_tool} failed: {e.stderr}") from e
+
+    disassembly_text = res.stdout
+    if output_dis_path:
+        with open(output_dis_path, "w", encoding="utf-8") as f:
+            f.write(disassembly_text)
+    return disassembly_text
 
 
 # ==============================================================================
@@ -604,11 +743,16 @@ def run_wasm_diff(
     top_limit: int = 15,
 ) -> dict:
     """Executes full diff pipeline and optionally outputs JSON & Markdown."""
-    # Ensure disassembly exists if tool available
-    if not base_dis or not os.path.exists(base_dis):
+    # Ensure disassembly exists if tool available or path specified
+    if base_dis and not os.path.exists(base_dis):
+        disassemble_wasm(base_wasm, base_dis)
+    elif not base_dis and any(shutil.which(t) for t in ("wasm-objdump", "wasm-dis")):
         dis_path = base_wasm + ".dis"
         disassemble_wasm(base_wasm, dis_path)
-    if not head_dis or not os.path.exists(head_dis):
+
+    if head_dis and not os.path.exists(head_dis):
+        disassemble_wasm(head_wasm, head_dis)
+    elif not head_dis and any(shutil.which(t) for t in ("wasm-objdump", "wasm-dis")):
         dis_path = head_wasm + ".dis"
         disassemble_wasm(head_wasm, dis_path)
 
@@ -618,7 +762,7 @@ def run_wasm_diff(
     diffs, counts = diff_wasm_functions(base_funcs, head_funcs)
 
     # Sort movers by absolute byte delta descending, breaking ties deterministically by symbol name
-    movers = [d for d in diffs if d.status in ("NEW", "REMOVED", "GROWN", "SHRUNK")]
+    movers = [d for d in diffs if d.status in ("NEW", "REMOVED", "GROWN", "SHRUNK", "MODIFIED")]
     movers.sort(key=lambda d: (-abs(d.delta), d.demangled_signature, d.name))
     top_movers = movers[:top_limit]
 
@@ -669,6 +813,7 @@ def main():
     parser.add_argument("--output-json", default="wasm_diff.json", help="Path to save output JSON")
     parser.add_argument("--output-markdown", default="wasm_diff_report.md", help="Path to save markdown report")
     parser.add_argument("--top", type=int, default=15, help="Number of top movers to include in table")
+    parser.add_argument("--max-delta", type=int, default=1024, help="Maximum allowable total byte growth before failing")
 
     args = parser.parse_args()
 
@@ -694,9 +839,15 @@ def main():
     print(f"Delta: {summary['total_delta']:+,} B ({summary['total_percent']:+.2f}%)")
     print(f"Functions: {summary['counts']['new']} new, {summary['counts']['removed']} removed, "
           f"{summary['counts']['grown']} grown, {summary['counts']['shrunk']} shrunk, "
+          f"{summary['counts']['modified']} modified (0 B), "
+          f"{summary['counts']['unchanged']} unchanged, "
           f"{summary['counts']['churn']} filtered churn")
     print(f"Top movers: {len(result['top_movers'])}")
     print("=" * 60)
+
+    if summary["total_delta"] > args.max_delta:
+        print(f"ERROR: Total size growth (+{summary['total_delta']} B) exceeds maximum threshold ({args.max_delta} B)!", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

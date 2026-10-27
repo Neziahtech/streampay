@@ -19,6 +19,10 @@ inputs:
     description: "Number of top movers to include in the summary table"
     required: false
     default: "15"
+  max_delta:
+    description: "Maximum allowable total byte growth before failing (default: 1024)"
+    required: false
+    default: "1024"
 
 outputs:
   report_json:
@@ -53,12 +57,12 @@ runs:
 
         if command -v wasm-objdump >/dev/null 2>&1; then
           echo "Disassembling with wasm-objdump..."
-          wasm-objdump -d "${{ inputs.base_wasm }}" > "$base_dis" || true
-          wasm-objdump -d "${{ inputs.head_wasm }}" > "$head_dis" || true
+          wasm-objdump -d "${{ inputs.base_wasm }}" > "$base_dis"
+          wasm-objdump -d "${{ inputs.head_wasm }}" > "$head_dis"
         elif command -v wasm-dis >/dev/null 2>&1; then
           echo "Disassembling with wasm-dis fallback..."
-          wasm-dis "${{ inputs.base_wasm }}" > "$base_dis" || true
-          wasm-dis "${{ inputs.head_wasm }}" > "$head_dis" || true
+          wasm-dis "${{ inputs.base_wasm }}" > "$base_dis"
+          wasm-dis "${{ inputs.head_wasm }}" > "$head_dis"
         fi
 
     - name: Run Function-Level Diff and Normalization
@@ -76,6 +80,7 @@ runs:
           --output-json "$out_json"
           --output-markdown "$out_md"
           --top "${{ inputs.top }}"
+          --max-delta "${{ inputs.max_delta }}"
         )
 
         [ -f "$base_dis" ] && args+=(--base-dis "$base_dis")

@@ -63,29 +63,35 @@ jobs:
           ref: ${{ github.base_ref || 'main' }}
           path: base-repo
 
-      - name: Install Rust toolchain (pinned rustc 1.99.1)
-        uses: dtolnay/rust-toolchain@master
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.99.1"
           targets: wasm32v1-none
 
-      - name: Install stellar-cli
+      - name: Install stellar-cli (pinned v28.1.0 with digest verification)
         run: |
-          curl -fsSL https://github.com/stellar/stellar-cli/releases/download/v28.1.0/stellar-cli-28.1.0-x86_64-unknown-linux-gnu.tar.gz | tar xz
+          curl -fsSL https://github.com/stellar/stellar-cli/releases/download/v28.1.0/stellar-cli-28.1.0-x86_64-unknown-linux-gnu.tar.gz -o stellar-cli-28.1.0-x86_64-unknown-linux-gnu.tar.gz
+          sha256sum -c head-repo/digests/stellar-cli-28.1.0.sha256
+          tar xzf stellar-cli-28.1.0-x86_64-unknown-linux-gnu.tar.gz
           sudo install stellar /usr/local/bin/stellar
+          rm -f stellar-cli-28.1.0-x86_64-unknown-linux-gnu.tar.gz stellar
 
-      - name: Install pinned wabt (wasm-objdump 1.0.34)
+      - name: Install pinned wabt (wasm-objdump 1.0.34 with digest verification)
         run: |
-          curl -fsSL https://github.com/WebAssembly/wabt/releases/download/1.0.34/wabt-1.0.34-ubuntu.tar.gz | tar xz
+          curl -fsSL https://github.com/WebAssembly/wabt/releases/download/1.0.34/wabt-1.0.34-ubuntu.tar.gz -o wabt-1.0.34-ubuntu.tar.gz
+          sha256sum -c head-repo/digests/wabt-1.0.34.sha256
+          tar xzf wabt-1.0.34-ubuntu.tar.gz
           sudo install wabt-1.0.34/bin/wasm-objdump /usr/local/bin/wasm-objdump
-          rm -rf wabt-1.0.34
+          rm -rf wabt-1.0.34 wabt-1.0.34-ubuntu.tar.gz
 
-      - name: Install pinned wasm-opt and wasm-dis (Binaryen version_116)
+      - name: Install pinned wasm-opt and wasm-dis (Binaryen version_122 with digest verification)
         run: |
-          curl -fsSL https://github.com/WebAssembly/binaryen/releases/download/version_116/binaryen-version_116-x86_64-linux.tar.gz | tar xz
-          sudo install binaryen-version_116/bin/wasm-opt /usr/local/bin/wasm-opt
-          sudo install binaryen-version_116/bin/wasm-dis /usr/local/bin/wasm-dis
-          rm -rf binaryen-version_116
+          curl -fsSL https://github.com/WebAssembly/binaryen/releases/download/version_122/binaryen-version_122-x86_64-linux.tar.gz -o binaryen-version_122-x86_64-linux.tar.gz
+          sha256sum -c head-repo/digests/binaryen-122.sha256
+          tar xzf binaryen-version_122-x86_64-linux.tar.gz
+          sudo install binaryen-version_122/bin/wasm-opt /usr/local/bin/wasm-opt
+          sudo install binaryen-version_122/bin/wasm-dis /usr/local/bin/wasm-dis
+          rm -rf binaryen-version_122 binaryen-version_122-x86_64-linux.tar.gz
 
       - name: Verify pinned toolchain versions (rustc, binaryen, stellar-cli, wabt)
         run: |
@@ -96,8 +102,12 @@ jobs:
           stellar --version
           echo "============================================="
 
+      - name: Run Wasm Diff Unit Tests
+        run: |
+          python -m unittest discover -s head-repo/.github/scripts -p "test_*.py"
+
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -132,14 +142,16 @@ jobs:
           base_wasm: artifacts/base/streampay_contract.wasm
           head_wasm: artifacts/head/streampay_contract.wasm
           output_dir: artifacts
+          max_delta: 1024
 
       - name: Display Report in CI Summary
+        if: always()
         run: |
-          cat artifacts/wasm_diff_report.md >> $GITHUB_STEP_SUMMARY
+          [ -f artifacts/wasm_diff_report.md ] && cat artifacts/wasm_diff_report.md >> $GITHUB_STEP_SUMMARY
 
       - name: Post or Update PR Comment
         uses: actions/github-script@v7
-        if: github.event_name == 'pull_request'
+        if: always() && github.event_name == 'pull_request'
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -177,8 +189,20 @@ jobs:
               console.log('Created new PR comment');
             }
 
+      - name: Enforce Wasm Size Budget
+        shell: bash
+        env:
+          TOTAL_DELTA: ${{ steps.diff.outputs.total_delta }}
+          MAX_DELTA: 1024
+        run: |
+          echo "Total Wasm byte delta: $TOTAL_DELTA B (budget: $MAX_DELTA B)"
+          if [ -n "$TOTAL_DELTA" ] && [ "$TOTAL_DELTA" -gt "$MAX_DELTA" ]; then
+            echo "::error::Wasm binary grew by $TOTAL_DELTA bytes, exceeding the allowed threshold of $MAX_DELTA bytes."
+            exit 1
+          fi
+
       - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: wasm-diff-results

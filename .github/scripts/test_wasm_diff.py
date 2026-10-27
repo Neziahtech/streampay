@@ -131,18 +131,106 @@ def build_test_wasm(
 class TestWasmDiff(unittest.TestCase):
 
     def test_rust_symbol_demangling(self):
-        # Legacy mangled symbol with 17-char hash
+        # Legacy mangled symbol with 17-char hash preserved
         mangled = "_ZN18streampay_contract6stream11streamed_at17h7a2b9c8d1e3f4a5E"
-        expected = "streampay_contract::stream::streamed_at"
+        expected = "streampay_contract::stream::streamed_at::h7a2b9c8d1e3f4a5"
         self.assertEqual(demangle_symbol(mangled), expected)
 
-        # Another legacy symbol
+        # Another legacy symbol with hash preserved
         mangled2 = "_ZN4core3ptr13drop_in_place17h1234567890abcdefE"
-        self.assertEqual(demangle_symbol(mangled2), "core::ptr::drop_in_place")
+        self.assertEqual(demangle_symbol(mangled2), "core::ptr::drop_in_place::h1234567890abcdef")
 
         # Export name / plain identifier should remain unchanged
         self.assertEqual(demangle_symbol("create_stream"), "create_stream")
         self.assertEqual(demangle_symbol("withdraw_max"), "withdraw_max")
+
+    def test_monomorphization_hash_preservation(self):
+        """Verifies distinct monomorphizations with different hashes do not collide."""
+        f1 = "_ZN18streampay_contract4cast17h1111111111111111E"
+        f2 = "_ZN18streampay_contract4cast17h2222222222222222E"
+        d1 = demangle_symbol(f1)
+        d2 = demangle_symbol(f2)
+        self.assertNotEqual(d1, d2)
+        self.assertTrue(d1.endswith("::h1111111111111111"))
+        self.assertTrue(d2.endswith("::h2222222222222222"))
+
+    def test_negative_churn_detection(self):
+        """
+        Negative test case:
+        Asserts that call 5 -> call 6 is NOT labeled as CHURN (it is MODIFIED),
+        and local.get 0 -> local.get 3 is NOT labeled as CHURN (it is MODIFIED).
+        Also verifies operand bytes in instructions (e.g. memarg) are not misread as opcodes.
+        """
+        # Test 1: call 5 (0x10 0x05) -> call 6 (0x10 0x06)
+        body_call5 = b"\x00\x10\x05\x0b"
+        body_call6 = b"\x00\x10\x06\x0b"
+        self.assertEqual(len(body_call5), len(body_call6), "Equal size deltas")
+
+        base_wasm_call = build_test_wasm(
+            functions=[body_call5],
+            names={0: "streampay_contract::invoke_call"},
+        )
+        head_wasm_call = build_test_wasm(
+            functions=[body_call6],
+            names={0: "streampay_contract::invoke_call"},
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base_p = os.path.join(tmpdir, "base_call.wasm")
+            head_p = os.path.join(tmpdir, "head_call.wasm")
+            with open(base_p, "wb") as f:
+                f.write(base_wasm_call)
+            with open(head_p, "wb") as f:
+                f.write(head_wasm_call)
+
+            res = run_wasm_diff(base_wasm=base_p, head_wasm=head_p)
+            diffs = res["all_diffs"]
+            self.assertEqual(len(diffs), 1)
+            # call 5 -> call 6 changed function logic: MUST NOT be labeled as CHURN
+            self.assertNotEqual(diffs[0]["status"], "CHURN")
+            self.assertEqual(diffs[0]["status"], "MODIFIED")
+            self.assertFalse(diffs[0]["is_churn"])
+
+        # Test 2: local.get 0 (0x20 0x00) -> local.get 3 (0x20 0x03)
+        body_local0 = b"\x00\x20\x00\x0b"
+        body_local3 = b"\x00\x20\x03\x0b"
+        self.assertEqual(len(body_local0), len(body_local3), "Equal size deltas")
+
+        # Ensure normalized fingerprints differ because local indices are preserved
+        fp_local0 = compute_body_fingerprint(body_local0)
+        fp_local3 = compute_body_fingerprint(body_local3)
+        self.assertNotEqual(fp_local0, fp_local3, "Fingerprints for local.get 0 vs local.get 3 must not match")
+
+        base_wasm_local = build_test_wasm(
+            functions=[body_local0],
+            names={0: "streampay_contract::get_val"},
+        )
+        head_wasm_local = build_test_wasm(
+            functions=[body_local3],
+            names={0: "streampay_contract::get_val"},
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base_p = os.path.join(tmpdir, "base_local.wasm")
+            head_p = os.path.join(tmpdir, "head_local.wasm")
+            with open(base_p, "wb") as f:
+                f.write(base_wasm_local)
+            with open(head_p, "wb") as f:
+                f.write(head_wasm_local)
+
+            res = run_wasm_diff(base_wasm=base_p, head_wasm=head_p)
+            diffs = res["all_diffs"]
+            self.assertEqual(len(diffs), 1)
+            # local.get 0 -> local.get 3 changed local index: MUST NOT be labeled as CHURN
+            self.assertNotEqual(diffs[0]["status"], "CHURN")
+            self.assertEqual(diffs[0]["status"], "MODIFIED")
+            self.assertFalse(diffs[0]["is_churn"])
+
+        # Test 3: Operands must not be misread as opcodes
+        # 0x28 is i32.load; align=0x10, offset=0x20 (0x10 is call opcode, 0x20 is local.get opcode)
+        body_mem = b"\x00\x28\x10\x20\x0b"
+        fp_mem = compute_body_fingerprint(body_mem)
+        self.assertTrue(isinstance(fp_mem, str) and len(fp_mem) == 64)
 
     def test_churn_vs_real_growth_detection(self):
         # Body A: 0 locals, nop, end (3 bytes)
@@ -173,7 +261,7 @@ class TestWasmDiff(unittest.TestCase):
         # Build Head Wasm:
         # func 0: bloat function added at front! (causing offsets and indices to shift!)
         # func 1: create_stream (same body as old func 0, but offset shifted -> TURBOPACK CHURN!)
-        # func 2: streampay_contract::stream::streamed_at::h2222 (grown body + hash shifted!)
+        # func 2: streampay_contract::stream::streamed_at::h1111 (grown body, matching name!)
         # func 2 to_remove is gone! (REMOVED)
         head_bytes = build_test_wasm(
             functions=[body_bloat, body_unchanged, body_math_grown],
@@ -181,7 +269,7 @@ class TestWasmDiff(unittest.TestCase):
             names={
                 0: "bloat_demo_function",
                 1: "create_stream",
-                2: "_ZN18streampay_contract6stream11streamed_at17h2222222222222222E",
+                2: "_ZN18streampay_contract6stream11streamed_at17h1111111111111111E",
             },
         )
 

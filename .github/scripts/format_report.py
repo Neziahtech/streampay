@@ -75,6 +75,7 @@ def render_markdown_report(diff_data: Dict[str, Any]) -> str:
         "",
         f"**Breakdown**: {counts.get('new', 0)} new &bull; {counts.get('removed', 0)} removed &bull; "
         f"{counts.get('grown', 0)} grown &bull; {counts.get('shrunk', 0)} shrunk &bull; "
+        f"{counts.get('modified', 0)} modified &bull; {counts.get('unchanged', 0)} unchanged &bull; "
         f"**{counts.get('churn', 0)} filtered offset/symbol churn** (0 B net growth)",
         "",
     ]
@@ -112,6 +113,11 @@ def render_markdown_report(diff_data: Dict[str, Any]) -> str:
                 base_str = format_size(m.get("base_size", 0))
                 head_str = format_size(m.get("head_size", 0))
                 delta_str = f"-{abs(m.get('delta', 0)):,} B"
+            elif status in ("MODIFIED", "modified"):
+                change_type = "modified"
+                base_str = format_size(m.get("base_size", 0))
+                head_str = format_size(m.get("head_size", 0))
+                delta_str = "0 B (modified)"
             else:
                 change_type = status.lower()
                 base_str = format_size(m.get("base_size", 0))
@@ -139,7 +145,7 @@ def render_markdown_report(diff_data: Dict[str, Any]) -> str:
         "or mangled symbol hash (e.g. `_ZN...h<16hex>`) of downstream functions without altering their actual logic. "
         "This tool normalizes the disassembled instruction stream and symbol names to distinguish between:",
         "- **Turbopack-style churn**: Same functions with shifted offsets/relocations (0 net byte growth). Filtered out of Top Movers to eliminate review fatigue.",
-        "- **Real changes**: True function byte expansion/reduction (`GROWN` / `SHRUNK`) and genuine additions/deletions (`NEW` / `REMOVED`).",
+        "- **Real changes**: True function byte expansion/reduction (`GROWN` / `SHRUNK`), genuine additions/deletions (`NEW` / `REMOVED`), and equal-size modifications (`MODIFIED`).",
         "",
         "**Disassembly Tool Choice**:",
         "- Disassembly engine: `wasm-objdump` (WebAssembly Binary Toolkit - `wabt`) / Direct Wasm Code section analyzer.",
@@ -159,6 +165,7 @@ def main():
     parser = argparse.ArgumentParser(description="Format Wasm Diff JSON into Markdown Report")
     parser.add_argument("--input", default="wasm_diff.json", help="Input JSON file from wasm_diff.py")
     parser.add_argument("--output", default="wasm_diff_report.md", help="Output Markdown report path")
+    parser.add_argument("--max-delta", type=int, default=1024, help="Maximum allowed total size delta in bytes before failing (default: 1024)")
     args = parser.parse_args()
 
     with open(args.input, "r", encoding="utf-8") as f:
@@ -170,6 +177,12 @@ def main():
         f.write(markdown)
 
     print(f"Report written to {args.output}")
+
+    summary = data.get("summary", {})
+    total_delta = summary.get("total_delta", 0)
+    if total_delta > args.max_delta:
+        print(f"ERROR: Wasm binary delta (+{total_delta:,} B) exceeds maximum allowed threshold ({args.max_delta:,} B)!", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
