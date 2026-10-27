@@ -22,7 +22,10 @@ const RPC_URL =
 const NETWORK =
   process.env.NEXT_PUBLIC_NETWORK === "PUBLIC"
     ? Networks.PUBLIC
-    : Networks.TESTNET;
+    : process.env.NEXT_PUBLIC_NETWORK_PASSPHRASE ||
+      (process.env.NEXT_PUBLIC_NETWORK === "LOCAL"
+        ? Networks.STANDALONE
+        : Networks.TESTNET);
 const CONTRACT_ID = process.env.NEXT_PUBLIC_STREAMING_CONTRACT_ID || "";
 const MAX_PAGE_SIZE = 50;
 
@@ -56,7 +59,9 @@ async function simulateRead(
   method: string,
   args: xdr.ScVal[]
 ): Promise<xdr.ScVal | null> {
-  const server = new rpc.Server(RPC_URL);
+  const server = new rpc.Server(RPC_URL, {
+    allowHttp: RPC_URL.startsWith("http://"),
+  });
   const transaction = new TransactionBuilder(DUMMY_SOURCE, {
     fee: "100",
     networkPassphrase: NETWORK,

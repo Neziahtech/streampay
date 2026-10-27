@@ -195,7 +195,9 @@ function scBytes32(hex: string): xdr.ScVal {
 }
 
 async function sendAndWait(source: string, op: xdr.Operation): Promise<string> {
-  const server = new rpc.Server(RPC_URL);
+  const server = new rpc.Server(RPC_URL, {
+    allowHttp: RPC_URL.startsWith("http://"),
+  });
   const account = await server.getAccount(source);
   const tx = new TransactionBuilder(account, { fee: "100000", networkPassphrase: NETWORK })
     .addOperation(op)
@@ -388,7 +390,9 @@ export function decodeDerSignature(der: Uint8Array): { r: Uint8Array; s: Uint8Ar
  */
 export async function isPasskeyRegistered(owner: string): Promise<boolean> {
   if (!PASSKEY_CONTRACT_ID) return false;
-  const server = new rpc.Server(RPC_URL);
+  const server = new rpc.Server(RPC_URL, {
+    allowHttp: RPC_URL.startsWith("http://"),
+  });
   const contract = passkeyContract();
   const op = contract.call("get_credential", scAddr(owner));
   const tx = new TransactionBuilder(DUMMY_SOURCE, { fee: "100", networkPassphrase: NETWORK })

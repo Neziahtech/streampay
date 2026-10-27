@@ -55,7 +55,7 @@ export default function NetworkBadge({
         <span className="network-text">
           {t("chrome.networkText", { network: networkDisplayName(APP_NETWORK_LABEL) })}
         </span>
-        {APP_CONTRACT_ID ? (
+        {APP_CONTRACT_ID && explorerContractUrl() ? (
           <a
             className="network-contract mono"
             href={explorerContractUrl()}
@@ -71,6 +71,15 @@ export default function NetworkBadge({
               {t("chrome.contractAria", { contractId: APP_CONTRACT_ID })}
             </span>
           </a>
+        ) : APP_CONTRACT_ID ? (
+          <span className="network-contract mono" title={APP_CONTRACT_ID}>
+            <span aria-hidden="true">
+              {t("chrome.contractLabel", { shortId: truncateContractId(APP_CONTRACT_ID) })}
+            </span>
+            <span className="sr-only">
+              {t("chrome.contractAria", { contractId: APP_CONTRACT_ID })}
+            </span>
+          </span>
         ) : (
           <span className="network-contract-unset">{t("chrome.contractUnset")}</span>
         )}

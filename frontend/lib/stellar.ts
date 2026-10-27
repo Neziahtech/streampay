@@ -44,11 +44,18 @@ export const RPC_URL =
 const NETWORK =
   process.env.NEXT_PUBLIC_NETWORK === "PUBLIC"
     ? Networks.PUBLIC
-    : Networks.TESTNET;
+    : process.env.NEXT_PUBLIC_NETWORK_PASSPHRASE ||
+      (process.env.NEXT_PUBLIC_NETWORK === "LOCAL"
+        ? Networks.STANDALONE
+        : Networks.TESTNET);
 const CONTRACT_ID = process.env.NEXT_PUBLIC_STREAMING_CONTRACT_ID || "";
 
 /** Deployed contract id — sponsors' signed intents are bound to it. */
 export const STREAMING_CONTRACT_ID = CONTRACT_ID;
+
+export function rpcServer(url: string = RPC_URL): rpc.Server {
+  return new rpc.Server(url, { allowHttp: url.startsWith("http://") });
+}
 
 function contract(): Contract {
   if (!CONTRACT_ID) {
@@ -246,7 +253,7 @@ async function sendWithTx<T>(
   decode: (v: xdr.ScVal) => T,
   signer: TxSigner
 ): Promise<{ result: T; txHash: string }> {
-  const server = new rpc.Server(RPC_URL);
+  const server = rpcServer();
   const account = await server.getAccount(source);
   const tx = new TransactionBuilder(account, {
     fee: "100000",
@@ -263,8 +270,14 @@ async function sendWithTx<T>(
   }
   const ready = rpc.assembleTransaction(tx, simulated).build();
 
-  // 2. Sign via the injected adapter (Freighter, Albedo, …).
-  const signedTxXdr = await signer(ready.toXDR(), NETWORK);
+  // 2. Sign with Freighter.
+  const { signedTxXdr, error: signError } = await signTransaction(ready.toXDR(), {
+    networkPassphrase: NETWORK,
+  });
+  if (signError || !signedTxXdr) {
+    const msg = typeof signError === "object" ? signError?.message : signError;
+    throw new Error(msg || "Freighter transaction signing failed");
+  }
   const signed = TransactionBuilder.fromXDR(signedTxXdr, NETWORK);
 
   // 3. Send and poll for inclusion.
@@ -325,7 +338,7 @@ async function ensureAllowance(
   const current = await readAllowance(token, sender, CONTRACT_ID);
   if (current === null || current >= BigInt(amount)) return;
 
-  const server = new rpc.Server(RPC_URL);
+  const server = rpcServer();
   const { sequence } = await server.getLatestLedger();
   // ~10 days of headroom at ~5 s/ledger; the pull happens in the very next
   // transaction.
@@ -518,7 +531,7 @@ export async function prepareWithdrawMax(
   streamId: string,
   validitySeconds: number
 ): Promise<PreparedIntent> {
-  const server = new rpc.Server(RPC_URL);
+  const server = rpcServer();
   const account = await server.getAccount(recipient);
   const tx = new TransactionBuilder(account, {
     fee: "100000",
@@ -557,7 +570,7 @@ export async function signPreparedIntent(xdr: string): Promise<string> {
 export async function submitSignedIntent(
   signedXdr: string
 ): Promise<{ hash: string }> {
-  const server = new rpc.Server(RPC_URL);
+  const server = rpcServer();
   const signed = TransactionBuilder.fromXDR(signedXdr, NETWORK);
   const sent = await server.sendTransaction(signed);
   if (sent.status === "ERROR") {
@@ -749,7 +762,7 @@ async function simulateRead(
   // or, for the allowance pre-check, a token).
   if (!contractId) return null;
   try {
-    const server = new rpc.Server(RPC_URL);
+    const server = rpcServer();
     const tx = new TransactionBuilder(DUMMY_SOURCE, {
       fee: "100",
       networkPassphrase: NETWORK,

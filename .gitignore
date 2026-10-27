@@ -5,7 +5,7 @@ indexer/dist/
 *.wasm
 
 # Node / Next.js frontend
-node_modules/
+node_modules
 .next/
 out/
 *.tsbuildinfo
@@ -53,6 +53,10 @@ fuzz/corpus/
 fuzz/artifacts/
 fuzz/Cargo.lock
 
+# Playwright test artifacts
+test-results/
+playwright-report/
+blob-report/
 # ---------------------------------------------------------------------------
 # Storage-layout golden suite (issue #210)
 #
