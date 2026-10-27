@@ -1,6 +1,7 @@
 import express from "express";
-import { nativeToScVal } from "@stellar/stellar-sdk";
+import { Keypair, Networks, nativeToScVal } from "@stellar/stellar-sdk";
 import { decodeEvent } from "./decoder.js";
+import { generateStreamProof } from "./proof.js";
 import { StreamStore } from "./store.js";
 import { getGlobalRpcManager } from "./rpc-manager.js";
 import type { EndpointHealth, RateBudgetSnapshot } from "./rpc-manager.js";
@@ -55,13 +56,26 @@ export interface IngestStats {
   budget: RateBudgetSnapshot;
 }
 
+/**
+ * Signing material for `/streams/:id/proof` (issue #182). The proof endpoint is
+ * only meaningful with a checkpoint signer, so it is supplied by `run()` from
+ * the environment and left out of `createApp` calls from tests — an unconfigured
+ * app answers 503 on that route instead of failing to boot.
+ */
+export interface ProofConfig {
+  networkPassphrase: string;
+  contractId: string;
+  signer: Keypair;
+}
+
 export function createApp(
   store: StreamStore,
   dispatcher?: WebhookDispatcher,
   outboxDispatcher?: OutboxDispatcher,
   outboxMetrics?: OutboxMetrics,
   rpcHealth?: () => EndpointHealth[],
-  ingestStats?: () => IngestStats
+  ingestStats?: () => IngestStats,
+  proofConfig?: ProofConfig
 ): express.Express {
   const app = express();
   app.use(express.json());
@@ -74,6 +88,7 @@ export function createApp(
       cursor: store.getState("cursor") ?? null,
       ingest: ingestStats?.() ?? null,
       rpcEndpoints: rpcHealth?.() ?? [],
+      checkpointSigner: proofConfig?.signer.publicKey() ?? null,
     });
   });
 
@@ -131,6 +146,31 @@ export function createApp(
     if (!/^\d+$/.test(req.params.id)) return res.status(400).json({ error: "stream id must be an unsigned integer" });
     const stream = store.getStream(req.params.id);
     return stream ? res.json(stream) : res.status(404).json({ error: "stream not found" });
+  });
+
+  // GET /streams/:id/proof — light-client checkpoint proof (#182). The indexer
+  // hashes every stream it has projected into a Merkle state root and signs the
+  // checkpoint, so a client can verify one stream's state against the signed root
+  // instead of trusting this endpoint's word for it. `streamToProofEntry` builds
+  // the canonical ledger-entry XDR, so the leaf the client re-hashes is the leaf
+  // the chain would have produced.
+  app.get("/streams/:id/proof", (req, res) => {
+    if (!/^\d+$/.test(req.params.id)) return res.status(400).json({ error: "stream id must be an unsigned integer" });
+    if (!proofConfig) return res.status(503).json({ error: "proof endpoint is not configured: set CHECKPOINT_SIGNER_SECRET" });
+    const stream = store.getStream(req.params.id);
+    if (!stream) return res.status(404).json({ error: "stream not found" });
+    const ledger = Number(store.getState("lastLedger") ?? stream.lastLedger);
+    const ledgerCloseTime = Math.floor(new Date(stream.updatedAt).getTime() / 1000) || Math.floor(Date.now() / 1000);
+    const proof = generateStreamProof({
+      networkPassphrase: proofConfig.networkPassphrase,
+      contractId: proofConfig.contractId,
+      ledger,
+      ledgerCloseTime,
+      streams: store.listAllStreams(),
+      targetStreamId: req.params.id,
+      signer: proofConfig.signer,
+    });
+    return res.json(proof);
   });
 
   // GET /streams/:id/events?after=<seq>&limit=<n> — transactional-outbox replay.
@@ -325,6 +365,15 @@ export async function run(): Promise<void> {
 
   const store = new StreamStore(dbPath);
 
+  // ── Checkpoint signer for `/streams/:id/proof` (#182) ──────────────────────
+  // An ephemeral `Keypair.random()` keeps a throwaway indexer running, but its
+  // signatures die with the process and a client cannot pin them, so a real
+  // deploy must set CHECKPOINT_SIGNER_SECRET.
+  const checkpointSigner = process.env.CHECKPOINT_SIGNER_SECRET
+    ? Keypair.fromSecret(process.env.CHECKPOINT_SIGNER_SECRET)
+    : Keypair.random();
+  const networkPassphrase = process.env.NETWORK_PASSPHRASE ?? Networks.TESTNET;
+
   // ── RPC manager: shared across the indexer, replaces the ad-hoc fetch helper.
   // Additional endpoints can be added via RPC_URL_FALLBACK_1, RPC_URL_FALLBACK_2 env vars.
   const rpcEndpoints = [{ url: rpcUrl }];
@@ -413,7 +462,8 @@ export async function run(): Promise<void> {
       lastTick: lastTick ?? null,
       sequencer: pipeline.metrics(),
       budget: manager.getRateBudget(),
-    })
+    }),
+    { networkPassphrase, contractId, signer: checkpointSigner }
   );
 
   async function poll(): Promise<void> {

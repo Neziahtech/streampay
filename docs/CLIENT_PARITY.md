@@ -11,7 +11,11 @@ Stellar SDK XDR; the frontend also checks that the `createStream` duration path
 builds the expected operation for each duration fixture.
 
 This repository has two TypeScript operation-building clients in this matrix:
-the frontend and `streampay-cli`. There is no separate TypeScript SDK package.
+the frontend and `streampay-cli`. The generated TypeScript client in
+`sdks/typescript` is a third caller that is not yet in this matrix; it is
+checked against the shared conformance vectors in `sdks/vectors` instead.
+Wiring it into these fixtures belongs with deciding which caller migrates
+onto it.
 The matrix does not drive Freighter signing, submit operations to an RPC server,
 or cover pause, resume, cancel, top-up, authorization failures, and zero-max
 withdrawals. Fixture addresses are valid serialization inputs, not deployed

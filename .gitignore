@@ -73,6 +73,11 @@ contracts/streaming-payments/test_snapshots/storage_golden/
 # Per-operator state of scripts/storage_golden_smoke.sh (contract id, recorded
 # read-backs) for an in-flight 24 h testnet rehearsal.
 .storage_golden_smoke/
+
+# SDK build artifacts
+sdks/typescript/dist/
+sdks/typescript/*.tgz
+
 # Campaign output and triage bundles: per-run, versioned on the fuzz-corpus
 # branch instead (see docs/FUZZ_CAMPAIGN.md). fuzz/known/ and
 # fuzz/regressions/ are tracked.
