@@ -2,7 +2,6 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getAddress, isConnected } from "@stellar/freighter-api";
 import {
   cancelStream,
   describeError,
@@ -42,12 +41,14 @@ import {
   type ClaimIntent,
 } from "@/lib/sponsor";
 import { useToast } from "@/components/toast";
+import { useWallet } from "@/lib/wallet-context";
 import { validateWithdrawal } from "@/lib/withdrawal";
 import { formatAmount } from "@/lib/format";
 import DiscoveryConsentModal from "@/components/DiscoveryConsentModal";
 
 export default function StreamDetail() {
   const toast = useToast();
+  const { address, signTransaction } = useWallet();
   const params = useParams<{ id: string }>();
   const id = params?.id ?? "";
 
@@ -56,7 +57,6 @@ export default function StreamDetail() {
   const [assetMeta, setAssetMeta] = useState<AssetMeta | null>(null);
   const [amount, setAmount] = useState<string>("");
   const [isAmountDirty, setIsAmountDirty] = useState(false);
-  const [address, setAddress] = useState<string | null>(null);
   const engineRef = useRef<LiveAccrual | null>(null);
   const [status, setStatus] = useState<string>("");
   const [error, setError] = useState<string>("");
@@ -136,18 +136,7 @@ export default function StreamDetail() {
     if (live.error) toast.error(describeError(live.error));
   }, [live.error, toast]);
 
-  useEffect(() => {
-    void (async () => {
-      try {
-        if (await isConnected()) {
-          const { address } = await getAddress();
-          setAddress(address);
-        }
-      } catch {
-        // Detail view stays read-only without a wallet.
-      }
-    })();
-  }, []);
+  // address and signTransaction come from WalletContext — no useEffect needed.
 
   const loadSponsorship = useCallback(async (beneficiary: string) => {
     if (!SPONSOR_ADDRESS) return;
@@ -222,7 +211,7 @@ export default function StreamDetail() {
     setSubmitting(true);
     try {
       if (max) {
-        const paid = await withdrawMaxFromStream(address, stream!.id);
+        const paid = await withdrawMaxFromStream(address, stream!.id, signTransaction);
         const paidStr = assetMeta
           ? `${formatAmount(paid, assetMeta.decimals)} ${assetMeta.code}`
           : `${paid} units`;
@@ -241,7 +230,7 @@ export default function StreamDetail() {
           );
           return;
         }
-        await withdrawFromStream(address, stream!.id, validation.amount.toString());
+        await withdrawFromStream(address, stream!.id, validation.amount.toString(), signTransaction);
         const withdrewStr = assetMeta
           ? `${formatAmount(validation.amount, assetMeta.decimals)} ${assetMeta.code}`
           : `${validation.amount} units`;
@@ -264,7 +253,7 @@ export default function StreamDetail() {
     setStatus("");
     setBusy(true);
     try {
-      await enrollBeneficiary(address, consentPub);
+      await enrollBeneficiary(address, consentPub, signTransaction);
       setStatus("Consent key enrolled — you can now claim without paying gas.");
       await loadSponsorship(address);
     } catch (e) {
@@ -324,7 +313,7 @@ export default function StreamDetail() {
     if (!address) return;
     setSubmitting(true);
     try {
-      await cancelStream(address, stream!.id);
+      await cancelStream(address, stream!.id, signTransaction);
       toast.success("Stream cancelled.");
       await engineRef.current?.refresh();
     } catch (e) {

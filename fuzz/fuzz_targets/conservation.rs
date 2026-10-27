@@ -21,7 +21,7 @@ use streampay_contract::{
     test_client::StreamingPaymentsClient as Client, RateSegment, StreamInput, StreamStatus,
     StreamingPayments, MAX_FEE_BPS,
 };
-use streampay_model::{streamed_at_schedule, ModelRateSegment};
+use streampay_model::{accrual_clock, resume_shift, streamed_at_schedule, ModelRateSegment};
 
 #[derive(Arbitrary, Debug, Clone)]
 pub struct FuzzStreamItem {
@@ -148,6 +148,15 @@ fuzz_target!(|campaign: ConservationCampaign| {
 
     let mut created_stream_ids: Vec<u64> = Vec::new();
 
+    // Which streams the harness believes are frozen, and at which ledger
+    // timestamp. Every stream here is created without an oracle, so
+    // `oracle::resolve_stream_time` returns `env.ledger().timestamp()` and the
+    // harness can record the contract's freeze point from its own clock instead
+    // of reading `DataKey::StreamPause` back. That keeps the accrual oracle
+    // below independent of the contract: if `pause_stream` ever froze at a
+    // different instant than the call, Invariant 3 diverges and says so.
+    let mut paused_at: Vec<(u64, u64)> = Vec::new();
+
     for op in campaign.ops {
         match op {
             FuzzOp::CreateStream {
@@ -246,18 +255,80 @@ fuzz_target!(|campaign: ConservationCampaign| {
                 if !created_stream_ids.is_empty() {
                     let stream_id =
                         created_stream_ids[(stream_idx as usize) % created_stream_ids.len()];
-                    let _ = client
+                    if let Ok(Ok(())) = client
                         .mock_all_auths()
-                        .try_pause_stream(&sender, &stream_id);
+                        .try_pause_stream(&sender, &stream_id)
+                    {
+                        let frozen = env.ledger().timestamp();
+                        let already = paused_at.iter().position(|slot| slot.0 == stream_id);
+                        if let Some(index) = already {
+                            paused_at[index].1 = frozen;
+                        } else {
+                            paused_at.push((stream_id, frozen));
+                        }
+                    }
                 }
             }
             FuzzOp::ResumeStream { stream_idx } => {
                 if !created_stream_ids.is_empty() {
                     let stream_id =
                         created_stream_ids[(stream_idx as usize) % created_stream_ids.len()];
-                    let _ = client
-                        .mock_all_auths()
-                        .try_resume_stream(&sender, &stream_id);
+                    let frozen_slot = paused_at.iter().position(|slot| slot.0 == stream_id);
+                    if let Some(index) = frozen_slot {
+                        let frozen = paused_at[index].1;
+                        let before = client.get_stream(&stream_id);
+                        let frozen_value = if before.status == StreamStatus::Active {
+                            Some(before.withdrawn + client.available(&stream_id))
+                        } else {
+                            None
+                        };
+                        if let Ok(Ok(())) = client
+                            .mock_all_auths()
+                            .try_resume_stream(&sender, &stream_id)
+                        {
+                            paused_at.remove(index);
+                            let after = client.get_stream(&stream_id);
+                            // Resume is value-neutral at its own instant: the
+                            // window moves forward, the amount accrued while
+                            // frozen does not.
+                            if let Some(value) = frozen_value {
+                                assert_eq!(
+                                    value,
+                                    after.withdrawn + client.available(&stream_id),
+                                    "resuming stream {stream_id} changed its accrued value"
+                                );
+                            }
+                            // Only the part of the pause that fell inside the
+                            // window is credited, exactly as the model computes.
+                            let shift = resume_shift(
+                                env.ledger().timestamp(),
+                                frozen,
+                                before.start_time,
+                                before.end_time,
+                            );
+                            assert_eq!(
+                                after.start_time,
+                                before.start_time + shift,
+                                "resuming stream {stream_id} shifted its start wrongly"
+                            );
+                            assert_eq!(
+                                after.end_time,
+                                before.end_time + shift,
+                                "resuming stream {stream_id} shifted its end wrongly"
+                            );
+                            assert_eq!(
+                                after.deposit, before.deposit,
+                                "resuming stream {stream_id} changed its deposit"
+                            );
+                        }
+                    } else {
+                        // The harness never paused this stream, so the contract
+                        // must refuse; the pause clock is only trusted while it
+                        // matches a pause this harness actually performed.
+                        let _ = client
+                            .mock_all_auths()
+                            .try_resume_stream(&sender, &stream_id);
+                    }
                 }
             }
             FuzzOp::CancelStream {
@@ -397,6 +468,12 @@ fuzz_target!(|campaign: ConservationCampaign| {
         // model prices it, and an accepted schedule settles at exactly the
         // deposit the acceptance computed. This is the #54 differential under
         // random renegotiation sequences.
+        //
+        // The clock is the one the contract accrues on, which since pause/resume
+        // merged is not always ledger time: a frozen stream prices at its freeze
+        // point (`stream::accrual_now`). Pricing the model at raw ledger time
+        // instead made this fire on every pause, which is how the 2026-10-27
+        // nightly failed; `fuzz/regressions/conservation/` keeps that input.
         let now = env.ledger().timestamp();
         for &stream_id in &created_stream_ids {
             let schedule = client.rate_segments(&stream_id);
@@ -407,6 +484,13 @@ fuzz_target!(|campaign: ConservationCampaign| {
             if stream.status != StreamStatus::Active {
                 continue;
             }
+            let clock = accrual_clock(
+                now,
+                paused_at
+                    .iter()
+                    .find(|slot| slot.0 == stream_id)
+                    .map(|slot| slot.1),
+            );
             let mut model_segments: Vec<ModelRateSegment> = Vec::new();
             for segment in schedule.iter() {
                 let RateSegment {
@@ -422,7 +506,7 @@ fuzz_target!(|campaign: ConservationCampaign| {
                     basis_seconds,
                 });
             }
-            let expected = streamed_at_schedule(now, &model_segments)
+            let expected = streamed_at_schedule(clock, &model_segments)
                 .expect("a stored schedule is priced by the same formula");
             assert_eq!(
                 expected,
