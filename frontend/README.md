@@ -56,6 +56,19 @@ Pick an asset on the create form:
 For a one-command deployed contract + demo stream, see
 [`../docs/DEMO.md`](../docs/DEMO.md).
 
+## Component docs and visual regression
+
+```bash
+npm run storybook          # component docs at http://localhost:6006
+npm run build-storybook    # static build (what CI screenshots)
+```
+
+Every story is screenshotted in CI (inside the pinned Playwright container)
+and compared pixel for pixel against `visual/__screenshots__/linux/`. Stories
+run on a frozen clock with mocked RPC, wallet and server actions, so a diff
+means the UI changed. How to write a story, update baselines and read a failure:
+[`../docs/STORYBOOK.md`](../docs/STORYBOOK.md).
+
 ## Notes
 
 - `npm run lint` + `npm run typecheck` + `npm run build` + `npm audit` +
