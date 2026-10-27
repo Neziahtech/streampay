@@ -58,13 +58,10 @@ For a one-command deployed contract + demo stream, see
 
 ## Notes
 
-- `npm run lint` + `npm run typecheck` + `npm run build` + `npm audit` +
-  `npm test` run in CI. `npm test` includes the sponsorship wire-parity
-  vectors (frozen message XDR + digest shared with the Rust suite).
-- `npm run lint` + `npm run typecheck` + `npm test` + `npm run build` +
-  `npm audit` run in CI.
-- `npm test` runs the pure scheduler/fee-stats unit tests and the recorded
-  fee-series replay simulation (vitest, node environment).
+- `npm run lint` + `npm run typecheck` + `npm run build` + `npm audit` + `npm run test:visual` run in
+  CI.
+- Interactive component documentation is powered by Storybook (`npm run storybook` / `npm run build-storybook`).
+- Automated visual regression testing runs via Playwright (`npm run test:visual`). See [`../docs/STORYBOOK.md`](../docs/STORYBOOK.md) for architecture, Next 16/React 19 integration details, and fake-timer clock stabilization.
 - Every mutating call follows: build → simulate → Freighter sign → send → poll.
 - Create/top-up first read the token's `allowance` and ask Freighter to sign
   a `token.approve` **only when it is short** — so a first stream with a new

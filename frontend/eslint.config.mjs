@@ -6,7 +6,7 @@ const eslintConfig = defineConfig([
   ...nextVitals,
   ...nextTs,
   {
-    ignores: ["node_modules/**", ".next/**", "out/**", "next-env.d.ts"],
+    ignores: ["node_modules/**", ".next/**", "out/**", "next-env.d.ts", "storybook-static/**"],
   },
 ]);
 
