@@ -703,7 +703,15 @@ jobs:
 
       - name: Start Stellar sandbox container
         run: |
-          docker run -d --rm --name stellar-sandbox -p 8000:8000 stellar/quickstart:testing --local
+          # Untagged `stellar/quickstart` — the same image scripts/dev.sh starts for
+          # local development — rather than `:testing`, which tracks nightly
+          # stellar-core builds. The pinned release-line toolchain (stellar-cli
+          # 28.1.0 / soroban-env-host 29) is matched to a released ledger protocol,
+          # and a nightly core moves that target out from under it: a deploy against
+          # it can fail in preflight with `HostError: Error(Context, InternalError)`
+          # and no diagnostic event, which is a toolchain-mismatch signal, not a
+          # contract bug.
+          docker run -d --rm --name stellar-sandbox -p 8000:8000 stellar/quickstart --local
           echo "Waiting for sandbox RPC to become healthy..."
           for i in $(seq 1 60); do
             if curl -s -f -X POST http://localhost:8000/rpc \
@@ -718,6 +726,15 @@ jobs:
 
       - name: Deploy contract and demo asset to sandbox
         run: bash scripts/deploy_sandbox.sh
+
+      - name: Dump sandbox logs
+        if: failure()
+        run: |
+          # A simulation failure is reported by the RPC, but the ledger-side reason
+          # lives in stellar-core's log. Without this the only signal is
+          # "HostError: Error(Context, InternalError) / DebugInfo not available",
+          # which cannot be triaged from CI at all.
+          docker logs --tail 200 stellar-sandbox || true
 
       - name: Run Playwright E2E tests
         run: npx playwright test
