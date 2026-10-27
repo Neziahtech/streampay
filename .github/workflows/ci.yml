@@ -418,6 +418,91 @@ jobs:
         run: |
           echo "::error::npm audit rejected a production dependency. Check whether the flagged package came from YOUR diff (git diff main -- frontend/package.json frontend/package-lock.json). If it did, upgrade it. If it did not, main already carries the advisory: merge main, run 'npm audit fix' (never '--force'), and if the advisory has no upstream fix say so in the PR body and ask a maintainer to add an overrides pin or an audit allow-list entry in a separate PR."
 
+  storybook-visual:
+    name: Storybook — build / visual regression
+    runs-on: ubuntu-latest
+    # Baselines are rendered by exactly this image, so a pixel diff is a UI
+    # change and never a font-hinting difference between machines. The tag
+    # must equal the @playwright/test version pinned in frontend/package.json
+    # (checked below); bump both together and re-render the baselines.
+    container:
+      image: mcr.microsoft.com/playwright:v1.64.1-noble
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Playwright matches the container image
+        run: |
+          expected="1.64.1"
+          actual="$(node -p "require('@playwright/test/package.json').version")"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::@playwright/test is $actual but this job runs mcr.microsoft.com/playwright:v$expected-noble. Baselines are only comparable inside the image that rendered them: bump the container tag here and in frontend/scripts/visual-baselines.sh together with the package, then re-render the baselines (docs/STORYBOOK.md)."
+            exit 1
+          fi
+
+      # Same Next 16 / React 19 the app builds with: the framework reads
+      # next.config.ts and resolves the app's own node_modules.
+      - name: Storybook build
+        run: npm run build-storybook
+
+      # One full-page screenshot per story, compared with zero pixel tolerance
+      # against frontend/visual/__screenshots__/linux. The run also includes
+      # the gate's self-tests: a one-line CSS regression must fail the
+      # comparison, and the injected clock must hold the live-accrual counter
+      # still (frontend/visual/detector.visual.ts).
+      - name: Visual regression (Playwright screenshot diff)
+        id: visual
+        run: npx playwright test
+
+      # Always uploaded: on a failure it holds the expected / actual / diff
+      # image for every changed story; on success it still holds the
+      # self-test's demo diff, so the artifact shows what a caught regression
+      # looks like.
+      - name: Upload visual diffs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: visual-diffs
+          path: |
+            frontend/test-results/
+            frontend/playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # Only after a failed comparison: re-render the stories whose baseline
+      # is missing or no longer matches, in this same image, and offer them as
+      # an artifact. Nothing is committed — the contributor reviews the PNGs
+      # and commits them deliberately. This is also how the first baseline for
+      # a new story is produced without Docker.
+      - name: Render candidate baselines
+        if: failure() && steps.visual.outcome == 'failure'
+        run: npx playwright test stories.visual.ts --update-snapshots=changed
+
+      - name: Upload candidate baselines
+        if: failure() && steps.visual.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: visual-baselines-linux
+          path: frontend/visual/__screenshots__/linux/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Explain a visual-regression failure
+        if: failure()
+        run: |
+          echo "::error::A story no longer matches its baseline (or has none). Download the 'visual-diffs' artifact: each failed story has <id>-expected.png, <id>-actual.png and <id>-diff.png. If the change is unintended, fix the component. If it is intended, take the re-rendered set from the 'visual-baselines-linux' artifact (or run: bash frontend/scripts/visual-baselines.sh), unpack it into frontend/visual/__screenshots__/linux/, look at every changed PNG, and commit them with a note in the PR saying which stories changed and why. See docs/STORYBOOK.md."
+
   ttl-sentinel:
     name: TTL sentinel — typecheck / tests
     runs-on: ubuntu-latest
