@@ -5,10 +5,10 @@
   "description": "StreamPay TypeScript event indexer worker: polls Soroban RPC getEvents, decodes XDR events, persists state in SQLite, and serves HTTP API.",
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "start": "npm run build && node dist/index.js",
-    "build": "tsc --outDir dist",
-    "test": "npm run build && node --test dist/decoder.test.js dist/store.test.js dist/indexer.test.js dist/registry.test.js dist/webhooks.test.js dist/outbox/outbox.test.js dist/telemetry.test.js dist/rpc-manager.test.js dist/ingest/pipeline.test.js",
+    "dev": "node init && tsx watch src/index.ts",
+    "start": "node init && npm run build && node dist/index.js",
+    "build": "node init && tsc --outDir dist",
+    "test": "npm run build && node --test dist/decoder.test.js dist/store.test.js dist/proof.test.js dist/indexer.test.js dist/registry.test.js dist/webhooks.test.js dist/outbox/outbox.test.js dist/telemetry.test.js dist/rpc-manager.test.js dist/ingest/pipeline.test.js",
     "test:ingest": "npm run build && node --test dist/ingest/pipeline.test.js",
     "bench:ingest": "npm run build && node ../perf/harness/indexer_parallel_bench.mjs",
     "typecheck": "tsc --noEmit"

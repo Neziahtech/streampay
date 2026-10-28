@@ -487,12 +487,14 @@ impl Branch {
             Branch::WithdrawAmountNonPositive | Branch::WithdrawAmountExceedsAvailable => {
                 &["withdraw"]
             }
-            Branch::WithdrawMaxNothingToWithdraw => &["withdraw_max", "withdraw_many"],
+            Branch::WithdrawMaxNothingToWithdraw => {
+                &["withdraw_max", "withdraw_many", "withdraw_all"]
+            }
             Branch::WithdrawManyEmpty
             | Branch::WithdrawManyTooLarge
             | Branch::WithdrawManyDuplicateIds => &["withdraw_many"],
-            Branch::WithdrawManyNotStreamRecipient => &["withdraw_many"],
-            Branch::WithdrawManyTotalOverflow => &["withdraw_many"],
+            Branch::WithdrawManyNotStreamRecipient => &["withdraw_many", "withdraw_all"],
+            Branch::WithdrawManyTotalOverflow => &["withdraw_many", "withdraw_all"],
             Branch::CancelStreamNotCancellable | Branch::CancelStreamNotAuthorized => {
                 &["cancel_stream"]
             }
@@ -509,6 +511,7 @@ impl Branch {
                 "withdraw",
                 "withdraw_max",
                 "withdraw_many",
+                "withdraw_all",
                 "cancel_stream",
                 "top_up",
                 "raise_dispute",
@@ -534,6 +537,7 @@ impl Branch {
                 "withdraw",
                 "withdraw_max",
                 "withdraw_many",
+                "withdraw_all",
                 "cancel_stream",
                 "top_up",
                 "raise_dispute",
@@ -555,13 +559,18 @@ impl Branch {
                 "withdraw",
                 "withdraw_max",
                 "withdraw_many",
+                "withdraw_all",
                 "cancel_stream",
                 "sponsored_withdraw",
                 "accept_rate_change",
             ],
-            Branch::AvailableBalanceOverflow => {
-                &["available", "withdraw", "withdraw_max", "withdraw_many"]
-            }
+            Branch::AvailableBalanceOverflow => &[
+                "available",
+                "withdraw",
+                "withdraw_max",
+                "withdraw_many",
+                "withdraw_all",
+            ],
             Branch::CancelSplitOverflow => &["cancel_stream"],
             Branch::SetFeeRateTooHigh => &["set_fee_bps"],
             Branch::GovernorNotAllowed => &[
@@ -586,6 +595,7 @@ impl Branch {
                 "withdraw",
                 "withdraw_max",
                 "withdraw_many",
+                "withdraw_all",
                 "sponsored_withdraw",
             ],
             // ----------------------------------------------------- sponsor module
@@ -616,9 +626,13 @@ impl Branch {
             Branch::IntentNotExpired => &["reclaim_expired"],
             Branch::CreateDepositTransferFailed => &["create_stream", "create_streams"],
             Branch::TopUpTransferFailed => &["top_up"],
-            Branch::RecipientPayoutFailed => {
-                &["withdraw", "withdraw_max", "withdraw_many", "cancel_stream"]
-            }
+            Branch::RecipientPayoutFailed => &[
+                "withdraw",
+                "withdraw_max",
+                "withdraw_many",
+                "withdraw_all",
+                "cancel_stream",
+            ],
             Branch::SenderRefundFailed => &["cancel_stream"],
             Branch::TreasuryPayoutFailed => &["withdraw_treasury"],
             Branch::PolicyAssetNotAllowed => &["create_stream", "create_streams"],
@@ -640,6 +654,7 @@ impl Branch {
                 "withdraw",
                 "withdraw_max",
                 "withdraw_many",
+                "withdraw_all",
                 "cancel_stream",
                 "top_up",
                 "propose_ownership_transfer",
@@ -763,6 +778,7 @@ impl Branch {
                 "withdraw",
                 "withdraw_max",
                 "withdraw_many",
+                "withdraw_all",
                 "cancel_stream",
                 "top_up",
                 "sponsored_withdraw",

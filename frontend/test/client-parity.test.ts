@@ -3,8 +3,10 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { Address, Contract, nativeToScVal } from "@stellar/stellar-sdk";
 import {
+  buildCancelStreamOperation,
   buildCreateStreamOperationForDays,
   buildWithdrawOperation,
+  buildWithdrawMaxOperation,
 } from "../lib/stellar-ops.ts";
 import {
   buildCreateStreamOperation as buildCliCreateStreamOperation,
@@ -58,6 +60,21 @@ test("frontend operation builders match canonical Soroban XDR for lifecycle fixt
       nativeToScVal(BigInt(scenario.withdrawAmount), { type: "i128" })
     );
     assert.equal(withdraw.toXDR("base64"), expectedWithdraw.toXDR("base64"));
+
+    const withdrawMax = buildWithdrawMaxOperation(contract, "1");
+    const expectedWithdrawMax = new Contract(contract).call(
+      "withdraw_max",
+      nativeToScVal(1n, { type: "u64" })
+    );
+    assert.equal(withdrawMax.toXDR("base64"), expectedWithdrawMax.toXDR("base64"));
+
+    const cancel = buildCancelStreamOperation(contract, sender, "1");
+    const expectedCancel = new Contract(contract).call(
+      "cancel_stream",
+      nativeToScVal(new Address(sender), { type: "address" }),
+      nativeToScVal(1n, { type: "u64" })
+    );
+    assert.equal(cancel.toXDR("base64"), expectedCancel.toXDR("base64"));
   }
 });
 
@@ -134,4 +151,3 @@ test("frontend create-stream duration path builds canonical XDR for duration fix
     assert.equal(operation.toXDR("base64"), expected.toXDR("base64"));
   }
 });
-

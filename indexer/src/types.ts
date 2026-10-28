@@ -57,3 +57,13 @@ export interface Stream {
   lastLedger: number;
   updatedAt: string;
 }
+
+export interface StreamServerEvent {
+  id: string;
+  streamId: string;
+  eventType: string;
+  ledger: number;
+  ledgerClosedAt: string;
+  data: Record<string, EventValue>;
+  stream?: Stream;
+}

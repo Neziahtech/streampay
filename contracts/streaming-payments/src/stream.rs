@@ -774,6 +774,78 @@ pub struct MigrationStatus {
     pub is_complete: bool,
 }
 
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " Pagination bounds for [`crate::StreamingPayments::withdraw_all`]: which slice of the"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " recipient's stream index to claim. `limit` is clamped to [`MAX_PAGE_SIZE`]; `0` means"
+)]
+#[cfg_attr(not(target_family = "wasm"), doc = " \"the largest page\".")]
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PageBounds {
+    pub offset: u32,
+    pub limit: u32,
+}
+
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " Total paid out in one asset by a [`crate::StreamingPayments::withdraw_all`] call."
+)]
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AssetTransfer {
+    pub token: Address,
+    pub amount: i128,
+}
+
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " A stream [`crate::StreamingPayments::withdraw_all`] skipped, with the numeric code of"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " the [`crate::StreamError`] that skipped it."
+)]
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaimFailure {
+    pub stream_id: u64,
+    pub error_code: u32,
+}
+
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " The answer of [`crate::StreamingPayments::withdraw_all`] for one page of the"
+)]
+#[cfg_attr(not(target_family = "wasm"), doc = " recipient's stream index.")]
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WithdrawAllResult {
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Payouts aggregated per asset: one token transfer each."
+    )]
+    pub transfers: Vec<AssetTransfer>,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Streams that paid out, in index order."
+    )]
+    pub successful_stream_ids: Vec<u64>,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Streams that were skipped, with the reason."
+    )]
+    pub failed_streams: Vec<ClaimFailure>,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Offset of the next page, or `None` once the index is exhausted."
+    )]
+    pub next_offset: Option<u32>,
+}
+
 #[cfg_attr(not(target_family = "wasm"), doc = " Storage keys for the contract.")]
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1814,9 +1886,19 @@ pub(crate) fn remove_from_index(env: &Env, key: &DataKey, id: u64) -> bool {
 /// Addresses with no index entry never had any streams: return early without
 /// touching storage (`extend_ttl` on a never-written key would fail).
 pub fn page_stream_ids(env: &Env, key: &DataKey, offset: u32, limit: u32) -> Vec<u64> {
+    page_stream_ids_with_len(env, key, offset, limit).0
+}
+
+/// [`page_stream_ids`] plus the full length of the index, from the same read.
+pub fn page_stream_ids_with_len(
+    env: &Env,
+    key: &DataKey,
+    offset: u32,
+    limit: u32,
+) -> (Vec<u64>, u32) {
     let storage = env.storage().persistent();
     let Some(ids): Option<Vec<u64>> = storage.get(key) else {
-        return Vec::new(env);
+        return (Vec::new(env), 0);
     };
     storage.extend_ttl(key, TTL_THRESHOLD_LEDGERS, TTL_EXTEND_LEDGERS);
 
@@ -1824,7 +1906,7 @@ pub fn page_stream_ids(env: &Env, key: &DataKey, offset: u32, limit: u32) -> Vec
     let end = start
         .saturating_add(limit.min(MAX_PAGE_SIZE))
         .min(ids.len());
-    ids.slice(start..end)
+    (ids.slice(start..end), ids.len())
 }
 
 /// Returns the current schema version (defaults to INITIAL_SCHEMA_VERSION if unset).

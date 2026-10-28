@@ -144,7 +144,7 @@ fuzz_target!(|input: Schedule| {
         end_time: max_end,
         cancelable: false,
         status: StreamStatus::Active,
-        use_oracle: false,
+        use_oracle: Some(false),
     };
 
     let now = (input.now as u64) % (COORDINATE_BOUND * 2);

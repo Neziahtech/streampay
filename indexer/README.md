@@ -87,6 +87,17 @@ Repeated events are safe and idempotent: event IDs are unique, preventing double
 }
 ```
 
+### Real-Time Event Stream (Server-Sent Events)
+`GET /events/stream[?address=<address>][&streamId=<id>][&lastEventId=<id>]`
+
+Streams live contract events as Server-Sent Events (`text/event-stream`). Supports address scoping, specific stream filtering, and resumption via `Last-Event-ID` header or query parameter. Emits heartbeat `: ping\n\n` frames every 15s.
+
+```http
+id: 0000000123456-00001
+event: stream_created
+data: {"id":"0000000123456-00001","streamId":"1","eventType":"stream_created","ledger":123456,"data":{...},"stream":{...}}
+```
+
 ### Recipient Stream Query (Frontend discovery)
 `GET /streams?recipient=<address>`
 
