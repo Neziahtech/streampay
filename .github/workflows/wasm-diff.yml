@@ -7,8 +7,10 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/wasm-diff.yml'
+      - '.github/workflows/wasm-diff-comment.yml'
       - '.github/actions/**'
       - '.github/scripts/**'
+      - 'scripts/wasm-report.mjs'
   workflow_dispatch:
 
 concurrency:
@@ -16,31 +18,22 @@ concurrency:
   cancel-in-progress: true
 
 # ==============================================================================
-# DISASSEMBLY TOOL CHOICE & JUSTIFICATION:
+# WASM ANALYSIS TOOL CHOICE & JUSTIFICATION:
 #
-# We select `wasm-objdump` (WebAssembly Binary Toolkit - WABT) combined with a
-# dedicated bytecode parser as our primary disassembly and analysis tooling.
+# We use `scripts/wasm-report.mjs --json` directly to inspect base and head Wasm
+# contract binaries with zero external dependencies.
 #
-# Why `wasm-objdump` over `wasm-dis` (Binaryen):
-# 1. Byte-level granularity: `wasm-objdump -d` parses the Wasm Code section and
-#    explicitly annotates each function body with its exact size in bytes (`size=N`)
-#    and binary file offset. In contrast, `wasm-dis` transforms bytecode into
-#    high-level S-expression WebAssembly Text (WAT), stripping section boundaries
-#    and function byte sizes.
-# 2. Stable, comparable function-level output: `wasm-objdump` outputs linear
-#    instruction streams with machine opcodes and operands, allowing direct,
-#    deterministic function-by-function comparison.
+# Why `wasm-report.mjs`:
+# 1. Byte-level granularity: `wasm-report.mjs` parses the Wasm binary format directly,
+#    extracting exact function body byte sizes from the Code section and mapping
+#    exported entrypoint names from the Export section.
+# 2. Zero unverified external dependencies: Eliminates unverified curl downloads
+#    for wabt, binaryen, or third-party disassemblers.
 # 3. Churn Normalization:
-#    NOTE ON NORMALIZATION ("SAME FUNCTIONS, OFFSET SHIFT" VS "NEW ROUTINE ADDED"):
-#    When an upstream routine is added or edited, downstream functions experience
-#    "offset and index churn" — their file offsets shift, function indices are
-#    renumbered, and compiler-generated mangled symbol hashes (`::h[0-9a-f]{16}`)
-#    change, despite their functional bytecode being 100% identical.
-#    Our diff action normalizes call target operands and strips compiler hash suffixes
-#    to fingerprint function bodies. Functions with shifted offsets but identical
-#    normalized bodies are classified as filtered churn (0 B delta) and omitted from
-#    the Top Movers table to prevent review fatigue. Only genuine function additions,
-#    removals, or byte growth/shrinkage are reported as true movers.
+#    Downstream functions often experience offset and index shifts when upstream
+#    routines are added or removed, despite having identical sizes.
+#    Our diff action matches exported entrypoint names and normalizes shifted
+#    function indices (0 B delta) as filtered churn to eliminate review fatigue.
 # ==============================================================================
 
 jobs:
@@ -49,8 +42,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write
-      issues: write
     steps:
       - name: Checkout Head (PR)
         uses: actions/checkout@v7
@@ -63,48 +54,9 @@ jobs:
           ref: ${{ github.base_ref || 'main' }}
           path: base-repo
 
-      - name: Install Rust toolchain (stable)
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32v1-none
-
-      - name: Install stellar-cli (pinned v28.1.0 with digest verification)
-        run: |
-          curl -fsSL https://github.com/stellar/stellar-cli/releases/download/v28.1.0/stellar-cli-28.1.0-x86_64-unknown-linux-gnu.tar.gz -o stellar-cli-28.1.0-x86_64-unknown-linux-gnu.tar.gz
-          sha256sum -c head-repo/digests/stellar-cli-28.1.0.sha256
-          tar xzf stellar-cli-28.1.0-x86_64-unknown-linux-gnu.tar.gz
-          sudo install stellar /usr/local/bin/stellar
-          rm -f stellar-cli-28.1.0-x86_64-unknown-linux-gnu.tar.gz stellar
-
-      - name: Install pinned wabt (wasm-objdump 1.0.34 with digest verification)
-        run: |
-          curl -fsSL https://github.com/WebAssembly/wabt/releases/download/1.0.34/wabt-1.0.34-ubuntu.tar.gz -o wabt-1.0.34-ubuntu.tar.gz
-          sha256sum -c head-repo/digests/wabt-1.0.34.sha256
-          tar xzf wabt-1.0.34-ubuntu.tar.gz
-          sudo install wabt-1.0.34/bin/wasm-objdump /usr/local/bin/wasm-objdump
-          rm -rf wabt-1.0.34 wabt-1.0.34-ubuntu.tar.gz
-
-      - name: Install pinned wasm-opt and wasm-dis (Binaryen version_122 with digest verification)
-        run: |
-          curl -fsSL https://github.com/WebAssembly/binaryen/releases/download/version_122/binaryen-version_122-x86_64-linux.tar.gz -o binaryen-version_122-x86_64-linux.tar.gz
-          sha256sum -c head-repo/digests/binaryen-122.sha256
-          tar xzf binaryen-version_122-x86_64-linux.tar.gz
-          sudo install binaryen-version_122/bin/wasm-opt /usr/local/bin/wasm-opt
-          sudo install binaryen-version_122/bin/wasm-dis /usr/local/bin/wasm-dis
-          rm -rf binaryen-version_122 binaryen-version_122-x86_64-linux.tar.gz
-
-      - name: Verify pinned toolchain versions (rustc, binaryen, stellar-cli, wabt)
-        run: |
-          echo "=== Pinned Toolchain Version Verification ==="
-          rustc --version
-          wasm-opt --version
-          wasm-objdump --version
-          stellar --version
-          echo "============================================="
-
       - name: Run Wasm Diff Unit Tests
         run: |
-          python -m unittest discover -s head-repo/.github/scripts -p "test_*.py"
+          python3 -m unittest discover -s head-repo/.github/scripts -p "test_*.py"
 
       - name: Cache cargo
         uses: actions/cache@v6
@@ -121,18 +73,34 @@ jobs:
         run: mkdir -p artifacts/base artifacts/head
 
       - name: Build Base Wasm
-        working-directory: base-repo/contracts/streaming-payments
+        working-directory: base-repo
         run: |
-          stellar contract build
-          cp ../../target/wasm32v1-none/release/streampay_contract.wasm ../../../artifacts/base/streampay_contract.wasm
-          sha256sum ../../../artifacts/base/streampay_contract.wasm
+          if command -v stellar >/dev/null 2>&1; then
+            (cd contracts/streaming-payments && stellar contract build)
+          else
+            SOROBAN_SDK_BUILD_SYSTEM_SUPPORTS_SPEC_SHAKING_V2=1 cargo build --target wasm32v1-none --release -p streampay-contract
+          fi
+          if [ -f target/wasm32v1-none/release/streampay_contract.wasm ]; then
+            cp target/wasm32v1-none/release/streampay_contract.wasm ../artifacts/base/streampay_contract.wasm
+          else
+            cp contracts/streaming-payments/../../target/wasm32v1-none/release/streampay_contract.wasm ../artifacts/base/streampay_contract.wasm
+          fi
+          sha256sum ../artifacts/base/streampay_contract.wasm
 
       - name: Build Head Wasm
-        working-directory: head-repo/contracts/streaming-payments
+        working-directory: head-repo
         run: |
-          stellar contract build
-          cp ../../target/wasm32v1-none/release/streampay_contract.wasm ../../../artifacts/head/streampay_contract.wasm
-          sha256sum ../../../artifacts/head/streampay_contract.wasm
+          if command -v stellar >/dev/null 2>&1; then
+            (cd contracts/streaming-payments && stellar contract build)
+          else
+            SOROBAN_SDK_BUILD_SYSTEM_SUPPORTS_SPEC_SHAKING_V2=1 cargo build --target wasm32v1-none --release -p streampay-contract
+          fi
+          if [ -f target/wasm32v1-none/release/streampay_contract.wasm ]; then
+            cp target/wasm32v1-none/release/streampay_contract.wasm ../artifacts/head/streampay_contract.wasm
+          else
+            cp contracts/streaming-payments/../../target/wasm32v1-none/release/streampay_contract.wasm ../artifacts/head/streampay_contract.wasm
+          fi
+          sha256sum ../artifacts/head/streampay_contract.wasm
 
       # Invoke the composite action: .github/actions/wasm-diff
       - name: Run Wasm Function Diff Action
@@ -149,45 +117,9 @@ jobs:
         run: |
           [ -f artifacts/wasm_diff_report.md ] && cat artifacts/wasm_diff_report.md >> $GITHUB_STEP_SUMMARY
 
-      - name: Post or Update PR Comment
-        uses: actions/github-script@v7
+      - name: Record PR Number
         if: always() && github.event_name == 'pull_request'
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const fs = require('fs');
-            const reportPath = 'artifacts/wasm_diff_report.md';
-            if (!fs.existsSync(reportPath)) {
-              core.setFailed(`Report file ${reportPath} not found`);
-              return;
-            }
-            const reportBody = fs.readFileSync(reportPath, 'utf8');
-            const botMarker = '<!-- wasm-diff-report -->';
-
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-            });
-
-            const existingComment = comments.find(c => c.body && c.body.includes(botMarker));
-            if (existingComment) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existingComment.id,
-                body: reportBody,
-              });
-              console.log(`Updated existing PR comment ID: ${existingComment.id}`);
-            } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body: reportBody,
-              });
-              console.log('Created new PR comment');
-            }
+        run: echo "${{ github.event.pull_request.number }}" > artifacts/pr_number
 
       - name: Enforce Wasm Size Budget
         shell: bash

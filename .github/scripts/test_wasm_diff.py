@@ -2,13 +2,15 @@
 """
 Unit test suite for wasm_diff.py and format_report.py.
 Validates:
-- Rust symbol demangling (legacy _ZN and v0 _R, stripping compiler hash)
-- Accurate Wasm binary parsing & function byte measurement
-- Turbopack-style churn normalization (offset/index/hash shift) vs real growth
+- Rust symbol demangling (legacy _ZN and v0 _R, preserving compiler hash)
+- Accurate Wasm binary parsing & function byte measurement via wasm-report.mjs --json
+- Churn normalization (offset/index shift) vs real growth
 - Top movers identification and markdown table rendering
 """
 
+import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -18,12 +20,14 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from format_report import render_markdown_report
 from wasm_diff import (
+    FunctionDiff,
     WasmFunction,
-    compute_body_fingerprint,
     demangle_symbol,
     diff_wasm_functions,
+    find_wasm_report_script,
     parse_wasm_functions,
     run_wasm_diff,
+    run_wasm_report_mjs,
 )
 
 
@@ -154,83 +158,33 @@ class TestWasmDiff(unittest.TestCase):
         self.assertTrue(d1.endswith("::h1111111111111111"))
         self.assertTrue(d2.endswith("::h2222222222222222"))
 
-    def test_negative_churn_detection(self):
-        """
-        Negative test case:
-        Asserts that call 5 -> call 6 is NOT labeled as CHURN (it is MODIFIED),
-        and local.get 0 -> local.get 3 is NOT labeled as CHURN (it is MODIFIED).
-        Also verifies operand bytes in instructions (e.g. memarg) are not misread as opcodes.
-        """
-        # Test 1: call 5 (0x10 0x05) -> call 6 (0x10 0x06)
-        body_call5 = b"\x00\x10\x05\x0b"
-        body_call6 = b"\x00\x10\x06\x0b"
-        self.assertEqual(len(body_call5), len(body_call6), "Equal size deltas")
+    def test_wasm_report_mjs_json_output(self):
+        """Asserts that scripts/wasm-report.mjs --json correctly parses Wasm binaries."""
+        body1 = b"\x00\x01\x0b"  # 3 bytes
+        body2 = b"\x00\x41\x2a\x0b"  # 4 bytes
 
-        base_wasm_call = build_test_wasm(
-            functions=[body_call5],
-            names={0: "streampay_contract::invoke_call"},
-        )
-        head_wasm_call = build_test_wasm(
-            functions=[body_call6],
-            names={0: "streampay_contract::invoke_call"},
+        wasm_bytes = build_test_wasm(
+            functions=[body1, body2],
+            exports={0: "create_stream", 1: "cancel_stream"},
         )
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            base_p = os.path.join(tmpdir, "base_call.wasm")
-            head_p = os.path.join(tmpdir, "head_call.wasm")
-            with open(base_p, "wb") as f:
-                f.write(base_wasm_call)
-            with open(head_p, "wb") as f:
-                f.write(head_wasm_call)
+        with tempfile.NamedTemporaryFile(suffix=".wasm", delete=False) as f:
+            f.write(wasm_bytes)
+            wasm_path = f.name
 
-            res = run_wasm_diff(base_wasm=base_p, head_wasm=head_p)
-            diffs = res["all_diffs"]
-            self.assertEqual(len(diffs), 1)
-            # call 5 -> call 6 changed function logic: MUST NOT be labeled as CHURN
-            self.assertNotEqual(diffs[0]["status"], "CHURN")
-            self.assertEqual(diffs[0]["status"], "MODIFIED")
-            self.assertFalse(diffs[0]["is_churn"])
-
-        # Test 2: local.get 0 (0x20 0x00) -> local.get 3 (0x20 0x03)
-        body_local0 = b"\x00\x20\x00\x0b"
-        body_local3 = b"\x00\x20\x03\x0b"
-        self.assertEqual(len(body_local0), len(body_local3), "Equal size deltas")
-
-        # Ensure normalized fingerprints differ because local indices are preserved
-        fp_local0 = compute_body_fingerprint(body_local0)
-        fp_local3 = compute_body_fingerprint(body_local3)
-        self.assertNotEqual(fp_local0, fp_local3, "Fingerprints for local.get 0 vs local.get 3 must not match")
-
-        base_wasm_local = build_test_wasm(
-            functions=[body_local0],
-            names={0: "streampay_contract::get_val"},
-        )
-        head_wasm_local = build_test_wasm(
-            functions=[body_local3],
-            names={0: "streampay_contract::get_val"},
-        )
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            base_p = os.path.join(tmpdir, "base_local.wasm")
-            head_p = os.path.join(tmpdir, "head_local.wasm")
-            with open(base_p, "wb") as f:
-                f.write(base_wasm_local)
-            with open(head_p, "wb") as f:
-                f.write(head_wasm_local)
-
-            res = run_wasm_diff(base_wasm=base_p, head_wasm=head_p)
-            diffs = res["all_diffs"]
-            self.assertEqual(len(diffs), 1)
-            # local.get 0 -> local.get 3 changed local index: MUST NOT be labeled as CHURN
-            self.assertNotEqual(diffs[0]["status"], "CHURN")
-            self.assertEqual(diffs[0]["status"], "MODIFIED")
-            self.assertFalse(diffs[0]["is_churn"])
-
-        # Test 3: Operands must not be misread as opcodes
-        # 0x28 is i32.load; align=0x10, offset=0x20 (0x10 is call opcode, 0x20 is local.get opcode)
-        body_mem = b"\x00\x28\x10\x20\x0b"
-        fp_mem = compute_body_fingerprint(body_mem)
-        self.assertTrue(isinstance(fp_mem, str) and len(fp_mem) == 64)
+        try:
+            report = run_wasm_report_mjs(wasm_path)
+            self.assertIn("total_bytes", report)
+            self.assertIn("sections", report)
+            self.assertIn("functions", report)
+            self.assertEqual(len(report["functions"]), 2)
+            self.assertEqual(report["functions"][0]["name"], "create_stream")
+            self.assertEqual(report["functions"][0]["size"], 3)
+            self.assertEqual(report["functions"][1]["name"], "cancel_stream")
+            self.assertEqual(report["functions"][1]["size"], 4)
+        finally:
+            if os.path.exists(wasm_path):
+                os.remove(wasm_path)
 
     def test_churn_vs_real_growth_detection(self):
         # Body A: 0 locals, nop, end (3 bytes)
@@ -239,19 +193,18 @@ class TestWasmDiff(unittest.TestCase):
         body_math = b"\x00\x41\x05\x41\x0a\x6a\x1a\x01\x0b"
         # Body B grown: additional operations (25 bytes)
         body_math_grown = b"\x00\x41\x05\x41\x0a\x6a\x41\x02\x6c\x41\x03\x6a\x41\x04\x6a\x1a\x01\x0b"
-        # Body C: will be removed
+        # Body C: will be removed (4 bytes)
         body_removed = b"\x00\x41\x01\x0b"
         # Body D: new bloat function (50 bytes)
         body_bloat = b"\x00" + (b"\x01" * 48) + b"\x0b"
 
         # Build Base Wasm:
         # func 0: create_stream (unchanged body)
-        # func 1: streampay_contract::stream::streamed_at::h1111 (math body)
-        # func 2: streampay_contract::helpers::to_remove (removed body)
+        # func 1: streamed_at (math body)
+        # func 2: to_remove (removed body)
         base_bytes = build_test_wasm(
             functions=[body_unchanged, body_math, body_removed],
-            exports={0: "create_stream"},
-            names={
+            exports={
                 0: "create_stream",
                 1: "_ZN18streampay_contract6stream11streamed_at17h1111111111111111E",
                 2: "_ZN18streampay_contract7helpers9to_remove17h3333333333333333E",
@@ -260,13 +213,12 @@ class TestWasmDiff(unittest.TestCase):
 
         # Build Head Wasm:
         # func 0: bloat function added at front! (causing offsets and indices to shift!)
-        # func 1: create_stream (same body as old func 0, but offset shifted -> TURBOPACK CHURN!)
-        # func 2: streampay_contract::stream::streamed_at::h1111 (grown body, matching name!)
-        # func 2 to_remove is gone! (REMOVED)
+        # func 1: create_stream (same body as old func 0, but offset shifted -> CHURN!)
+        # func 2: streamed_at (grown body, matching name!)
+        # func to_remove is gone! (REMOVED)
         head_bytes = build_test_wasm(
             functions=[body_bloat, body_unchanged, body_math_grown],
-            exports={1: "create_stream", 0: "bloat_demo_function"},
-            names={
+            exports={
                 0: "bloat_demo_function",
                 1: "create_stream",
                 2: "_ZN18streampay_contract6stream11streamed_at17h1111111111111111E",
@@ -331,33 +283,31 @@ class TestWasmDiff(unittest.TestCase):
 
         base_wasm = build_test_wasm(
             functions=[body_a, body_b, body_c],
-            names={
-                0: "streampay_contract::fn_alpha",
-                1: "streampay_contract::fn_beta",
-                2: "streampay_contract::fn_gamma",
+            exports={
+                0: "fn_alpha",
+                1: "fn_beta",
+                2: "fn_gamma",
             },
         )
 
-        # Order 1: alpha expanded, beta unchanged, gamma removed, delta added
         body_a_grown = b"\x00\x41\x05\x41\x02\x6c\x0b"
         body_d_new = b"\x00\x41\x63\x0b"
 
         head_wasm_order1 = build_test_wasm(
             functions=[body_a_grown, body_b, body_d_new],
-            names={
-                0: "streampay_contract::fn_alpha",
-                1: "streampay_contract::fn_beta",
-                2: "streampay_contract::fn_delta",
+            exports={
+                0: "fn_alpha",
+                1: "fn_beta",
+                2: "fn_delta",
             },
         )
 
-        # Order 2: reversed function order in head binary
         head_wasm_order2 = build_test_wasm(
             functions=[body_d_new, body_b, body_a_grown],
-            names={
-                0: "streampay_contract::fn_delta",
-                1: "streampay_contract::fn_beta",
-                2: "streampay_contract::fn_alpha",
+            exports={
+                0: "fn_delta",
+                1: "fn_beta",
+                2: "fn_alpha",
             },
         )
 
@@ -391,13 +341,54 @@ class TestWasmDiff(unittest.TestCase):
                 [m["delta"] for m in res2["top_movers"]],
             )
 
-            # Markdown reports must be identical
             with open(md_p1, "r", encoding="utf-8") as f:
                 md1_content = f.read()
             with open(md_p2, "r", encoding="utf-8") as f:
                 md2_content = f.read()
 
             self.assertEqual(md1_content, md2_content, "Reports must be identical regardless of function ordering")
+
+    def test_direct_json_diff(self):
+        """Tests diffing two pre-computed wasm-report.mjs --json reports directly."""
+        base_json = {
+            "file": "base.wasm",
+            "total_bytes": 1000,
+            "sections": [{"name": "code", "size": 600}],
+            "functions": [
+                {"index": 0, "size": 100, "name": "create_stream"},
+                {"index": 1, "size": 200, "name": "cancel_stream"},
+                {"index": 2, "size": 50, "name": None},
+            ],
+            "named_function_bytes": 300,
+        }
+        head_json = {
+            "file": "head.wasm",
+            "total_bytes": 1150,
+            "sections": [{"name": "code", "size": 750}],
+            "functions": [
+                {"index": 0, "size": 80, "name": "new_helper"},
+                {"index": 1, "size": 100, "name": "create_stream"},  # shifted index, same size -> CHURN
+                {"index": 2, "size": 250, "name": "cancel_stream"},  # grown by 50
+                {"index": 3, "size": 50, "name": None},  # internal helper
+            ],
+            "named_function_bytes": 430,
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base_p = os.path.join(tmpdir, "base.json")
+            head_p = os.path.join(tmpdir, "head.json")
+            with open(base_p, "w", encoding="utf-8") as f:
+                json.dump(base_json, f)
+            with open(head_p, "w", encoding="utf-8") as f:
+                json.dump(head_json, f)
+
+            res = run_wasm_diff(base_wasm=base_p, head_wasm=head_p)
+            summary = res["summary"]
+            self.assertEqual(summary["total_delta"], 150)
+            self.assertEqual(summary["code_delta"], 150)
+            self.assertEqual(summary["counts"]["new"], 1)  # new_helper
+            self.assertEqual(summary["counts"]["grown"], 1)  # cancel_stream (+50)
+            self.assertEqual(summary["counts"]["churn"], 2)  # create_stream and func[3] (both shifted indices)
 
 
 if __name__ == "__main__":

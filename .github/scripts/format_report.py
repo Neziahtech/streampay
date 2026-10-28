@@ -147,11 +147,9 @@ def render_markdown_report(diff_data: Dict[str, Any]) -> str:
         "- **Turbopack-style churn**: Same functions with shifted offsets/relocations (0 net byte growth). Filtered out of Top Movers to eliminate review fatigue.",
         "- **Real changes**: True function byte expansion/reduction (`GROWN` / `SHRUNK`), genuine additions/deletions (`NEW` / `REMOVED`), and equal-size modifications (`MODIFIED`).",
         "",
-        "**Disassembly Tool Choice**:",
-        "- Disassembly engine: `wasm-objdump` (WebAssembly Binary Toolkit - `wabt`) / Direct Wasm Code section analyzer.",
-        "- *Justification*: `wasm-objdump` reads exact binary Code section boundaries and byte lengths (`size=N`) directly from the Wasm binary. "
-        "Unlike `wasm-dis` (which outputs S-expression WAT text without function byte sizes or offsets), `wasm-objdump` gives "
-        "exact byte-level granularity required for accurate function diffing.",
+        "**Wasm Analysis Tool**:",
+        "- Analysis engine: `scripts/wasm-report.mjs` directly parses the Wasm binary format with zero external dependencies.",
+        "- *Justification*: `wasm-report.mjs` extracts exact Code section function body sizes and maps exported entrypoint names, eliminating unverified external toolchain downloads.",
         "</details>",
         "",
         "---",
