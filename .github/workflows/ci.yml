@@ -654,3 +654,22 @@ jobs:
       - name: Error catalog is up to date
         run: bash scripts/check_generated.sh catalog
 
+  benchmarks:
+    name: Benchmarks — protocol comparison & regression defense
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Benchmark freshness & regression check
+        run: npm run benchmark:verify
+
+

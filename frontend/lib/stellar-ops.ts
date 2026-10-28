@@ -78,3 +78,50 @@ export function buildWithdrawOperation(
     i128(amount)
   );
 }
+
+export function buildWithdrawMaxOperation(
+  contractId: string,
+  streamId: string
+): xdr.Operation {
+  return new Contract(contractId).call("withdraw_max", u64(streamId));
+}
+
+export function buildCancelStreamOperation(
+  contractId: string,
+  sender: string,
+  streamId: string
+): xdr.Operation {
+  return new Contract(contractId).call(
+    "cancel_stream",
+    scAddr(sender),
+    u64(streamId)
+  );
+}
+
+export function pageBoundsScVal(bounds?: { offset: number; limit: number }): xdr.ScVal {
+  if (!bounds) {
+    return xdr.ScVal.scvVoid();
+  }
+  return xdr.ScVal.scvMap([
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol("limit"),
+      val: u32(bounds.limit),
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol("offset"),
+      val: u32(bounds.offset),
+    }),
+  ]);
+}
+
+export function buildWithdrawAllOperation(
+  contractId: string,
+  recipient: string,
+  pageBounds?: { offset: number; limit: number }
+): xdr.Operation {
+  return new Contract(contractId).call(
+    "withdraw_all",
+    scAddr(recipient),
+    pageBoundsScVal(pageBounds)
+  );
+}

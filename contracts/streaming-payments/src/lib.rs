@@ -14,6 +14,8 @@
 //! - [`StreamingPayments::withdraw`] — recipient claims accrued funds
 //! - [`StreamingPayments::withdraw_max`] — recipient claims *all* accrued
 //!   funds in one atomic call
+//! - [`StreamingPayments::withdraw_all`] — recipient batch-claims accrued
+//!   funds across all streams with pagination and asset aggregation
 //! - [`StreamingPayments::cancel_stream`] — sender (or recipient, if the
 //!   stream is `cancelable`) closes the stream with a pro-rata split
 //! - [`StreamingPayments::top_up`] — add funds to a running stream
@@ -74,6 +76,8 @@ mod policy;
 mod schedule;
 #[cfg(test)]
 mod schedule_test;
+#[cfg(test)]
+mod schema_guard_test;
 pub(crate) mod sponsor;
 #[cfg(test)]
 mod signing_conformance_test;
@@ -115,10 +119,15 @@ pub use sponsor::{PeriodSpend, SponsorConfig};
 // `streamed_at` is re-exported for the fuzz target and downstream rate
 // calculators: it is a pure function requiring no `Env`.
 pub use stream::{
-    streamed_at, BatchEntry, MigrationStatus, OwnershipRole, PendingOwnership, PendingUpgrade,
-    Stream, StreamStatus, INITIAL_SCHEMA_VERSION, MAX_BATCH, MAX_DURATION_SECONDS,
-    MAX_MIGRATION_BATCH_SIZE, MAX_PAGE_SIZE, MIN_BATCH, MIN_UPGRADE_DELAY_SECONDS,
-    OWNERSHIP_PROPOSAL_TTL_SECONDS, TARGET_SCHEMA_VERSION,
+    streamed_amount_at_segments, streamed_at, AssetTransfer, BatchEntry, ClaimFailure,
+    MigrationStatus, OwnershipRole, PageBounds, PendingOwnership, PendingRateChange,
+    PendingSenderTransfer, PendingUpgrade, RateSegment, SenderHistory, SenderTransferRecord,
+    Stream, StreamStatus, StreamVersionReport, VersionedStream, WithdrawAllResult, WithdrawEntry,
+    WithdrawOutcome, CURRENT_STREAM_RECORD_VERSION, INITIAL_SCHEMA_VERSION, MAX_BATCH,
+    MAX_DURATION_SECONDS, MAX_MIGRATION_BATCH_SIZE, MAX_PAGE_SIZE, MAX_RATE_SEGMENTS,
+    MAX_WITHDRAW_BATCH, MIN_BATCH, MIN_UPGRADE_DELAY_SECONDS, OWNERSHIP_PROPOSAL_TTL_SECONDS,
+    RATE_PROPOSAL_TTL_SECONDS, STREAM_RECORD_VERSION_V1, STREAM_RECORD_VERSION_V2,
+    TARGET_SCHEMA_VERSION,
 };
 pub use treasury::{fee_amount, FeeScan, Treasury, TreasuryStatus, BPS_DENOMINATOR, MAX_FEE_BPS};
 
@@ -799,6 +808,377 @@ impl StreamingPayments {
         Ok(amount)
     }
 
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Claims the entire accrued balance of up to [`MAX_WITHDRAW_BATCH`] streams"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " in one transaction, through the exact single-stream claim path."
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = "")]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Every entry runs [`Self::settle_accrued`] — the same function"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " `withdraw_max` uses — so the batch inherits the CEI ordering, accrual"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " math, TTL extension and per-stream [`Withdrawn`] event of the audited"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " single path instead of restating any of it. One authorization covers the"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " batch: the caller must be the recipient of *every* stream listed, so a"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " holder can never claim a counterparty's stream by adding its id"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " (rejected per-entry with [`StreamError::NotAuthorized`])."
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = "")]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " **Per-entry isolation.** A stream that fails a pre-payout check — not"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " found, not yours, not active, nothing accrued, overflow — comes back as a"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " [`WithdrawEntry`] carrying that error's code and `amount: 0`, and is"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " *skipped*: its siblings still pay out. Payout failures are the deliberate"
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = " exception:")]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " [`StreamError::RecipientPayoutFailed`] aborts the whole call, because"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " the effects of a claim (the `withdrawn` update, the `Withdrawn` event)"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " are written *before* the token interaction, as CEI requires, and a"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " published event cannot be un-published. Skipping a failed payout would"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " therefore mean un-writing state after an external call — the exact"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " reentrancy hazard the ordering exists to prevent. Aborting instead lets"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " the host roll the transaction back as if it never ran."
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = "")]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " **`strict`.** `false` (the default behaviour) keeps partial success: the"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " call settles what it can and reports the rest. `true` turns any"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " per-entry rejection into a revert of the whole call, returning that"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " error, so an all-or-nothing claim either settles every stream or none."
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = "")]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The call reverts before reading any state when `stream_ids` is empty"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " ([`StreamError::WithdrawBatchEmpty`]), longer than"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " [`MAX_WITHDRAW_BATCH`] ([`StreamError::WithdrawBatchTooLarge`]), or"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " contains a repeated id ([`StreamError::WithdrawDuplicateStreamIds`]) —"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " a duplicate would otherwise claim against state its first occurrence has"
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = " already rewritten.")]
+    pub fn withdraw_many(
+        env: Env,
+        recipient: Address,
+        stream_ids: Vec<u64>,
+        strict: bool,
+    ) -> Result<Vec<WithdrawEntry>, StreamError> {
+        let count = stream_ids.len();
+        if count == 0 {
+            return Err(surface::reject(Branch::WithdrawManyEmpty));
+        }
+        if count > stream::MAX_WITHDRAW_BATCH {
+            return Err(surface::reject(Branch::WithdrawManyTooLarge));
+        }
+        let mut seen = Vec::new(&env);
+        for id in stream_ids.iter() {
+            if seen.contains(id) {
+                return Err(surface::reject(Branch::WithdrawManyDuplicateIds));
+            }
+            seen.push_back(id);
+        }
+
+        Self::require_not_frozen(&env)?;
+        recipient.require_auth();
+
+        let mut entries = Vec::new(&env);
+        let mut paid = Vec::new(&env);
+        let mut total: i128 = 0;
+        let mut skipped: u32 = 0;
+        for id in stream_ids.iter() {
+            let result = Self::authorize_batch_withdrawal(&env, id, &recipient)
+                .and_then(|mut s| Self::settle_accrued(&env, id, &mut s));
+            if strict {
+                // Any per-entry rejection aborts the batch, so the entries that
+                // already settled are rolled back with it.
+                if let Err(error) = &result {
+                    return Err(*error);
+                }
+            } else if result == Err(StreamError::RecipientPayoutFailed) {
+                // The one error that cannot be reported per entry. This entry's
+                // effects — the `withdrawn` update and the `Withdrawn` event —
+                // were written before the token was called, as CEI requires,
+                // and neither can be un-written nor un-published for a single
+                // entry. Reporting it as a skip would leave the ledger claiming
+                // that money left when nothing moved, so the whole call
+                // reverts and the host discards every entry's effects instead.
+                return Err(StreamError::RecipientPayoutFailed);
+            }
+            let entry = match result {
+                Ok(amount) => {
+                    total = total
+                        .checked_add(amount)
+                        .ok_or_else(|| surface::reject(Branch::WithdrawManyTotalOverflow))?;
+                    paid.push_back(WithdrawOutcome {
+                        stream_id: id,
+                        amount,
+                    });
+                    WithdrawEntry {
+                        stream_id: id,
+                        amount,
+                        code: 0,
+                    }
+                }
+                Err(error) => {
+                    skipped += 1;
+                    WithdrawEntry {
+                        stream_id: id,
+                        amount: 0,
+                        code: error.code(),
+                    }
+                }
+            };
+            entries.push_back(entry);
+        }
+
+        #[cfg(test)]
+        cei_trace::record("event BatchWithdrawSummary");
+        BatchWithdrawSummary {
+            settled: paid.clone(),
+            total,
+            requested: count,
+            skipped,
+            recipient,
+        }
+        .publish(&env);
+
+        Ok(entries)
+    }
+
+    /// Shared claim tail for `withdraw_max` and every `withdraw_many` entry:
+    /// resolve the stream's clock, take the whole accrued-but-unwithdrawn
+    /// balance, and pay it out. Takes the already-authorized stream so the two
+    /// entrypoints differ only in how they authorize.
+    fn settle_accrued(env: &Env, stream_id: u64, s: &mut Stream) -> Result<i128, StreamError> {
+        let amount = Self::accrued_balance(env, stream_id, s)?;
+        Self::pay_out(env, s, amount)?;
+        Ok(amount)
+    }
+
+    /// The whole accrued-but-unwithdrawn balance at the stream's own clock;
+    /// `NothingToWithdraw` when it is zero.
+    fn accrued_balance(env: &Env, stream_id: u64, s: &Stream) -> Result<i128, StreamError> {
+        let resolved = oracle::resolve_stream_time(env, stream_id, s.uses_oracle());
+        let amount = stream::available_amount_with_plan(env, s, resolved.timestamp)?;
+        if amount <= 0 {
+            return Err(surface::reject(Branch::WithdrawMaxNothingToWithdraw));
+        }
+        Ok(amount)
+    }
+
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Claims every stream on one page of the recipient's index in one transaction,"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " paying one aggregated transfer per asset instead of one per stream."
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = "")]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The page is `page_bounds` (default: offset 0, [`MAX_PAGE_SIZE`] streams; a"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " `limit` of 0 or above the cap is clamped to it), which keeps a call under the"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " ledger-entry limit. `next_offset` is `Some` while the index has more streams."
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = "")]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Each stream goes through the same checks and accrual math as `withdraw_max`."
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " A stream that fails one of them before paying (not yours, not active, nothing"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " accrued, overflow) is reported in `failed_streams` and skipped; the others"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " still pay. As in `withdraw_many`, a refused token transfer is the exception:"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " state and `Withdrawn` events are written before tokens move, so"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " [`StreamError::RecipientPayoutFailed`] reverts the whole call."
+    )]
+    pub fn withdraw_all(
+        env: Env,
+        recipient: Address,
+        page_bounds: Option<PageBounds>,
+    ) -> Result<WithdrawAllResult, StreamError> {
+        Self::require_not_frozen(&env)?;
+        recipient.require_auth();
+
+        let offset = page_bounds.map(|b| b.offset).unwrap_or(0);
+        let limit = match page_bounds.map(|b| b.limit) {
+            None | Some(0) => stream::MAX_PAGE_SIZE,
+            Some(l) => l.min(stream::MAX_PAGE_SIZE),
+        };
+
+        let key = stream::DataKey::RecipientStreams(recipient.clone());
+        let (stream_ids, total_count) = stream::page_stream_ids_with_len(&env, &key, offset, limit);
+        let end = offset.saturating_add(stream_ids.len());
+        let next_offset = if end < total_count { Some(end) } else { None };
+
+        let mut transfers: Vec<AssetTransfer> = Vec::new(&env);
+        let mut successful_stream_ids = Vec::new(&env);
+        let mut failed_streams = Vec::new(&env);
+
+        // Checks and effects for every stream first; no tokens move in this loop.
+        for id in stream_ids.iter() {
+            let claim = Self::authorize_batch_withdrawal(&env, id, &recipient).and_then(|mut s| {
+                let amount = Self::accrued_balance(&env, id, &s)?;
+                let slot = transfers.iter().position(|t| t.token == s.token);
+                let total = slot
+                    .map_or(Some(amount), |i| {
+                        transfers.get_unchecked(i as u32).amount.checked_add(amount)
+                    })
+                    .ok_or_else(|| surface::reject(Branch::WithdrawManyTotalOverflow))?;
+                Self::record_payout(&env, &mut s, amount)?;
+                let transfer = AssetTransfer {
+                    token: s.token.clone(),
+                    amount: total,
+                };
+                match slot {
+                    Some(i) => transfers.set(i as u32, transfer),
+                    None => transfers.push_back(transfer),
+                }
+                Ok(())
+            });
+            match claim {
+                Ok(()) => successful_stream_ids.push_back(id),
+                Err(error) => failed_streams.push_back(ClaimFailure {
+                    stream_id: id,
+                    error_code: error.code(),
+                }),
+            }
+        }
+
+        // Interactions: one transfer per asset. A refusal reverts everything above.
+        for t in transfers.iter() {
+            push(
+                &env,
+                &t.token,
+                &stream::muxed(&recipient),
+                t.amount,
+                Branch::RecipientPayoutFailed,
+            )?;
+        }
+
+        Ok(WithdrawAllResult {
+            transfers,
+            successful_stream_ids,
+            failed_streams,
+            next_offset,
+        })
+    }
+
+    /// Batch-mode authorization: the stream must exist, belong to the batch
+    /// caller, and be active.
+    ///
+    /// The identity check runs *before* any authorization is required, because
+    /// a `require_auth` failure for a stranger's recipient aborts the whole
+    /// transaction rather than producing a per-entry error — the batch could
+    /// not report the offending entry if it got that far.
+    fn authorize_batch_withdrawal(
+        env: &Env,
+        stream_id: u64,
+        recipient: &Address,
+    ) -> Result<Stream, StreamError> {
+        let s = stream::get_stream(env, stream_id)?;
+        if &s.recipient != recipient {
+            return Err(surface::reject(Branch::WithdrawManyNotStreamRecipient));
+        }
+        if s.status != StreamStatus::Active {
+            return Err(surface::reject(Branch::StreamNotActive));
+        }
+        Ok(s)
+    }
+
     /// Shared preamble for both withdrawal paths: load the stream, require
     /// the recipient's authorization, and reject terminal streams.
     fn authorize_withdrawal(env: &Env, stream_id: u64) -> Result<Stream, StreamError> {
@@ -814,6 +1194,19 @@ impl StreamingPayments {
     /// interactions ordered: record `withdrawn` and emit the event *before*
     /// moving tokens, so a reentrant token callback can never double-spend.
     fn pay_out(env: &Env, s: &mut Stream, amount: i128) -> Result<(), StreamError> {
+        Self::record_payout(env, s, amount)?;
+        push(
+            env,
+            &s.token,
+            &stream::muxed(&s.recipient),
+            amount,
+            Branch::RecipientPayoutFailed,
+        )
+    }
+
+    /// The checks-effects half of [`Self::pay_out`]: books `amount` as withdrawn
+    /// and emits `Withdrawn`. The caller owes the recipient the token transfer.
+    fn record_payout(env: &Env, s: &mut Stream, amount: i128) -> Result<(), StreamError> {
         s.withdrawn = s
             .withdrawn
             .checked_add(amount)
@@ -832,14 +1225,7 @@ impl StreamingPayments {
             withdrawn_total: s.withdrawn,
         }
         .publish(env);
-
-        push(
-            env,
-            &s.token,
-            &stream::muxed(&s.recipient),
-            amount,
-            Branch::RecipientPayoutFailed,
-        )
+        Ok(())
     }
 
     /// Cancels a stream: pays the recipient their accrued-but-unwithdrawn

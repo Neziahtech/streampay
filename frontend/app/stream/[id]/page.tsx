@@ -2,7 +2,6 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getAddress, isConnected } from "@stellar/freighter-api";
 import {
   cancelStream,
   describeError,
@@ -23,6 +22,7 @@ import {
   type SponsorView,
   type StreamView,
 } from "@/lib/stellar";
+import { useStreamEvents } from "@/lib/useStreamEvents";
 import {
   INITIAL_STATE,
   startLiveAccrual,
@@ -42,12 +42,14 @@ import {
   type ClaimIntent,
 } from "@/lib/sponsor";
 import { useToast } from "@/components/toast";
+import { useWallet } from "@/lib/wallet-context";
 import { validateWithdrawal } from "@/lib/withdrawal";
 import { formatAmount } from "@/lib/format";
 import DiscoveryConsentModal from "@/components/DiscoveryConsentModal";
 
 export default function StreamDetail() {
   const toast = useToast();
+  const { address, signTransaction } = useWallet();
   const params = useParams<{ id: string }>();
   const id = params?.id ?? "";
 
@@ -56,7 +58,6 @@ export default function StreamDetail() {
   const [assetMeta, setAssetMeta] = useState<AssetMeta | null>(null);
   const [amount, setAmount] = useState<string>("");
   const [isAmountDirty, setIsAmountDirty] = useState(false);
-  const [address, setAddress] = useState<string | null>(null);
   const engineRef = useRef<LiveAccrual | null>(null);
   const [status, setStatus] = useState<string>("");
   const [error, setError] = useState<string>("");
@@ -110,6 +111,13 @@ export default function StreamDetail() {
     };
   }, [id]);
 
+  // Re-read the stream through the live-accrual engine — the same path the
+  // Refresh button and the post-claim updates take. The SSE feed and its
+  // polling fallback call this when an event for this stream lands.
+  const reload = useCallback(async () => {
+    await engineRef.current?.refresh();
+  }, []);
+
   // displayAvailable is the guarded live counter (contract-available + one
   // epsilon at most). Submission decisions and client-side guards are
   // strictly validated against `available`, the canonical simulate-at-ledger
@@ -132,22 +140,27 @@ export default function StreamDetail() {
     }
   }, [available, isAmountDirty]);
 
+  // Live real-time stream push via SSE with polling fallback when disconnected
+  const streamAddress = address || stream?.recipient || stream?.sender || null;
+
+  const { isLive } = useStreamEvents({
+    address: streamAddress,
+    streamId: id,
+    enabled: Boolean(id && streamAddress),
+    onEvent: (event) => {
+      if (event.streamId === id) {
+        void reload();
+      }
+    },
+    onFallbackPoll: reload,
+    fallbackPollIntervalMs: 15_000,
+  });
+
   useEffect(() => {
     if (live.error) toast.error(describeError(live.error));
   }, [live.error, toast]);
 
-  useEffect(() => {
-    void (async () => {
-      try {
-        if (await isConnected()) {
-          const { address } = await getAddress();
-          setAddress(address);
-        }
-      } catch {
-        // Detail view stays read-only without a wallet.
-      }
-    })();
-  }, []);
+  // address and signTransaction come from WalletContext — no useEffect needed.
 
   const loadSponsorship = useCallback(async (beneficiary: string) => {
     if (!SPONSOR_ADDRESS) return;
@@ -222,7 +235,7 @@ export default function StreamDetail() {
     setSubmitting(true);
     try {
       if (max) {
-        const paid = await withdrawMaxFromStream(address, stream!.id);
+        const paid = await withdrawMaxFromStream(address, stream!.id, signTransaction);
         const paidStr = assetMeta
           ? `${formatAmount(paid, assetMeta.decimals)} ${assetMeta.code}`
           : `${paid} units`;
@@ -241,7 +254,7 @@ export default function StreamDetail() {
           );
           return;
         }
-        await withdrawFromStream(address, stream!.id, validation.amount.toString());
+        await withdrawFromStream(address, stream!.id, validation.amount.toString(), signTransaction);
         const withdrewStr = assetMeta
           ? `${formatAmount(validation.amount, assetMeta.decimals)} ${assetMeta.code}`
           : `${validation.amount} units`;
@@ -264,7 +277,7 @@ export default function StreamDetail() {
     setStatus("");
     setBusy(true);
     try {
-      await enrollBeneficiary(address, consentPub);
+      await enrollBeneficiary(address, consentPub, signTransaction);
       setStatus("Consent key enrolled — you can now claim without paying gas.");
       await loadSponsorship(address);
     } catch (e) {
@@ -324,7 +337,7 @@ export default function StreamDetail() {
     if (!address) return;
     setSubmitting(true);
     try {
-      await cancelStream(address, stream!.id);
+      await cancelStream(address, stream!.id, signTransaction);
       toast.success("Stream cancelled.");
       await engineRef.current?.refresh();
     } catch (e) {
@@ -343,7 +356,36 @@ export default function StreamDetail() {
 
   return (
     <main className="wrap">
-      <p className="kicker mono">STREAM #{stream.id}</p>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <p className="kicker mono">STREAM #{stream.id}</p>
+        {isLive && (
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "6px",
+              color: "#4ade80",
+              background: "rgba(74, 222, 128, 0.1)",
+              padding: "2px 8px",
+              borderRadius: "999px",
+              border: "1px solid rgba(74, 222, 128, 0.3)",
+              fontSize: "11px",
+              fontWeight: 600,
+            }}
+          >
+            <span
+              style={{
+                width: "6px",
+                height: "6px",
+                borderRadius: "50%",
+                background: "#4ade80",
+                boxShadow: "0 0 6px #4ade80",
+              }}
+            />
+            Live SSE
+          </span>
+        )}
+      </div>
       <h1>
         {stream.status === "Active" ? "⚡ Streaming" : `⏹ ${stream.status}`}
       </h1>
