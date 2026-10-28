@@ -257,7 +257,16 @@ fn beneficiary_cap_rejects_within_the_sponsor_window() {
         relay_claim(&f, &sponsor_addr, &op, &ben, id, day / 2, 1, deadline),
         Ok(Ok(()))
     ));
-    let res = relay_claim(&f, &sponsor_addr, &op, &ben, id, 1, 2, deadline);
+    let res = relay_claim(
+        &f,
+        &sponsor_addr,
+        &op,
+        &ben,
+        id,
+        crate::stream::MIN_CLAIM_AMOUNT,
+        2,
+        deadline,
+    );
     assert_eq!(relay_rejection(res), StreamError::BeneficiaryBudgetExceeded);
     assert_eq!(f.client.get_stream(&id).withdrawn, day / 2);
 }
@@ -462,6 +471,32 @@ fn canonical_relay_message_has_a_frozen_wire_form() {
         hex_bytes(&digest.into()),
         "e2c974bef0af32c95b39bd02965fe636cbed3e8397af2158e9c534560f2de186"
     );
+}
+
+#[test]
+fn test_sponsored_withdraw_rejects_claim_below_minimum() {
+    let f = Fixture::setup();
+    let sponsor_addr = Address::generate(&f.env);
+    let op = test_signer(&f.env, 11);
+    let ben = test_signer(&f.env, 22);
+    register_op(&f, &sponsor_addr, &op, DEPOSIT, DEPOSIT, DAY);
+    f.client
+        .mock_all_auths()
+        .enroll_beneficiary(&f.recipient, &ben.public_key);
+    let id = accrued_stream(&f);
+
+    // amount: 10 < MIN_CLAIM_AMOUNT (50)
+    let res = relay_claim(
+        &f,
+        &sponsor_addr,
+        &op,
+        &ben,
+        id,
+        10,
+        1,
+        f.env.ledger().timestamp() + DAY,
+    );
+    assert_eq!(relay_rejection(res), StreamError::ClaimBelowMinimum);
 }
 
 fn hex_bytes(b: &soroban_sdk::Bytes) -> std::string::String {

@@ -356,6 +356,9 @@ pub(crate) fn kind_for_key(env: &Env, key_sc: &xdr::ScVal) -> Option<String> {
             DataKey::SenderHistory(_) => "sender_history",
             DataKey::RefundTarget(_) => "refund_target",
             DataKey::StreamPause(_) => "stream_pause",
+            DataKey::RentRefund(_) => "rent_refund",
+            DataKey::TotalStreamsSwept => "total_streams_swept",
+            DataKey::TotalRentRefunded => "total_rent_refunded",
         }));
     }
     if let Ok(pk) = PolicyDataKey::try_from_val(env, key_sc) {

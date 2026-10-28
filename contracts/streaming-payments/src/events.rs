@@ -1225,3 +1225,21 @@ pub struct StreamRefundTargetChanged {
     )]
     pub at_creation: bool,
 }
+
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " Emitted when a fully-depleted or cancelled stream is permissionlessly swept,"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " removing its persistent storage entry and crediting residual rent."
+)]
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamSwept {
+    #[topic]
+    pub stream_id: u64,
+    pub caller: Address,
+    pub designated_party: Address,
+    pub rent_refund: i128,
+}

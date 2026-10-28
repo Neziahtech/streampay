@@ -495,6 +495,26 @@
       "code": 99,
       "name": "InvalidPauseTransition",
       "retired": false
+    },
+    {
+      "code": 100,
+      "name": "DepositBelowMinimum",
+      "retired": false
+    },
+    {
+      "code": 101,
+      "name": "ClaimBelowMinimum",
+      "retired": false
+    },
+    {
+      "code": 102,
+      "name": "StreamNotSweepable",
+      "retired": false
+    },
+    {
+      "code": 103,
+      "name": "RentRefundTransferFailed",
+      "retired": false
     }
   ],
   "events": [
@@ -1678,7 +1698,7 @@
       "xdr_sample_hex": "000000000000000100000000000000000000000000000000000000000000000000000000000000020000000100000000000000020000000f0000000977697468647261776e0000000000000500000000000000010000001100000001000000030000000f00000006616d6f756e7400000000000a000000000000000000000000000001f40000000f00000009726563697069656e74000000000000120000000100000000000000000000000000000000000000000000000000000000000000040000000f0000000f77697468647261776e5f746f74616c000000000a000000000000000000000000000001f4"
     }
   ],
-  "fingerprint": "6faf312014a56643e24be7903fcb2fff48c86ce8bd473f3b0d20e0b54db541e8",
+  "fingerprint": "1269c74d0a3b55511403efb86a5a18cbd10f26195df51b0e54c6686ba74e84c4",
   "storage_keys": [
     {
       "enum": "DataKey",

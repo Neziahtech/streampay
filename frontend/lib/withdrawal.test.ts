@@ -2,9 +2,11 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   fmtUnits,
+  isClaimWorthwhile,
   validateBatchSelection,
   validateWithdrawal,
   MAX_WITHDRAW_BATCH,
+  MIN_CLAIM_AMOUNT,
 } from "./withdrawal.ts";
 
 describe("Withdrawal Validation", () => {
@@ -53,6 +55,22 @@ describe("Withdrawal Validation", () => {
     assert.equal(res.valid, true);
     assert.equal(res.overWithdrawal, false);
     assert.equal(res.amount, 100n);
+  });
+
+  it("flags and rejects amounts below economic minimum floor", () => {
+    const res = validateWithdrawal("25", 100n, MIN_CLAIM_AMOUNT);
+    assert.equal(res.valid, false);
+    assert.equal(res.belowMinimum, true);
+    assert.equal(res.overWithdrawal, false);
+    assert.match(res.error ?? "", /minimum economic claim floor/);
+  });
+
+  it("checks whether claiming available amount is worthwhile", () => {
+    assert.equal(isClaimWorthwhile(null), false);
+    assert.equal(isClaimWorthwhile(0n), false);
+    assert.equal(isClaimWorthwhile(MIN_CLAIM_AMOUNT - 1n, MIN_CLAIM_AMOUNT), false);
+    assert.equal(isClaimWorthwhile(MIN_CLAIM_AMOUNT, MIN_CLAIM_AMOUNT), true);
+    assert.equal(isClaimWorthwhile(100n, MIN_CLAIM_AMOUNT), true);
   });
 
   it("formats token units safely", () => {

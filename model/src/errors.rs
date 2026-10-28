@@ -73,6 +73,14 @@ pub enum ModelError {
     SenderRefundFailed = 29,
     /// Payout of collected fees in withdraw_treasury failed.
     TreasuryPayoutFailed = 30,
+    /// Stream funding deposit is below the protocol minimum threshold.
+    DepositBelowMinimum = 100,
+    /// Claim or withdrawal amount is below the protocol economic threshold.
+    ClaimBelowMinimum = 101,
+    /// Stream is active or has unwithdrawn funds and cannot be swept.
+    StreamNotSweepable = 102,
+    /// Token transfer failed when crediting a rent refund to the designated party.
+    RentRefundTransferFailed = 103,
 }
 
 impl ModelError {

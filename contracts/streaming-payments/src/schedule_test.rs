@@ -1184,3 +1184,17 @@ fn schedule_emits_expected_event() {
         [scheduled.to_xdr(&f.env, &f.client.address)],
     );
 }
+
+#[test]
+fn test_execute_scheduled_rejects_deposit_below_minimum() {
+    let f = Fixture::setup();
+    // Schedule intent with deposit < MIN_STREAM_DEPOSIT (50 < 100)
+    let id = f.schedule_one_shot(50, DAY, 10 * DAY, FEE);
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_execute_scheduled(&id, &f.keeper)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::DepositBelowMinimum);
+}
