@@ -123,10 +123,14 @@ export default function Home() {
         const validViews = views
           .filter((s): s is StreamView => s !== null)
           .reverse();
-        setStreams(validViews);
-
-        // Check initial selection against loaded streams
-        checkLiveRace(validViews, selectedIds);
+        setStreams((prev) => {
+          const byId = new Map<string, StreamView>();
+          for (const s of prev) byId.set(s.id, s);
+          for (const s of validViews) byId.set(s.id, s);
+          const next = [...byId.values()].reverse();
+          checkLiveRace(next, selectedIds);
+          return next;
+        });
       }
     } catch (e) {
       toast.error(`Wallet connection failed: ${String(e)}`);
@@ -159,11 +163,18 @@ export default function Home() {
       const found = [...byId.values()].sort(
         (a, b) => Number(b.id) - Number(a.id)
       );
-      setStreams(found);
+      setStreams((prev) => {
+        const merged = new Map<string, StreamView>();
+        for (const s of prev) merged.set(s.id, s);
+        for (const s of found) merged.set(s.id, s);
+        const next = [...merged.values()].sort(
+          (a, b) => Number(b.id) - Number(a.id)
+        );
+        checkLiveRace(next, selectedIds);
+        return next;
+      });
       toast.info(`Discovered ${found.length} stream(s) on-chain.`);
       for (const s of found) saveStreamId(address, s.id);
-
-      checkLiveRace(found, selectedIds);
     } catch (e) {
       toast.error(describeError(e));
     }

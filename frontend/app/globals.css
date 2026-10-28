@@ -198,6 +198,16 @@ button:focus-visible {
   white-space: pre-wrap;
 }
 
+/* Warning that never relies on colour alone: the text spells it out, so the
+ * amber is decoration rather than the message. */
+.warn {
+  color: var(--amber);
+  font-size: 13px;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
 .ok {
   color: var(--green);
   font-size: 13px;
@@ -534,6 +544,60 @@ code,
   border-color: var(--accent2);
 }
 
+.status-pending {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.status-submitted {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.status-failed,
+.status-expired {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+/* Claim scheduler settings panel */
+.sched-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px 16px;
+  margin-top: 8px;
+}
+
+.sched-grid .muted {
+  margin: 4px 0 0;
+}
+
+.sched-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 0 0;
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: 14px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.sched-check input {
+  width: auto;
+  accent-color: var(--accent);
+}
+
+.sched-status {
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #0d1320;
+  font-size: 13px;
+}
+
 .copy-btn:focus-visible {
   outline: none;
   box-shadow: var(--focus-ring);
@@ -681,166 +745,424 @@ code,
     max-width: none;
   }
 }
-/* Batch Operations & Multi-Select Styles */
+
+/* --------------------------------------------------------------------------
+ * Network / contract indicator (issue #33)
+ *
+ * Compact bar above the page content: which Stellar network and streaming
+ * contract transactions are built for, plus a dismissible banner when the
+ * connected wallet is on a different one.
+ *
+ * Contrast (WCAG 1.4.3): amber (#f59e0b), green (#3ddc84), cyan (#39c5ff),
+ * red (#ff6b6b) and muted (#93a1b8) all sit on --panel (#111725) or a ≤15%
+ * tint of themselves blended over it — every pairing lands ≥ 4.8:1.
+ * Colour never carries meaning alone: the chip text, the "Stellar Testnet"
+ * label and the warning copy all spell the network out.
+ * -------------------------------------------------------------------------- */
+.network-indicator {
+  font-size: 12px;
+}
+
+.network-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 7px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+
+.network-chip {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.network-chip-testnet {
+  /* amber on blended bg ≈ #1f1c1a → ~7.3:1 ✓ */
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--amber);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+}
+
+.network-chip-public {
+  /* green on blended bg ≈ #163d2b → ~5.2:1 ✓ */
+  background: rgba(61, 220, 132, 0.15);
+  color: var(--green);
+  border: 1px solid rgba(61, 220, 132, 0.4);
+}
+
+.network-text {
+  color: var(--muted);
+}
+
+.network-contract {
+  color: var(--accent2);
+  text-decoration: none;
+  word-break: break-all;
+}
+
+.network-contract:hover {
+  text-decoration: underline;
+}
+
+.network-contract-unset {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.network-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 16px;
+  background: rgba(255, 107, 107, 0.12);
+  border-bottom: 1px solid rgba(255, 107, 107, 0.35);
+}
+
+.network-warning-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.network-warning-title {
+  display: block;
+  font-size: 13px;
+  color: var(--red);
+}
+
+.network-warning-text,
+.network-warning-hint {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.network-warning-hint {
+  color: var(--muted);
+}
+
+.network-warning-dismiss {
+  margin: 0;
+  color: var(--red);
+}
+
+@media (max-width: 600px) {
+  .network-bar,
+  .network-warning {
+    padding: 6px 12px;
+  }
+}
+
+@media (forced-colors: active) {
+  .network-chip,
+  .network-warning {
+    forced-color-adjust: auto;
+    border: 1px solid ButtonText;
+  }
+}
+
+/* --------------------------------------------------------------------------
+ * Skip navigation link (WCAG 2.4.1 — Bypass Blocks)
+ * Hidden offscreen until focused via keyboard; placed as the first child of
+ * <body> in layout.tsx via <a href="#main-content" className="skip-link">.
+ * -------------------------------------------------------------------------- */
+.skip-link {
+  position: absolute;
+  top: -100%;
+  left: 8px;
+  background: var(--accent);
+  color: #ffffff;
+  padding: 8px 16px;
+  border-radius: 0 0 8px 8px;
+  font-weight: 700;
+  font-size: 14px;
+  text-decoration: none;
+  z-index: 10000;
+  transition: top 0.1s ease;
+}
+
+.skip-link:focus {
+  top: 0;
+}
+
+.skip-link:focus-visible {
+  top: 0;
+  box-shadow: var(--focus-ring);
+}
+
+/* --------------------------------------------------------------------------
+ * High-contrast / forced-colours mode (WCAG 1.4.3 fallback)
+ * Let the OS colour scheme take over; the browser's forced-colours mode
+ * replaces CSS colours but preserves text content and semantic structure.
+ * -------------------------------------------------------------------------- */
+@media (forced-colors: active) {
+  .live-dot {
+    forced-color-adjust: auto;
+  }
+
+  .progress-fill {
+    forced-color-adjust: none;
+    background: Highlight;
+  }
+
+  .status-badge {
+    forced-color-adjust: auto;
+    border: 1px solid ButtonText;
+  }
+}
+
+/* ============================================================
+   Wallet UI — WalletButton + WalletModal
+   ============================================================ */
+
+/* ---------- WalletButton ---------- */
+.wallet-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s, transform 0.1s;
+  border: none;
+}
+
+.wallet-btn:active { transform: scale(0.97); }
+
+.wallet-btn--connect {
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent2) 100%);
+  color: #fff;
+}
+.wallet-btn--connect:hover { opacity: 0.88; }
+
+.wallet-btn--connecting {
+  background: var(--panel);
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.wallet-btn--disconnect {
+  background: transparent;
+  color: var(--red);
+  border: 1px solid var(--red);
+  padding: 5px 12px;
+  font-size: 13px;
+}
+.wallet-btn--disconnect:hover { background: rgba(255,107,107,0.1); }
+
+.wallet-btn__group {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.wallet-btn__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.wallet-btn__badge {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 11px;
+  color: var(--accent2);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.wallet-btn__address { font-family: monospace; color: var(--text); }
+
+/* Spinner */
+@keyframes wallet-spin { to { transform: rotate(360deg); } }
+
+.wallet-btn__spinner,
+.wallet-modal__spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: wallet-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+/* ---------- WalletModal ---------- */
+.wallet-modal {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--panel);
+  color: var(--text);
+  padding: 0;
+  max-width: 380px;
+  width: 94vw;
+  box-shadow: 0 24px 64px rgba(0,0,0,0.7);
+}
+
+/* Native dialog backdrop */
+.wallet-modal::backdrop {
+  background: rgba(0,0,0,0.65);
+  backdrop-filter: blur(4px);
+}
+
+.wallet-modal__inner {
+  padding: 24px;
+}
+
+.wallet-modal__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.wallet-modal__title {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 700;
+  background: linear-gradient(90deg, var(--accent) 0%, var(--accent2) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.wallet-modal__close {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 18px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+  line-height: 1;
+  transition: color 0.15s, background 0.15s;
+}
+.wallet-modal__close:hover {
+  color: var(--text);
+  background: var(--panel-hover);
+}
+
+.wallet-modal__error {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  background: rgba(255, 107, 107, 0.12);
+  border: 1px solid var(--red);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--red);
+}
+
+.wallet-modal__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Shared button / link layout */
+.wallet-modal__btn,
+.wallet-modal__install {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 14px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+  transition: border-color 0.15s, background 0.15s, transform 0.1s;
+}
+
+.wallet-modal__btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--panel-hover);
+}
+.wallet-modal__btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.wallet-modal__btn:active:not(:disabled) { transform: scale(0.98); }
+
+.wallet-modal__install {
+  opacity: 0.55;
+}
+.wallet-modal__install:hover { opacity: 0.8; border-color: var(--line-light); }
+
+.wallet-modal__icon {
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+.wallet-modal__icon--dim { filter: grayscale(1); }
+
+.wallet-modal__name { flex: 1; }
+.wallet-modal__name--dim { color: var(--muted); }
+
+.wallet-modal__install-badge {
+  font-size: 12px;
+  color: var(--accent2);
+  font-weight: 500;
+  margin-left: auto;
+}
+
+.wallet-modal__hint {
+  margin: 16px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+
+/* ============================================================
+   Batch Actions & Simulation UI
+   ============================================================ */
+
 .selected-row {
-  background: rgba(139, 124, 255, 0.12);
-}
-
-.selected-row td {
-  border-bottom-color: rgba(139, 124, 255, 0.3);
-}
-
-.batch-container {
-  margin: 16px 0;
+  background: rgba(14, 165, 233, 0.08) !important;
 }
 
 .batch-action-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: linear-gradient(90deg, #182238, #111a2d);
-  border: 1px solid var(--accent);
+  background: var(--panel);
+  border: 1px solid var(--line);
   border-radius: 10px;
-  padding: 10px 16px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
   gap: 16px;
   flex-wrap: wrap;
 }
 
-.batch-summary {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.batch-badge {
-  background: var(--accent);
-  color: #0b0f19;
-  font-weight: 700;
-  border-radius: 999px;
-  padding: 2px 10px;
-  font-size: 13px;
-}
-
-.batch-text {
+.batch-selected-count {
   font-weight: 600;
-  color: var(--text);
-  font-size: 14px;
+  color: var(--accent2);
 }
 
-.batch-actions {
+.batch-buttons {
   display: flex;
-  align-items: center;
   gap: 8px;
   flex-wrap: wrap;
 }
 
-.btn-batch {
-  margin: 0;
-  padding: 7px 14px;
-  font-size: 13px;
-}
-
-.btn-withdraw {
-  background: linear-gradient(90deg, var(--green), #20b26c);
-  color: #061e12;
-}
-
-.btn-cancel {
-  background: linear-gradient(90deg, #ff8585, var(--red));
-  color: #290808;
-}
-
-.btn-clear {
-  background: transparent;
-  border: 1px solid var(--line);
-  color: var(--muted);
-}
-
-.btn-clear:hover {
-  border-color: var(--muted);
-  color: var(--text);
-}
-
-.btn-text {
-  background: none;
-  border: none;
-  color: var(--muted);
-  font-size: 18px;
-  cursor: pointer;
-  padding: 4px;
-  margin: 0;
-  line-height: 1;
-}
-
-.btn-text:hover {
-  color: var(--text);
-}
-
-.batch-warning {
-  background: rgba(255, 107, 107, 0.12);
-  border: 1px solid var(--red);
-  border-radius: 8px;
-  padding: 10px 14px;
-  margin-bottom: 12px;
-}
-
-.batch-warning-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  color: var(--red);
-  font-size: 13px;
-}
-
-.batch-warning-list {
-  margin: 6px 0 0;
-  padding-left: 20px;
-  font-size: 12px;
-  color: #ffb4b4;
-}
-
-/* Modal Backdrop & Card */
-.modal-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(4, 7, 15, 0.75);
-  backdrop-filter: blur(4px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-  padding: 20px;
-}
-
-.modal-card {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  width: 100%;
-  max-width: 720px;
-  max-height: 90vh;
-  overflow-y: auto;
-  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
-  padding: 24px;
-}
-
-.modal-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  border-bottom: 1px solid var(--line);
-  padding-bottom: 12px;
-  margin-bottom: 16px;
-}
-
-.modal-header h2 {
-  font-size: 18px;
-  margin: 0;
-}
-
-.simulation-mode-banner {
-  background: rgba(57, 197, 255, 0.08);
-  border: 1px solid rgba(57, 197, 255, 0.3);
+.batch-warning-banner {
+  background: rgba(245, 158, 11, 0.15);
+  border: 1px solid var(--amber);
+  color: var(--amber);
   border-radius: 8px;
   padding: 10px 14px;
   margin-bottom: 16px;
@@ -855,6 +1177,29 @@ code,
 .badge-fallback {
   color: var(--accent2);
   font-weight: 600;
+}
+
+.simulation-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  backdrop-filter: blur(4px);
+}
+
+.simulation-modal-content {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  width: 90%;
+  max-width: 680px;
+  max-height: 85vh;
+  overflow-y: auto;
+  padding: 24px;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
 }
 
 .table-responsive {
@@ -982,54 +1327,3 @@ code,
   gap: 24px;
   margin: 16px 0;
 }
-
-/* --------------------------------------------------------------------------
- * Skip navigation link (WCAG 2.4.1 — Bypass Blocks)
- * Hidden offscreen until focused via keyboard; placed as the first child of
- * <body> in layout.tsx via <a href="#main-content" className="skip-link">.
- * -------------------------------------------------------------------------- */
-.skip-link {
-  position: absolute;
-  top: -100%;
-  left: 8px;
-  background: var(--accent);
-  color: #ffffff;
-  padding: 8px 16px;
-  border-radius: 0 0 8px 8px;
-  font-weight: 700;
-  font-size: 14px;
-  text-decoration: none;
-  z-index: 10000;
-  transition: top 0.1s ease;
-}
-
-.skip-link:focus {
-  top: 0;
-}
-
-.skip-link:focus-visible {
-  top: 0;
-  box-shadow: var(--focus-ring);
-}
-
-/* --------------------------------------------------------------------------
- * High-contrast / forced-colours mode (WCAG 1.4.3 fallback)
- * Let the OS colour scheme take over; the browser's forced-colours mode
- * replaces CSS colours but preserves text content and semantic structure.
- * -------------------------------------------------------------------------- */
-@media (forced-colors: active) {
-  .live-dot {
-    forced-color-adjust: auto;
-  }
-
-  .progress-fill {
-    forced-color-adjust: none;
-    background: Highlight;
-  }
-
-  .status-badge {
-    forced-color-adjust: auto;
-    border: 1px solid ButtonText;
-  }
-}
-

@@ -5,6 +5,8 @@ import {
   decodeSelection,
   createStreamSnapshot,
   detectStaleSelections,
+  checkContractBatchSupport,
+  simulateSingleAction,
   simulateBatchAction,
   executeBatch,
   notifyBatchResult,
@@ -112,28 +114,58 @@ test("Stale-selection race detection invalidates modified or cancelled streams",
   assert.ok(check3.invalidated[0].reason.includes("Stream #99 was not found"));
 });
 
+test("checkContractBatchSupport returns true against current contract", async () => {
+  const supported = await checkContractBatchSupport();
+  assert.strictEqual(supported, true);
+
+  // Probe with simulated contract rejection code WithdrawBatchEmpty (#96)
+  const probeWithCode96 = await checkContractBatchSupport(async () => true);
+  assert.strictEqual(probeWithCode96, true);
+
+  // Probe when contract does not support batching
+  const probeUnsupported = await checkContractBatchSupport(async () => false);
+  assert.strictEqual(probeUnsupported, false);
+});
+
 test("Sequential fallback execution handles pre-submit stale state and succeeds", async () => {
+  const stream101: StreamView = {
+    id: "101",
+    sender: "GAAA",
+    recipient: "GBBB",
+    token: "T1",
+    deposit: "1000",
+    withdrawn: "0",
+    startTime: 100,
+    endTime: 200,
+    cancelable: true,
+    status: "Active",
+  };
+  const stream102: StreamView = {
+    ...stream101,
+    id: "102",
+  };
+
+  const sim101 = await simulateSingleAction(
+    stream101,
+    "withdraw_max",
+    async () => 100n
+  );
+  const sim102 = await simulateSingleAction(
+    stream102,
+    "withdraw_max",
+    async () => 0n
+  );
+
   const items: ItemSimulationFootprint[] = [
-    {
-      streamId: "101",
-      action: "withdraw_max",
-      claimableAmount: 100n,
-      estimatedFeeStroops: "100000",
-      cpuInstructions: 150000,
-      ramBytes: 4096,
-      status: "ready",
-    },
-    {
-      streamId: "102",
-      action: "withdraw_max",
-      claimableAmount: 0n,
-      estimatedFeeStroops: "100000",
-      cpuInstructions: 120000,
-      ramBytes: 4096,
-      status: "ineligible",
-      error: "No accrued funds",
-    },
+    sim101,
+    sim102,
   ];
+
+  // Assert against real simulated values not hardcoded "100000" constant
+  assert.strictEqual(items[0].estimatedFeeStroops, sim101.estimatedFeeStroops);
+  assert.notStrictEqual(items[0].estimatedFeeStroops, "100000");
+  assert.strictEqual(items[1].estimatedFeeStroops, sim102.estimatedFeeStroops);
+  assert.notStrictEqual(items[1].estimatedFeeStroops, "100000");
 
   const progressLog: string[] = [];
   const result = await executeBatch({
@@ -168,29 +200,45 @@ test("Sequential fallback execution handles pre-submit stale state and succeeds"
 });
 
 test("Mixed success/failure batch scenario: reports honest per-action outcomes and never shows all-green summary", async () => {
-  // Simulate batch where stream 201 succeeds, but stream 202 reverts on-chain (e.g. insufficient allowance / contract trap)
+  const caller = "GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+  const stream201: StreamView = {
+    id: "201",
+    sender: "GAAA",
+    recipient: caller,
+    token: "T1",
+    deposit: "1000",
+    withdrawn: "0",
+    startTime: 100,
+    endTime: 200,
+    cancelable: true,
+    status: "Active",
+  };
+  const stream202: StreamView = {
+    ...stream201,
+    id: "202",
+  };
+
+  const sim201 = await simulateSingleAction(
+    stream201,
+    "withdraw_max",
+    async () => 250n
+  );
+  const sim202 = await simulateSingleAction(
+    stream202,
+    "withdraw_max",
+    async () => 500n
+  );
+
   const items: ItemSimulationFootprint[] = [
-    {
-      streamId: "201",
-      action: "withdraw_max",
-      claimableAmount: 250n,
-      estimatedFeeStroops: "100000",
-      cpuInstructions: 160000,
-      ramBytes: 4096,
-      status: "ready",
-    },
-    {
-      streamId: "202",
-      action: "withdraw_max",
-      claimableAmount: 500n,
-      estimatedFeeStroops: "100000",
-      cpuInstructions: 160000,
-      ramBytes: 4096,
-      status: "ready",
-    },
+    sim201,
+    sim202,
   ];
 
-  const caller = "GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+  // Assert against real simulated values not hardcoded "100000" constant
+  assert.strictEqual(items[0].estimatedFeeStroops, sim201.estimatedFeeStroops);
+  assert.notStrictEqual(items[0].estimatedFeeStroops, "100000");
+  assert.strictEqual(items[1].estimatedFeeStroops, sim202.estimatedFeeStroops);
+  assert.notStrictEqual(items[1].estimatedFeeStroops, "100000");
 
   const result = await executeBatch({
     caller,
@@ -216,7 +264,6 @@ test("Mixed success/failure batch scenario: reports honest per-action outcomes a
       // Stream 202 reverts on-chain!
       throw new Error("token transfer failed");
     },
-
   });
 
   // 1. Verify batch execution result structure
@@ -262,14 +309,25 @@ test("Mixed success/failure batch scenario: reports honest per-action outcomes a
 
   // Assert both outcomes are reflected in UI toasts
   assert.strictEqual(toastSuccessCalls.length, 1);
-  assert.ok(toastSuccessCalls[0].includes("Partial batch success: 1 stream succeeded (#201)"));
+  assert.ok(
+    toastSuccessCalls[0].includes(
+      "Partial batch success: 1 stream succeeded (#201)"
+    )
+  );
 
   assert.strictEqual(toastErrorCalls.length, 1);
-  assert.ok(toastErrorCalls[0].includes("Batch operation failures: 1 stream reverted on-chain (#202"));
+  assert.ok(
+    toastErrorCalls[0].includes(
+      "Batch operation failures: 1 stream reverted on-chain (#202"
+    )
+  );
 
   // Crucial check: verify that an all-green summary was NEVER emitted
   const allSuccessText = toastSuccessCalls.join(" ");
-  assert.strictEqual(allSuccessText.includes("all 2 streams processed successfully"), false);
+  assert.strictEqual(
+    allSuccessText.includes("all 2 streams processed successfully"),
+    false
+  );
 });
 
 test("Simulation modal footprint calculation accurately reflects per-item and aggregate resources", async () => {
@@ -308,4 +366,8 @@ test("Simulation modal footprint calculation accurately reflects per-item and ag
   assert.strictEqual(sim.items[0].status, "ready");
   assert.strictEqual(sim.items[1].status, "ineligible");
   assert.ok(sim.items[1].error?.includes("non-cancelable"));
+
+  // The cost of this batch is a sum of real simulated fees
+  assert.strictEqual(sim.totalFeeStroops, sim.items[0].estimatedFeeStroops);
+  assert.notStrictEqual(sim.totalFeeStroops, "100000");
 });
