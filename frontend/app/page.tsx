@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import {
   createStream,
@@ -45,9 +45,17 @@ export default function Home() {
       const views = await Promise.all(
         cached.map((id) => readStream(id).catch(() => null))
       );
-      setStreams(
-        views.filter((s): s is StreamView => s !== null).reverse()
-      );
+      const validViews = views
+        .filter((s): s is StreamView => s !== null)
+        .reverse();
+      setStreams((prev) => {
+        const byId = new Map<string, StreamView>();
+        for (const s of prev) byId.set(s.id, s);
+        for (const s of validViews) byId.set(s.id, s);
+        return Array.from(byId.values()).sort(
+          (a, b) => Number(b.id) - Number(a.id)
+        );
+      });
     }
   }
 
@@ -61,11 +69,7 @@ export default function Home() {
   async function refresh(id: string) {
     try {
       const s = await readStream(id);
-      setStreams((prev) => {
-        const next = [s, ...prev.filter((x) => x.id !== id)];
-        checkLiveRace(next, selectedIds);
-        return next;
-      });
+      setStreams((prev) => [s, ...prev.filter((x) => x.id !== id)]);
       if (address) saveStreamId(address, id);
     } catch (e) {
       toast.error(describeError(e));
@@ -82,7 +86,14 @@ export default function Home() {
       const byId = new Map<string, StreamView>();
       for (const s of [...asRecipient, ...asSender]) byId.set(s.id, s);
       const found = [...byId.values()].sort((a, b) => Number(b.id) - Number(a.id));
-      setStreams(found);
+      setStreams((prev) => {
+        const map = new Map<string, StreamView>();
+        for (const s of prev) map.set(s.id, s);
+        for (const s of found) map.set(s.id, s);
+        return Array.from(map.values()).sort(
+          (a, b) => Number(b.id) - Number(a.id)
+        );
+      });
       toast.info(t("home.discovered", { count: found.length }));
       for (const s of found) saveStreamId(address, s.id);
     } catch (e) {
@@ -172,7 +183,14 @@ export default function Home() {
         const byId = new Map<string, StreamView>();
         for (const s of [...asRecipient, ...asSender]) byId.set(s.id, s);
         const found = [...byId.values()].sort((a, b) => Number(b.id) - Number(a.id));
-        setStreams(found);
+        setStreams((prev) => {
+          const map = new Map<string, StreamView>();
+          for (const s of prev) map.set(s.id, s);
+          for (const s of found) map.set(s.id, s);
+          return Array.from(map.values()).sort(
+            (a, b) => Number(b.id) - Number(a.id)
+          );
+        });
         for (const s of found) saveStreamId(address, s.id);
       } catch {
         // Silent on background poll errors to avoid disrupting user
@@ -200,119 +218,6 @@ export default function Home() {
       toast.error(t("home.streamNotFound"));
     } finally {
       setLookupLoading(false);
-    }
-  }
-
-  // Multi-select handlers
-  function handleToggleSelect(id: string) {
-    const isSelected = selectedIds.includes(id);
-    let updated: string[];
-    if (isSelected) {
-      updated = selectedIds.filter((item) => item !== id);
-      setSnapshots((prev) => {
-        const next = new Map(prev);
-        next.delete(id);
-        return next;
-      });
-    } else {
-      updated = [...selectedIds, id];
-      const targetStream = streams.find((s) => s.id === id);
-      if (targetStream) {
-        setSnapshots((prev) => {
-          const next = new Map(prev);
-          next.set(id, createStreamSnapshot(targetStream));
-          return next;
-        });
-      }
-    }
-    updateSelection(updated);
-  }
-
-  function handleSelectAll() {
-    const allIds = streams.map((s) => s.id);
-    const newSnapshots = new Map<string, StreamSnapshot>();
-    for (const s of streams) {
-      newSnapshots.set(s.id, createStreamSnapshot(s));
-    }
-    setSnapshots(newSnapshots);
-    updateSelection(allIds);
-  }
-
-  function handleDeselectAll() {
-    setSnapshots(new Map());
-    updateSelection([]);
-  }
-
-  // Simulation & Modal Trigger
-  async function handleTriggerBatchAction(action: BatchActionType) {
-    const selectedStreams = streams.filter((s) => selectedIds.includes(s.id));
-
-    if (selectedStreams.length === 0) {
-      toast.error("No streams currently selected for batch operation.");
-      return;
-    }
-
-    setIsSimulating(true);
-    setExecutionResult(null);
-    setModalOpen(true);
-
-    try {
-      const sim = await simulateBatchAction(selectedStreams, action);
-      setSimulation(sim);
-    } catch (err) {
-      toast.error(`Simulation preview failed: ${describeError(err)}`);
-      setModalOpen(false);
-    } finally {
-      setIsSimulating(false);
-    }
-  }
-
-  // Confirm and Execute Batch Submission
-  async function handleConfirmSubmit() {
-    if (!simulation || !address) return;
-
-    setIsExecuting(true);
-    setProgressText("Initializing batch execution…");
-
-    try {
-      const result = await executeBatch({
-        caller: address,
-        action: simulation.action,
-        items: simulation.items,
-        onProgress: (_comp, _tot, _curr, text) => {
-          setProgressText(text);
-        },
-      });
-
-      setExecutionResult(result);
-
-      // Refresh all processed streams
-      await Promise.all(
-        simulation.items.map((it) => readStream(it.streamId).catch(() => null))
-      ).then((fresh) => {
-        const valid = fresh.filter((s): s is StreamView => s !== null);
-        setStreams((prev) => {
-          const map = new Map<string, StreamView>();
-          for (const s of prev) map.set(s.id, s);
-          for (const s of valid) map.set(s.id, s);
-          return Array.from(map.values()).sort(
-            (a, b) => Number(b.id) - Number(a.id)
-          );
-        });
-      });
-
-      // Clear successful items from selection
-      const remainingSelected = selectedIds.filter(
-        (id) => !result.succeeded.includes(id)
-      );
-      updateSelection(remainingSelected);
-
-      // Report honest result toasts (distinguishing success, partial/mixed, and failure)
-      notifyBatchResult(result, toast);
-    } catch (err) {
-      toast.error(`Batch execution error: ${describeError(err)}`);
-    } finally {
-      setIsExecuting(false);
     }
   }
 
@@ -576,21 +481,8 @@ export default function Home() {
           )}
         </div>
 
-        <BatchActionBar
-          selectedCount={selectedIds.length}
-          invalidatedNotices={invalidatedNotices}
-          onClearInvalidated={() => setInvalidatedNotices([])}
-          onDeselectAll={handleDeselectAll}
-          onTriggerBatchAction={handleTriggerBatchAction}
-          isSimulating={isSimulating}
-        />
-
         <StreamList
           streams={streams}
-          selectedIds={selectedIds}
-          onToggleSelect={handleToggleSelect}
-          onSelectAll={handleSelectAll}
-          onDeselectAll={handleDeselectAll}
           onWithdraw={async (id, amount) => {
             try {
               await withdrawFromStream(address, id, amount, signTransaction);
@@ -672,17 +564,6 @@ export default function Home() {
           onRefresh={(id) => refresh(id)}
         />
       </section>
-
-      <BatchSimulationModal
-        isOpen={modalOpen}
-        onClose={() => setModalOpen(false)}
-        simulation={simulation}
-        isLoading={isSimulating}
-        isExecuting={isExecuting}
-        progressText={progressText}
-        onConfirmSubmit={handleConfirmSubmit}
-        executionResult={executionResult}
-      />
     </main>
   );
 }

@@ -625,6 +625,7 @@ export interface ExecuteBatchOptions {
   caller: string;
   action: BatchActionType;
   items: ItemSimulationFootprint[];
+  signer?: (txXdr: string, network: string) => Promise<string>;
   onProgress?: (
     completed: number,
     total: number,
@@ -674,14 +675,20 @@ export async function executeBatch(
     options.withdrawMaxFn ??
     (async (c: string, id: string) => {
       const stellar = await import("./stellar.ts");
-      return await stellar.withdrawMaxFromStream(c, id);
+      if (!options.signer) {
+        throw new Error("Wallet signer required for transaction execution.");
+      }
+      return await stellar.withdrawMaxFromStream(c, id, options.signer);
     });
 
   const cancelImpl =
     options.cancelFn ??
     (async (c: string, id: string) => {
       const stellar = await import("./stellar.ts");
-      return await stellar.cancelStream(c, id);
+      if (!options.signer) {
+        throw new Error("Wallet signer required for transaction execution.");
+      }
+      return await stellar.cancelStream(c, id, options.signer);
     });
 
   for (let i = 0; i < total; i++) {

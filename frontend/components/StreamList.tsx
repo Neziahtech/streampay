@@ -1,16 +1,16 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { isNativeXlm, type StreamView } from "@/lib/stellar";
 import { MAX_WITHDRAW_BATCH } from "@/lib/withdrawal";
+import {
+  decodeSelection,
+  updateUrlSelection,
+} from "@/lib/batch";
 
 export default function StreamList({
   streams,
-  selectedIds,
-  onToggleSelect,
-  onSelectAll,
-  onDeselectAll,
   onWithdraw,
   onWithdrawMax,
   onClaimBatch,
@@ -32,7 +32,11 @@ export default function StreamList({
   onRefresh: (id: string) => void | Promise<void>;
 }) {
   const [amounts, setAmounts] = useState<Record<string, string>>({});
-  const [selected, setSelected] = useState<string[]>([]);
+  const [selected, setSelected] = useState<string[]>(() => {
+    if (typeof window === "undefined") return [];
+    const params = new URLSearchParams(window.location.search);
+    return decodeSelection(params.get("selected"));
+  });
 
   if (streams.length === 0) {
     return (
@@ -46,12 +50,16 @@ export default function StreamList({
   const batching = Boolean(onClaimBatch);
   const atCap = selected.length >= MAX_WITHDRAW_BATCH;
 
+  function updateSelection(next: string[]) {
+    setSelected(next);
+    updateUrlSelection(next);
+  }
+
   function toggle(id: string) {
-    setSelected((previous) =>
-      previous.includes(id)
-        ? previous.filter((item) => item !== id)
-        : [...previous, id]
-    );
+    const next = selected.includes(id)
+      ? selected.filter((item) => item !== id)
+      : [...selected, id];
+    updateSelection(next);
   }
 
   return (
@@ -64,7 +72,7 @@ export default function StreamList({
             onClick={async () => {
               if (!onClaimBatch || selected.length === 0) return;
               const ids = [...selected];
-              setSelected([]);
+              updateSelection([]);
               await onClaimBatch(ids);
             }}
             aria-label={`Claim the ${selected.length} selected stream(s) in one transaction`}
@@ -90,15 +98,14 @@ export default function StreamList({
                   id="stream-select-all"
                   type="checkbox"
                   checked={selected.length > 0 && selected.length === streams.length}
-                  onChange={(e) =>
-                    setSelected(
-                      e.target.checked
-                        ? streams
-                            .map((stream) => stream.id)
-                            .slice(0, MAX_WITHDRAW_BATCH)
-                        : []
-                    )
-                  }
+                  onChange={(e) => {
+                    const next = e.target.checked
+                      ? streams
+                          .map((stream) => stream.id)
+                          .slice(0, MAX_WITHDRAW_BATCH)
+                      : [];
+                    updateSelection(next);
+                  }}
                 />
               </th>
             )}
@@ -117,7 +124,7 @@ export default function StreamList({
             const amountInputId = `stream-amount-${s.id}`;
 
             return (
-              <tr key={s.id}>
+              <tr key={s.id} className={selected.includes(s.id) ? "selected-row" : undefined}>
                 {batching && (
                   <td>
                     <label className="sr-only" htmlFor={`stream-select-${s.id}`}>
