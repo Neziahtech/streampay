@@ -115,3 +115,26 @@ pub fn streamed_at_rate_schedule(now: u64, rates: &[(u64, u64, i128)]) -> Result
     }
     Ok(total)
 }
+
+/// The clock accrual is evaluated at: `now` while a stream streams, the freeze
+/// point while it is paused. Mirrors the contract's `stream::accrual_now`, so a
+/// paused stream is priced at the instant it stopped rather than at ledger time.
+pub fn accrual_clock(now: u64, paused_at: Option<u64>) -> u64 {
+    match paused_at {
+        Some(frozen) => now.min(frozen),
+        None => now,
+    }
+}
+
+/// Seconds a paused stream's window shifts forward when it resumes: only the
+/// part of the pause that falls *inside* `[start_time, end_time]` is credited.
+/// A freeze taken before the window opens shifts by however far `now` has moved
+/// past `start_time`; one taken at or after `end_time` shifts nothing, because
+/// the deposit had already fully accrued. Mirrors `StreamingPayments::set_paused`.
+pub fn resume_shift(now: u64, paused_at: u64, start_time: u64, end_time: u64) -> u64 {
+    if paused_at >= end_time {
+        0
+    } else {
+        now.saturating_sub(paused_at.max(start_time))
+    }
+}

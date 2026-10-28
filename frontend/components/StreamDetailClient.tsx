@@ -16,6 +16,7 @@ import {
   type LiveAccrualState,
 } from "@/lib/live-accrual";
 import type { StreamView } from "@/lib/stream-types";
+import { useWallet } from "@/lib/wallet-context";
 import { formatAmount } from "@/lib/format";
 import type { AssetMeta } from "@/lib/stellar";
 
@@ -43,12 +44,13 @@ export default function StreamDetailClient({
   const [live, setLive] = useState<LiveAccrualState>(INITIAL_STATE);
   const [assetMeta, setAssetMeta] = useState<AssetMeta | null>(null);
   const [amount, setAmount] = useState("");
-  const [address, setAddress] = useState<string | null>(null);
   const [status, setStatus] = useState("");
   const [actionError, setActionError] = useState("");
   const [refundTarget, setRefundTarget] = useState<string | null>(null);
   const engineRef = useRef<LiveAccrual | null>(null);
 
+  // Get address + signer from the wallet context.
+  const { address, signTransaction } = useWallet();
   useEffect(() => {
     let active = true;
     import("@/lib/stellar").then(({ fetchAssetMeta }) => {
@@ -143,19 +145,8 @@ export default function StreamDetailClient({
     });
   }, [live.displayAvailable, live.snapshot, snapshot.status]);
 
-  useEffect(() => {
-    void (async () => {
-      try {
-        const { getAddress, isConnected } = await import("@stellar/freighter-api");
-        if (await isConnected()) {
-          const { address: walletAddress } = await getAddress();
-          setAddress(walletAddress);
-        }
-      } catch {
-        // Detail view stays read-only without a wallet.
-      }
-    })();
-  }, []);
+  // address and signTransaction come from WalletContext (set via useWallet()).
+  // No useEffect needed — context is reactive.
 
   const deposit = BigInt(stream.deposit);
   const withdrawn = BigInt(stream.withdrawn);
@@ -185,7 +176,7 @@ export default function StreamDetailClient({
     try {
       if (max) {
         const { withdrawMaxFromStream } = await import("@/lib/stellar");
-        const paid = await withdrawMaxFromStream(address, stream.id);
+        const paid = await withdrawMaxFromStream(address, stream.id, signTransaction);
         setStatus(`Claimed ${fmtUnits(paid, assetMeta)}.`);
       } else {
         if (overWithdrawal) {
@@ -195,7 +186,7 @@ export default function StreamDetailClient({
           return;
         }
         const { withdrawFromStream } = await import("@/lib/stellar");
-        await withdrawFromStream(address, stream.id, amount || "0");
+        await withdrawFromStream(address, stream.id, amount || "0", signTransaction);
         setStatus("Withdrawal sent.");
       }
       setAmount("");
@@ -210,7 +201,7 @@ export default function StreamDetailClient({
     setActionError("");
     try {
       const { cancelStream } = await import("@/lib/stellar");
-      await cancelStream(address, stream.id);
+      await cancelStream(address, stream.id, signTransaction);
       setStatus("Stream cancelled.");
       await engineRef.current?.refresh();
     } catch (e) {

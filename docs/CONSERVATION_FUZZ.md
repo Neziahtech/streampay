@@ -47,7 +47,9 @@ No operation may violate this equality at any point in time.
 ## 2. Tested Entrypoints
 
 The property fuzz campaign targets all 11 state-mutating entrypoints plus ledger
-time (12 operations in the campaign's own alphabet):
+time (12 operations in the campaign's own alphabet; the `conservation` target
+additionally drives the two pause operations 13–14, which the weekly campaign's
+alphabet does not carry yet — see §2.1):
 1. `create_stream`: Opens a single stream, pulls deposit from sender, collects protocol fee.
 2. `create_streams`: Atomically opens a batch of streams with mixed recipients/assets, grouping token pulls and fees.
 3. `withdraw`: Recipient claims a specific accrued amount $\le \text{available}$.
@@ -64,13 +66,50 @@ time (12 operations in the campaign's own alphabet):
 11. `cancel_rate_change`: The proposer withdraws an open offer.
 12. `advance_time` across an acceptance boundary, so the same stream is priced
     before, at, and after a renegotiation.
+13. `pause_stream`: the sender freezes accrual at the stream's current clock.
+    Available-to-withdraw does not move while the stream is frozen, and the
+    recipient can still claim what accrued before the pause.
+14. `resume_stream`: the sender credits the paused interval back onto the
+    window, so accrual continues at the original rate and the full deposit still
+    streams.
 
 After every step the campaign checks the schedule invariant on top of balance
 conservation: for each Active stream with a non-empty `rate_segments`, the
 reference model's accrual of that schedule must equal `withdrawn + available`
-right now, and its accrual at `end_time` must equal `deposit` exactly. A rate
-change that rounded the past, or that left the schedule and the escrow
-disagreeing by one token, fails there rather than in a payout path.
+at the stream's accrual clock, and its accrual at `end_time` must equal
+`deposit` exactly. A rate change that rounded the past, or that left the
+schedule and the escrow disagreeing by one token, fails there rather than in a
+payout path.
+
+### 2.1 The accrual clock is not always ledger time
+
+Since pause/resume merged, the contract prices a stream at
+`stream::accrual_now` — ledger time while it runs, the freeze point while it is
+paused — so the oracle has to price it at the same instant or the two disagree
+about a stream that is behaving correctly. Both rules now live in the reference
+model, so the spec carries pause rather than leaving it only in the contract:
+
+- `streampay_model::accrual_clock(now, paused_at)` is the clock invariant 3
+  prices the stored schedule at. The harness records the freeze point from its
+  own ledger clock when a `pause_stream` call succeeds rather than reading
+  `DataKey::StreamPause` back, so the oracle stays independent: if `pause_stream`
+  ever froze at a different instant than the call, the divergence is reported.
+  Every stream in this target is created without an oracle, so
+  `oracle::resolve_stream_time` returns ledger time and the two clocks coincide.
+- `streampay_model::resume_shift(now, paused_at, start_time, end_time)` is the
+  window the resume must produce: only the part of the pause that fell inside
+  `[start_time, end_time]` is credited. The target asserts a successful
+  `resume_stream` against it on three points — `start_time` and `end_time` both
+  move by exactly that shift, `deposit` does not move, and `withdrawn +
+  available` at the resume instant is unchanged, which is the property that makes
+  the freeze-point bookkeeping above worth trusting.
+
+This clock is what the 2026-10-27 nightly was missing: it priced the model at
+raw ledger time while the stream was frozen and reported
+`schedule accrual diverged from the model` on a correct contract. That input is
+kept as `fuzz/regressions/conservation/pause-clock-2d4236f0.bin` and replayed by
+`.github/workflows/fuzz-gate.yml` on every pull request, so the oracle cannot
+silently drift back.
 
 ---
 

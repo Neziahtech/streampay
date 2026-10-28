@@ -74,6 +74,7 @@ Metrics, alerting stack, and operational diagnosis: [`docs/RUNBOOK.md`](./docs/R
 | `withdraw(stream_id, amount)` | recipient | pays out ≤ accrued | `Withdrawn` |
 | `withdraw_max(stream_id) → i128` | recipient | pays out all accrued, atomically | `Withdrawn` |
 | `withdraw_many(recipient, stream_ids: Vec<u64>, strict) → Vec<WithdrawEntry>` | recipient of every listed stream | pays out each settled stream's accrued balance, in one transaction | `Withdrawn` per settled stream; `BatchWithdrawSummary` |
+| `withdraw_all(recipient, page_bounds) → WithdrawAllResult` | recipient | batch-withdraws accrued funds, aggregated per asset | `Withdrawn` per stream |
 | `cancel_stream(caller, stream_id)` | sender; recipient iff `cancelable` | pro-rata split, atomic | `StreamCancelled` |
 | `top_up(stream_id, amount)` | sender | pulls added funds | `StreamToppedUp` |
 | `raise_dispute(stream_id)` | recipient | pulls escalating anti-griefing bond in | `DisputeRaised` |

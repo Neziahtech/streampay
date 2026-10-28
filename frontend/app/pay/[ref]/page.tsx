@@ -2,7 +2,8 @@
 
 import { useEffect, useState, use } from "react";
 import Link from "next/link";
-import { isConnected, requestAccess } from "@stellar/freighter-api";
+import { useWallet } from "@/lib/wallet-context";
+import WalletModal from "@/components/WalletModal";
 import {
   readPaymentLinkAction,
   PaymentLinkResolution,
@@ -15,7 +16,7 @@ import {
   describeError,
 } from "@/lib/stellar";
 import { computeAccruedAt } from "@/lib/accrual";
-import { checkWalletNetwork } from "@/lib/network";
+
 import { useLocale } from "@/lib/i18n/provider";
 import { formatDateTime, formatPercent } from "@/lib/i18n/amounts";
 
@@ -35,7 +36,8 @@ export default function PaymentLinkPage({
 
   const [loading, setLoading] = useState(true);
   const [resolution, setResolution] = useState<PaymentLinkResolution | null>(null);
-  const [address, setAddress] = useState<string | null>(null);
+  const { address, signTransaction } = useWallet();
+  const [modalOpen, setModalOpen] = useState(false);
   const [isRecipientMatch, setIsRecipientMatch] = useState<boolean | null>(null);
   const [claiming, setClaiming] = useState(false);
   const [claimError, setClaimError] = useState<string | null>(null);
@@ -96,29 +98,14 @@ export default function PaymentLinkPage({
     };
   }, [address, resolution]);
 
-  async function connectWallet() {
+  function connectWallet() {
     setClaimError(null);
-    try {
-      const { isConnected: connected, error: connErr } = await isConnected();
-      if (connErr || !connected) {
-        setClaimError(t("pay.error.noWallet"));
-        return;
-      }
-      const { address: addr, error: accessErr } = await requestAccess();
-      if (accessErr || !addr) {
-        setClaimError(accessErr?.message ?? t("pay.error.rejected"));
-        return;
-      }
-      setAddress(addr);
-      await checkWalletNetwork();
-    } catch (e: unknown) {
-      setClaimError(String(e));
-    }
+    setModalOpen(true);
   }
 
   async function handleClaim() {
     if (!address) {
-      await connectWallet();
+      connectWallet();
       return;
     }
 
@@ -134,7 +121,8 @@ export default function PaymentLinkPage({
     try {
       const resultReceipt = await claimStreamWithReceipt(
         address,
-        resolution.decoded.streamId
+        resolution.decoded.streamId,
+        signTransaction
       );
       setReceipt(resultReceipt);
     } catch (err: unknown) {
@@ -489,6 +477,8 @@ export default function PaymentLinkPage({
       <footer className="max-w-2xl mx-auto w-full text-center py-6 text-xs text-neutral-500 border-t border-neutral-900 mt-8">
         {t("brand.footer")}
       </footer>
+
+      <WalletModal open={modalOpen} onClose={() => setModalOpen(false)} />
     </main>
   );
 }

@@ -38,7 +38,7 @@ use crate::stream::{
 };
 use crate::test_client::StreamingPaymentsClient as Client;
 use crate::{
-    bond_shares, required_bond, OwnershipRole, PendingRateChange, RateChangeAccepted,
+    bond_shares, required_bond, OwnershipRole, PageBounds, PendingRateChange, RateChangeAccepted,
     RateChangeProposed, Stream, StreamError, StreamInput, StreamStatus, StreamingPayments,
     WithdrawEntry, WithdrawOutcome, INITIAL_SCHEMA_VERSION, MAX_DURATION_SECONDS,
     MAX_RATE_SEGMENTS, MAX_WITHDRAW_BATCH, MIN_UPGRADE_DELAY_SECONDS,
@@ -11464,4 +11464,330 @@ fn only_the_sender_pauses_and_double_transitions_are_rejected() {
         .unwrap_err()
         .unwrap();
     assert_eq!(err, StreamError::InvalidPauseTransition);
+}
+
+// ---------------------------------------------------- withdraw_all tests --
+
+#[test]
+fn withdraw_all_aggregates_transfers_per_asset() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let sac1 = env.register_stellar_asset_contract_v2(Address::generate(&env));
+    let token1 = sac1.address();
+    let sac2 = env.register_stellar_asset_contract_v2(Address::generate(&env));
+    let token2 = sac2.address();
+
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let governor = Address::generate(&env);
+
+    let contract_id = env.register(StreamingPayments, (governor.clone(),));
+    let client = Client::new(&env, &contract_id);
+
+    // Mint and approve tokens
+    StellarAssetClient::new(&env, &token1).mint(&sender, &(10 * DEPOSIT));
+    StellarAssetClient::new(&env, &token1).approve(
+        &sender,
+        &contract_id,
+        &(10 * DEPOSIT),
+        &1_000_000u32,
+    );
+
+    StellarAssetClient::new(&env, &token2).mint(&sender, &(10 * DEPOSIT));
+    StellarAssetClient::new(&env, &token2).approve(
+        &sender,
+        &contract_id,
+        &(10 * DEPOSIT),
+        &1_000_000u32,
+    );
+
+    let now = env.ledger().timestamp();
+    // Stream 1: token 1, deposit 1,000, 2-day window
+    let s1 = client.mock_all_auths().create_stream(
+        &sender,
+        &recipient,
+        &token1,
+        &DEPOSIT,
+        &now,
+        &(now + 2 * DAY),
+        &true,
+    );
+    // Stream 2: token 1, deposit 2,000, 2-day window
+    let s2 = client.mock_all_auths().create_stream(
+        &sender,
+        &recipient,
+        &token1,
+        &(2 * DEPOSIT),
+        &now,
+        &(now + 2 * DAY),
+        &true,
+    );
+    // Stream 3: token 2, deposit 800, 1-day window
+    let s3 = client.mock_all_auths().create_stream(
+        &sender,
+        &recipient,
+        &token2,
+        &(DEPOSIT / 2),
+        &now,
+        &(now + DAY),
+        &true,
+    );
+
+    // Advance 1 day: s1 accrued 50% (500), s2 accrued 50% (1,000), s3 accrued 100% (500)
+    env.ledger().with_mut(|li| li.timestamp += DAY);
+
+    let res = client.mock_all_auths().withdraw_all(&recipient, &None);
+
+    assert_eq!(res.failed_streams.len(), 0);
+    assert_eq!(res.successful_stream_ids.len(), 3);
+    assert!(res.successful_stream_ids.contains(s1));
+    assert!(res.successful_stream_ids.contains(s2));
+    assert!(res.successful_stream_ids.contains(s3));
+    assert_eq!(res.next_offset, None);
+
+    // Check aggregated transfers: token 1 should have 1,500, token 2 should have 500
+    assert_eq!(res.transfers.len(), 2);
+    let mut t1_amount = 0i128;
+    let mut t2_amount = 0i128;
+    for transfer in res.transfers.iter() {
+        if transfer.token == token1 {
+            t1_amount += transfer.amount;
+        } else if transfer.token == token2 {
+            t2_amount += transfer.amount;
+        }
+    }
+    assert_eq!(t1_amount, DEPOSIT / 2 + DEPOSIT); // 1,500
+    assert_eq!(t2_amount, DEPOSIT / 2); // 500
+
+    // Balances of recipient
+    assert_eq!(
+        StellarAssetClient::new(&env, &token1).balance(&recipient),
+        DEPOSIT / 2 + DEPOSIT
+    );
+    assert_eq!(
+        StellarAssetClient::new(&env, &token2).balance(&recipient),
+        DEPOSIT / 2
+    );
+
+    // Verify stream states
+    let stream1 = client.get_stream(&s1);
+    assert_eq!(stream1.withdrawn, DEPOSIT / 2);
+    assert_eq!(stream1.status, StreamStatus::Active);
+
+    let stream2 = client.get_stream(&s2);
+    assert_eq!(stream2.withdrawn, DEPOSIT);
+    assert_eq!(stream2.status, StreamStatus::Active);
+
+    let stream3 = client.get_stream(&s3);
+    assert_eq!(stream3.withdrawn, DEPOSIT / 2);
+    assert_eq!(stream3.status, StreamStatus::Depleted);
+}
+
+#[test]
+fn withdraw_all_partial_failure_isolation() {
+    let f = Fixture::setup();
+    StellarAssetClient::new(&f.env, &f.token).mint(&f.sender, &(10 * DEPOSIT));
+    StellarAssetClient::new(&f.env, &f.token).approve(
+        &f.sender,
+        &f.client.address,
+        &(10 * DEPOSIT),
+        &1_000_000u32,
+    );
+
+    // 1. Active stream with claimable funds
+    let s_active = f.create_stream(DEPOSIT, 0, 2 * DAY, true);
+
+    // 2. Stream not yet started (future start time) -> available 0
+    let s_unstarted = f.create_stream(DEPOSIT, 5 * DAY, 10 * DAY, true);
+
+    // 3. Cancelled stream
+    let s_cancelled = f.create_stream(DEPOSIT, 0, 2 * DAY, true);
+    f.client
+        .mock_all_auths()
+        .cancel_stream(&f.sender, &s_cancelled);
+
+    // 4. Depleted stream
+    let s_depleted = f.create_stream(DEPOSIT, 0, DAY, true);
+
+    // Advance 1 day so s_active is 50% accrued, s_depleted is 100% accrued
+    f.advance_time(DAY);
+    f.client.mock_all_auths().withdraw_max(&s_depleted);
+    assert_eq!(
+        f.client.get_stream(&s_depleted).status,
+        StreamStatus::Depleted
+    );
+
+    // Now call withdraw_all: should succeed on s_active and isolate failures for the others
+    let res = f.client.mock_all_auths().withdraw_all(&f.recipient, &None);
+
+    assert_eq!(res.successful_stream_ids.len(), 1);
+    assert_eq!(res.successful_stream_ids.get(0).unwrap(), s_active);
+    assert_eq!(res.transfers.len(), 1);
+    assert_eq!(res.transfers.get(0).unwrap().amount, DEPOSIT / 2);
+
+    // Failed streams should contain the unstarted, cancelled, and depleted streams
+    assert_eq!(res.failed_streams.len(), 3);
+
+    let mut found_unstarted = false;
+    let mut found_cancelled = false;
+    let mut found_depleted = false;
+
+    for failure in res.failed_streams.iter() {
+        if failure.stream_id == s_unstarted {
+            assert_eq!(failure.error_code, StreamError::NothingToWithdraw as u32);
+            found_unstarted = true;
+        } else if failure.stream_id == s_cancelled {
+            assert_eq!(failure.error_code, StreamError::StreamNotActive as u32);
+            found_cancelled = true;
+        } else if failure.stream_id == s_depleted {
+            assert_eq!(failure.error_code, StreamError::StreamNotActive as u32);
+            found_depleted = true;
+        }
+    }
+
+    assert!(found_unstarted);
+    assert!(found_cancelled);
+    assert!(found_depleted);
+}
+
+#[test]
+fn withdraw_all_pagination_continuation_across_page_boundaries_60_streams() {
+    let f = Fixture::setup();
+
+    // Mint additional tokens for 60 streams
+    StellarAssetClient::new(&f.env, &f.token).mint(&f.sender, &(65 * DEPOSIT));
+    StellarAssetClient::new(&f.env, &f.token).approve(
+        &f.sender,
+        &f.client.address,
+        &(65 * DEPOSIT),
+        &1_000_000u32,
+    );
+
+    // Create 60 active streams
+    let mut all_ids = std::vec::Vec::new();
+    for _ in 0..60 {
+        let id = f.create_stream(DEPOSIT, 0, DAY, true);
+        all_ids.push(id);
+    }
+
+    // Advance 1 day so all streams are 100% claimable
+    f.advance_time(DAY);
+
+    // Page 1: Default page bounds (offset: 0, limit: MAX_PAGE_SIZE = 50)
+    let res1 = f.client.mock_all_auths().withdraw_all(&f.recipient, &None);
+
+    assert_eq!(res1.successful_stream_ids.len(), 50);
+    assert_eq!(res1.failed_streams.len(), 0);
+    assert_eq!(res1.next_offset, Some(50));
+    assert_eq!(res1.transfers.len(), 1);
+    assert_eq!(res1.transfers.get(0).unwrap().amount, 50 * DEPOSIT);
+
+    // Page 2: Continuation using next_offset = 50
+    let bounds = PageBounds {
+        offset: res1.next_offset.unwrap(),
+        limit: 50,
+    };
+    let res2 = f
+        .client
+        .mock_all_auths()
+        .withdraw_all(&f.recipient, &Some(bounds));
+
+    assert_eq!(res2.successful_stream_ids.len(), 10);
+    assert_eq!(res2.failed_streams.len(), 0);
+    assert_eq!(res2.next_offset, None);
+    assert_eq!(res2.transfers.len(), 1);
+    assert_eq!(res2.transfers.get(0).unwrap().amount, 10 * DEPOSIT);
+
+    // Verify all 60 streams were processed and are now Depleted
+    for id in all_ids {
+        assert_eq!(f.client.get_stream(&id).status, StreamStatus::Depleted);
+    }
+}
+
+#[test]
+fn withdraw_all_footprint_measurement_and_ledger_bounds() {
+    let f = Fixture::setup();
+
+    // Measure footprint for 1, 10, 50 streams
+    // Mint generous balance
+    StellarAssetClient::new(&f.env, &f.token).mint(&f.sender, &(60 * DEPOSIT));
+    StellarAssetClient::new(&f.env, &f.token).approve(
+        &f.sender,
+        &f.client.address,
+        &(60 * DEPOSIT),
+        &1_000_000u32,
+    );
+
+    // Create 50 streams for measuring 1, 10, 50
+    for _ in 0..50 {
+        f.create_stream(DEPOSIT, 0, DAY, true);
+    }
+    f.advance_time(DAY);
+
+    // Test with bounds limit 1
+    f.env.cost_estimate().budget().reset_unlimited();
+    let res_1 = f.client.mock_all_auths().withdraw_all(
+        &f.recipient,
+        &Some(PageBounds {
+            offset: 0,
+            limit: 1,
+        }),
+    );
+    let cpu_1 = f.env.cost_estimate().budget().cpu_instruction_cost();
+    assert_eq!(res_1.successful_stream_ids.len(), 1);
+    assert!(cpu_1 < 1_000_000, "1 stream CPU: {cpu_1}");
+
+    // Test with bounds limit 10
+    f.env.cost_estimate().budget().reset_unlimited();
+    let res_10 = f.client.mock_all_auths().withdraw_all(
+        &f.recipient,
+        &Some(PageBounds {
+            offset: 1,
+            limit: 10,
+        }),
+    );
+    let cpu_10 = f.env.cost_estimate().budget().cpu_instruction_cost();
+    assert_eq!(res_10.successful_stream_ids.len(), 10);
+    assert!(cpu_10 < 8_000_000, "10 stream CPU: {cpu_10}");
+
+    // Reset remaining streams and measure 50 streams in fresh environment
+    let f50 = Fixture::setup();
+    StellarAssetClient::new(&f50.env, &f50.token).mint(&f50.sender, &(60 * DEPOSIT));
+    StellarAssetClient::new(&f50.env, &f50.token).approve(
+        &f50.sender,
+        &f50.client.address,
+        &(60 * DEPOSIT),
+        &1_000_000u32,
+    );
+    for _ in 0..50 {
+        f50.create_stream(DEPOSIT, 0, DAY, true);
+    }
+    f50.advance_time(DAY);
+
+    f50.env.cost_estimate().budget().reset_unlimited();
+    let res_50 = f50
+        .client
+        .mock_all_auths()
+        .withdraw_all(&f50.recipient, &None);
+    let cpu_50 = f50.env.cost_estimate().budget().cpu_instruction_cost();
+    assert_eq!(res_50.successful_stream_ids.len(), 50);
+    // 50 streams must be comfortably within the 100M transaction limit (~25M CPU)
+    assert!(cpu_50 < 35_000_000, "50 stream CPU: {cpu_50}");
+}
+
+#[test]
+fn withdraw_all_frozen_reverts() {
+    let f = Fixture::setup();
+    f.create_stream(DEPOSIT, 0, DAY, true);
+    f.advance_time(DAY);
+
+    // Freeze contract
+    f.client.mock_all_auths().set_frozen(&f.governor, &true);
+
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_withdraw_all(&f.recipient, &None);
+    assert!(err.is_err());
 }

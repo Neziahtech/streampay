@@ -11,10 +11,10 @@
 use soroban_sdk::{contractclient, Address, BytesN, Env, Vec};
 
 use crate::{
-    BatchEntry, Dispute, FeeScan, GovernanceAction, MigrationStatus, PendingOwnership,
+    BatchEntry, Dispute, FeeScan, GovernanceAction, MigrationStatus, PageBounds, PendingOwnership,
     PendingRateChange, PendingSenderTransfer, PendingUpgrade, PeriodSpend, Proposal, RateSegment,
     ScheduledIntent, SenderHistory, SponsorConfig, Stream, StreamError, StreamInput, StreamPolicy,
-    TreasuryStatus, WithdrawEntry,
+    TreasuryStatus, WithdrawAllResult, WithdrawEntry,
 };
 
 /// Interface of the StreamPay streaming-payments contract.
@@ -80,6 +80,12 @@ pub trait StreamingPaymentsApi {
         stream_ids: Vec<u64>,
         strict: bool,
     ) -> Result<Vec<WithdrawEntry>, StreamError>;
+
+    fn withdraw_all(
+        env: Env,
+        recipient: Address,
+        page_bounds: Option<PageBounds>,
+    ) -> Result<WithdrawAllResult, StreamError>;
     fn cancel_stream(env: Env, caller: Address, stream_id: u64) -> Result<(), StreamError>;
     fn pause_stream(env: Env, caller: Address, stream_id: u64) -> Result<(), StreamError>;
     fn resume_stream(env: Env, caller: Address, stream_id: u64) -> Result<(), StreamError>;
