@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { EventEmitter } from "node:events";
 import type { DecodedEvent, Stream } from "./types.js";
 import { EVENT_KEYS } from "./generated/events.js";
 import { WebhookStore } from "./webhooks/store.js";
@@ -18,12 +19,13 @@ export interface IngestSummary {
   projectionSkips: number;
 }
 
-export class StreamStore {
+export class StreamStore extends EventEmitter {
   readonly db: Database.Database;
   readonly webhooks: WebhookStore;
   readonly outbox: OutboxStore;
 
   constructor(path: string) {
+    super();
     if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
     this.db = new Database(path);
     this.db.pragma("journal_mode = WAL");
@@ -110,7 +112,11 @@ export class StreamStore {
   }
 
   ingest(event: DecodedEvent): void {
-    this.db.transaction(() => this.ingestWithinTransaction(event, event.pagingToken))();
+    const outcome = this.db.transaction(() => this.ingestWithinTransaction(event, event.pagingToken))();
+    // #225: `/events/stream` (SSE) listeners are notified only after the write has
+    // committed, so a listener that reads back through the store sees this event,
+    // and a throwing listener cannot roll the ingestion transaction back.
+    if (!outcome.duplicate) this.emit("event", event, this.streamForEvent(event));
   }
 
   /**
@@ -121,19 +127,30 @@ export class StreamStore {
    */
   ingestPage(events: DecodedEvent[], cursor: string | undefined, latestLedger: number): IngestSummary {
     const summary: IngestSummary = { seen: events.length, inserted: 0, duplicates: 0, projectionSkips: 0 };
+    const journalled: DecodedEvent[] = [];
     this.db.transaction(() => {
       for (const event of events) {
         const outcome = this.ingestWithinTransaction(event, cursor ?? event.pagingToken);
         if (outcome.duplicate) summary.duplicates += 1;
         else {
           summary.inserted += 1;
+          journalled.push(event);
           if (outcome.projectionSkipped) summary.projectionSkips += 1;
         }
       }
       if (cursor) this.setState("cursor", cursor);
       this.setState("lastLedger", String(latestLedger));
     })();
+    // Same rule as `ingest`: one notification per newly journalled event, after the
+    // page transaction has committed. A replayed page reports duplicates and stays
+    // silent, so an SSE client cannot see the same event twice from a window retry.
+    for (const event of journalled) this.emit("event", event, this.streamForEvent(event));
     return summary;
+  }
+
+  /** The stream row an event concerns; `undefined` for stream-less events. */
+  private streamForEvent(event: DecodedEvent): Stream | undefined {
+    return event.streamId === null ? undefined : this.getStream(event.streamId);
   }
 
   private ingestWithinTransaction(event: DecodedEvent, ledgerCursor: string): { duplicate: boolean; projectionSkipped: boolean } {
@@ -356,6 +373,9 @@ export class StreamStore {
   listAddress(address: string): Stream[] {
     return (this.db.prepare("SELECT * FROM streams WHERE sender = ? OR recipient = ? ORDER BY CAST(stream_id AS INTEGER) DESC").all(address, address) as Record<string, unknown>[]).map((row) => this.toStream(row));
   }
+  listAllStreams(): Stream[] {
+    return (this.db.prepare("SELECT * FROM streams ORDER BY CAST(stream_id AS INTEGER) ASC").all() as Record<string, unknown>[]).map((row) => this.toStream(row));
+  }
 
   listStreamsByRecipient(recipient: string): Stream[] {
     return (this.db.prepare("SELECT * FROM streams WHERE recipient = ? ORDER BY CAST(stream_id AS INTEGER) ASC").all(recipient) as Record<string, unknown>[]).map((row) => this.toStream(row));
@@ -367,6 +387,72 @@ export class StreamStore {
       try { parsed = JSON.parse(row.payload); } catch {}
       return { ...row, payload: parsed };
     });
+  }
+
+  getEventsAfter(
+    lastEventId: string,
+    address?: string,
+    streamId?: string
+  ): Array<{
+    id: string;
+    streamId: string;
+    name: string;
+    ledger: number;
+    ledgerClosedAt: string;
+    payload: Record<string, unknown>;
+    stream?: Stream;
+  }> {
+    const target = this.db.prepare("SELECT rowid FROM events WHERE id = ?").get(lastEventId) as { rowid: number } | undefined;
+    if (!target) return [];
+
+    let query = "SELECT id, stream_id, name, ledger, ledger_closed_at, payload FROM events WHERE rowid > ?";
+    const params: (string | number)[] = [target.rowid];
+
+    if (streamId) {
+      query += " AND stream_id = ?";
+      params.push(streamId);
+    }
+
+    query += " ORDER BY rowid ASC LIMIT 250";
+
+    const rows = this.db.prepare(query).all(...params) as Array<{
+      id: string;
+      stream_id: string;
+      name: string;
+      ledger: number;
+      ledger_closed_at: string;
+      payload: string;
+    }>;
+
+    const results: Array<{
+      id: string;
+      streamId: string;
+      name: string;
+      ledger: number;
+      ledgerClosedAt: string;
+      payload: Record<string, unknown>;
+      stream?: Stream;
+    }> = [];
+
+    for (const r of rows) {
+      let parsed: Record<string, unknown> = {};
+      try { parsed = JSON.parse(r.payload); } catch {}
+      const st = this.getStream(r.stream_id);
+      if (address && st && st.sender !== address && st.recipient !== address) {
+        continue;
+      }
+      results.push({
+        id: r.id,
+        streamId: r.stream_id,
+        name: r.name,
+        ledger: r.ledger,
+        ledgerClosedAt: r.ledger_closed_at,
+        payload: parsed,
+        stream: st,
+      });
+    }
+
+    return results;
   }
 
   private toStream(row: Record<string, unknown>): Stream {

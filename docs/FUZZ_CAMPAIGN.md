@@ -58,6 +58,10 @@ cargo-fuzz normally needs nightly. With only a stable toolchain, set `RUSTUP_TOO
 
 **In CI:** `.github/workflows/fuzz-campaign.yml` runs every Saturday, with one 5-hour job per target in parallel (GitHub caps a job at 6 hours). A final job combines them into one report in the job summary. On the canonical repository it then pushes the merged corpora and the report to the `fuzz-corpus` branch. Each job first replays every seed in `fuzz/regressions/<target>/`, so a fixed bug stays fixed.
 
+`.github/workflows/fuzz-gate.yml` runs that same replay — plus a build of the whole fuzz workspace — on **every pull request**, because the campaign, `fuzz.yml` and `nightly-fuzz.yml` were otherwise the only jobs that ever compile `fuzz/` (`fuzz/Cargo.toml` declares its own `[workspace]`, so the Contract job's `cargo test --workspace` does not see these targets). A gate nothing on a PR runs is a gate main can break silently, and it did: `rate_schedule` did not compile for a day after the 2026-10-26 merges, and the conservation oracle went on pricing paused streams at ledger time after pause/resume landed (§2.1 of `docs/CONSERVATION_FUZZ.md`).
+
+**Gap worth knowing before you fill it:** the campaign's own operation alphabet in `fuzz/src/campaign.rs` still has no `pause_stream`/`resume_stream`, so the weekly campaign never freezes a stream. Adding them changes the `arbitrary` encoding of every input, which invalidates the in-tree `fuzz/known/KD-1/seed.bin` and every corpus on the `fuzz-corpus` branch — those have to be re-cut in the same change, not left to rot.
+
 ## Corpus and artifacts: the `fuzz-corpus` branch
 
 Corpora live on an **orphan branch**, `fuzz-corpus`, which shares no history with `main`. Corpus churn therefore never reaches `main`'s history or clone size. `scripts/fuzz/corpus-sync.sh pull` and `push` move them.
