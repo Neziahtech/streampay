@@ -241,6 +241,22 @@ describe("Stream detail", () => {
     const violations = await runAxe(html);
     assertNoViolations(violations, "Stream detail");
   });
+
+  // The routed-refund warning (issue #204) is the one piece of the cancel card
+  // that only appears on some streams, so it gets its own fixture.
+  test("routed refund warning passes WCAG 2.1 AA", async () => {
+    const html = withLayout(`
+<section class="card" aria-labelledby="cancel-heading">
+  <h2 id="cancel-heading">Cancel stream</h2>
+  <p class="muted">Pays the recipient everything accrued and refunds the sender the rest, atomically. This is irreversible.</p>
+  <p id="refund-warning" class="warn" role="note"><span aria-hidden="true">⚠</span><span>Warning: the refund of the remainder is routed to <code>GCXZROUTED…</code>, not to the current sender. The sender role and who can cancel are unaffected.</span></p>
+  <button type="button" aria-describedby="cancel-warning refund-warning">Cancel stream</button>
+  <p id="cancel-warning" class="sr-only">Warning: cancellation is permanent and cannot be undone.</p>
+</section>`);
+
+    const violations = await runAxe(html);
+    assertNoViolations(violations, "Stream detail (routed refund)");
+  });
 });
 
 // ===========================================================================
@@ -586,3 +602,141 @@ describe("BatchStreamForm", () => {
     assertNoViolations(violations, "BatchStreamForm");
   });
 });
+
+// ===========================================================================
+// 9. Network / contract indicator (issue #33)
+//
+// Colours below are the flattened (opaque) equivalents of the rgba tints in
+// globals.css — JSDOM cannot composite alpha channels, and these are the
+// effective backgrounds the user sees over --panel (#111725).
+// ===========================================================================
+describe("Network indicator", () => {
+  const CONTRACT_ID = "CAAP5FRQLPBOHD3CH7XMD4JY4WAX5PP3HNRWZP6Y3LZJZ4RQAB4D";
+
+  test("badge passes WCAG 2.1 AA", async () => {
+    const html = withLayout(`
+<header class="network-indicator">
+  <div class="network-bar" style="background:#111725;">
+    <span class="network-chip network-chip-testnet"
+          style="background:#211d19; color:#f59e0b; border:1px solid #644919;">TESTNET</span>
+    <span class="network-text" style="color:#93a1b8;">Stellar Testnet</span>
+    <a class="network-contract mono" style="color:#39c5ff;"
+       href="https://stellar.expert/explorer/testnet/contract/${CONTRACT_ID}"
+       title="${CONTRACT_ID}">
+      <span aria-hidden="true">contract CAAP5FRQ…AB4D</span>
+      <span class="sr-only">Streaming contract id ${CONTRACT_ID} — opens the block explorer</span>
+    </a>
+  </div>
+</header>
+<main class="wrap"><h1>StreamPay</h1></main>`);
+
+    const violations = await runAxe(html);
+    assertNoViolations(violations, "Network indicator (badge)");
+  });
+
+  test("wallet mismatch warning passes WCAG 2.1 AA", async () => {
+    const html = withLayout(`
+<header class="network-indicator">
+  <div class="network-bar" style="background:#111725;">
+    <span class="network-chip network-chip-testnet"
+          style="background:#211d19; color:#f59e0b; border:1px solid #644919;">TESTNET</span>
+    <span class="network-text" style="color:#93a1b8;">Stellar Testnet</span>
+  </div>
+  <div class="network-warning" role="alert" style="background:#241d21; color:#e8eefb;">
+    <div class="network-warning-body">
+      <strong class="network-warning-title" style="color:#ff6b6b;">
+        Wallet is on Public Network (mainnet)
+      </strong>
+      <p class="network-warning-text" style="color:#e8eefb;">
+        This app signs for Testnet. Transactions will fail until the wallet matches.
+      </p>
+      <p class="network-warning-hint" style="color:#93a1b8;">
+        Open the Freighter extension, switch to Testnet in its network picker, then reconnect.
+      </p>
+    </div>
+    <button type="button" class="network-warning-dismiss toast-close"
+            style="color:#ff6b6b;" aria-label="Dismiss network warning">×</button>
+  </div>
+</header>
+<main class="wrap"><h1>StreamPay</h1></main>`);
+
+    const violations = await runAxe(html);
+    assertNoViolations(violations, "Network indicator (mismatch warning)");
+  });
+
+  test("unconfigured contract state passes WCAG 2.1 AA", async () => {
+    const html = withLayout(`
+<header class="network-indicator">
+  <div class="network-bar" style="background:#111725;">
+    <span class="network-chip network-chip-public"
+          style="background:#163d2b; color:#3ddc84; border:1px solid #1d5c3c;">PUBLIC</span>
+    <span class="network-text" style="color:#93a1b8;">Stellar Public Network (mainnet)</span>
+    <span class="network-contract-unset" style="color:#93a1b8;">contract id not configured</span>
+  </div>
+</header>
+<main class="wrap"><h1>StreamPay</h1></main>`);
+
+    const violations = await runAxe(html);
+    assertNoViolations(violations, "Network indicator (no contract id)");
+  });
+});
+
+// ===========================================================================
+// 10. Protocol Benchmark Dashboard
+// ===========================================================================
+describe("Protocol Benchmark Dashboard", () => {
+  test("passes WCAG 2.1 AA", async () => {
+    const html = withLayout(`
+<main class="wrap" style="max-width:1160px;">
+  <nav aria-label="Breadcrumb">
+    <a href="/" id="back-home-link" style="color:#39c5ff; text-decoration:none; font-size:0.875rem;">
+      ← Back to StreamPay App
+    </a>
+  </nav>
+  <header>
+    <h1>Protocol Streaming Benchmark</h1>
+    <p class="muted">Public, reproducible cross-chain measurement on storage footprint, execution costs, and rent economics.</p>
+  </header>
+  <section aria-labelledby="controls-heading">
+    <h2 id="controls-heading">Display &amp; Currency Mode</h2>
+    <div role="group" aria-label="Unit selection">
+      <button type="button" id="unit-mode-usd-btn" aria-pressed="true">USD Normalized</button>
+      <button type="button" id="unit-mode-native-btn" aria-pressed="false">Native Units</button>
+    </div>
+  </section>
+  <section aria-labelledby="storage-heading">
+    <h2 id="storage-heading">Axis 1: Storage Bytes per Stream</h2>
+    <table>
+      <caption>Storage comparison per stream</caption>
+      <thead>
+        <tr>
+          <th scope="col">Protocol</th>
+          <th scope="col">Total Footprint</th>
+          <th scope="col">State Model</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <th scope="row">StreamPay (Soroban)</th>
+          <td>484 B</td>
+          <td>Stellar Persistent Ledger Entry</td>
+        </tr>
+        <tr>
+          <th scope="row">Sablier V2 (EVM)</th>
+          <td>160 B</td>
+          <td>EVM Permanent Contract Storage</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+  <section aria-labelledby="methodology-heading">
+    <h2 id="methodology-heading">Cross-Chain Normalization &amp; Measurement Methodology</h2>
+    <p>Detailed inline technical methodology explaining EVM gas vs Soroban instructions vs Stellar State Archival rent.</p>
+  </section>
+</main>`);
+
+    const violations = await runAxe(html);
+    assertNoViolations(violations, "Protocol Benchmark Dashboard");
+  });
+});
+

@@ -3,34 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { isNativeXlm, type StreamView } from "@/lib/stellar";
-/** The contract's batch-claim cap (`stream::MAX_WITHDRAW_BATCH`), mirrored. */
-const MAX_WITHDRAW_BATCH = 20;
-import {
-  encodeSelection,
-  decodeSelection,
-  updateUrlSelection,
-} from "@/lib/batch";
-
-export { encodeSelection, decodeSelection, updateUrlSelection };
-
-export interface StreamListProps {
-  streams: StreamView[];
-  selectedIds?: string[];
-  onToggleSelect?: (id: string) => void;
-  onSelectAll?: () => void;
-  onDeselectAll?: () => void;
-  onWithdraw: (id: string, amount: string) => Promise<void>;
-  onWithdrawMax: (id: string) => Promise<void>;
-  /**
-   * Claims the selected streams in one `withdraw_many` transaction. Omitted
-   * while the feature flag is off, and then the list offers no selection UI —
-   * every row keeps its single-stream claims.
-   */
-  onClaimBatch?: (ids: string[]) => Promise<void>;
-  onTopUp: (id: string, amount: string) => Promise<void>;
-  onCancel: (id: string) => Promise<void>;
-  onRefresh: (id: string) => void | Promise<void>;
-}
+import { MAX_WITHDRAW_BATCH } from "@/lib/withdrawal";
 
 export default function StreamList({
   streams,
@@ -44,24 +17,22 @@ export default function StreamList({
   onTopUp,
   onCancel,
   onRefresh,
-}: StreamListProps) {
+}: {
+  streams: StreamView[];
+  onWithdraw: (id: string, amount: string) => Promise<void>;
+  onWithdrawMax: (id: string) => Promise<void>;
+  /**
+   * Claims the selected streams in one `withdraw_many` transaction. Omitted
+   * while the feature flag is off, and then the list offers no selection UI —
+   * every row keeps its single-stream claims.
+   */
+  onClaimBatch?: (ids: string[]) => Promise<void>;
+  onTopUp: (id: string, amount: string) => Promise<void>;
+  onCancel: (id: string) => Promise<void>;
+  onRefresh: (id: string) => void | Promise<void>;
+}) {
   const [amounts, setAmounts] = useState<Record<string, string>>({});
-  const [internalSelected, setInternalSelected] = useState<string[]>(() => {
-    if (typeof window === "undefined") return [];
-    try {
-      const param = new URLSearchParams(window.location.search).get("selected");
-      return decodeSelection(param);
-    } catch {
-      return [];
-    }
-  });
-
-  const isControlled = selectedIds !== undefined;
-  const selected = isControlled ? selectedIds : internalSelected;
-
-  useEffect(() => {
-    updateUrlSelection(selected);
-  }, [selected]);
+  const [selected, setSelected] = useState<string[]>([]);
 
   if (streams.length === 0) {
     return (
@@ -72,47 +43,20 @@ export default function StreamList({
     );
   }
 
-  const batching = Boolean(onClaimBatch || onToggleSelect);
+  const batching = Boolean(onClaimBatch);
   const atCap = selected.length >= MAX_WITHDRAW_BATCH;
 
   function toggle(id: string) {
-    if (onToggleSelect) {
-      onToggleSelect(id);
-    } else {
-      setInternalSelected((previous) => {
-        const next = previous.includes(id)
-          ? previous.filter((item) => item !== id)
-          : [...previous, id];
-        updateUrlSelection(next);
-        return next;
-      });
-    }
-  }
-
-  function handleSelectAll(checked: boolean) {
-    if (checked) {
-      if (onSelectAll) {
-        onSelectAll();
-      } else {
-        const next = streams
-          .map((stream) => stream.id)
-          .slice(0, MAX_WITHDRAW_BATCH);
-        setInternalSelected(next);
-        updateUrlSelection(next);
-      }
-    } else {
-      if (onDeselectAll) {
-        onDeselectAll();
-      } else {
-        setInternalSelected([]);
-        updateUrlSelection([]);
-      }
-    }
+    setSelected((previous) =>
+      previous.includes(id)
+        ? previous.filter((item) => item !== id)
+        : [...previous, id]
+    );
   }
 
   return (
     <>
-      {onClaimBatch && (
+      {batching && (
         <div className="row">
           <button
             type="button"
@@ -120,10 +64,7 @@ export default function StreamList({
             onClick={async () => {
               if (!onClaimBatch || selected.length === 0) return;
               const ids = [...selected];
-              if (!isControlled) {
-                setInternalSelected([]);
-                updateUrlSelection([]);
-              }
+              setSelected([]);
               await onClaimBatch(ids);
             }}
             aria-label={`Claim the ${selected.length} selected stream(s) in one transaction`}
@@ -148,10 +89,16 @@ export default function StreamList({
                 <input
                   id="stream-select-all"
                   type="checkbox"
-                  checked={
-                    selected.length > 0 && selected.length === streams.length
+                  checked={selected.length > 0 && selected.length === streams.length}
+                  onChange={(e) =>
+                    setSelected(
+                      e.target.checked
+                        ? streams
+                            .map((stream) => stream.id)
+                            .slice(0, MAX_WITHDRAW_BATCH)
+                        : []
+                    )
                   }
-                  onChange={(e) => handleSelectAll(e.target.checked)}
                 />
               </th>
             )}
@@ -168,25 +115,21 @@ export default function StreamList({
           {streams.map((s) => {
             // Stable ID for the per-row amount input so label can reference it
             const amountInputId = `stream-amount-${s.id}`;
-            const isSelected = selected.includes(s.id);
 
             return (
-              <tr key={s.id} className={isSelected ? "selected-row" : undefined}>
+              <tr key={s.id}>
                 {batching && (
                   <td>
-                    <label
-                      className="sr-only"
-                      htmlFor={`stream-select-${s.id}`}
-                    >
+                    <label className="sr-only" htmlFor={`stream-select-${s.id}`}>
                       Select stream #{s.id} for a batch claim
                     </label>
                     <input
                       id={`stream-select-${s.id}`}
                       type="checkbox"
-                      checked={isSelected}
+                      checked={selected.includes(s.id)}
                       // The contract refuses a batch over its cap before reading
                       // anything, so the list refuses to build one.
-                      disabled={!isSelected && atCap}
+                      disabled={!selected.includes(s.id) && atCap}
                       onChange={() => toggle(s.id)}
                     />
                   </td>
@@ -202,9 +145,7 @@ export default function StreamList({
                 <td className="mono">{s.withdrawn}</td>
                 <td>
                   {/* Status badge uses colour + text — WCAG 1.4.1 */}
-                  <span
-                    className={`status-badge status-${s.status.toLowerCase()}`}
-                  >
+                  <span className={`status-badge status-${s.status.toLowerCase()}`}>
                     {s.status}
                   </span>
                 </td>

@@ -20,3 +20,11 @@ export interface StreamArgs {
   days: string;
   cancelable: boolean;
 }
+
+export interface StreamPolicyView {
+  minDeposit: string;
+  minDuration: number;
+  maxDuration: number;
+  minRate: string;
+  maxRate: string;
+}

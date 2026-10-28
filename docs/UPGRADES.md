@@ -108,6 +108,33 @@ while true; do
 done
 ```
 
+### Phase 4b: Per-record layout tags and `migrate_stream_version`
+`schema_version` is the *contract-wide* epoch; it cannot tell you what layout a
+single stream record is stored in. Each record therefore carries its own
+explicit tag: `put_stream` writes a `VersionedStream { version, stream }`
+envelope rather than a bare `Stream`, and reads decode the tag instead of
+inferring a shape from the bytes.
+
+* **Views**: `stream_record_version(stream_id)` returns the tag a record
+  currently carries (`StreamError::StreamNotFound` if absent).
+* **Entrypoint**: `migrate_stream_version(stream_id)` — permissionless (any
+  account, no governor), gas-bounded to one record, and **idempotent**: a
+  record already on the current layout is neither rewritten nor re-emitted, so
+  running the call twice is a no-op. A record tagged with a layout this build
+  does not understand is refused with `StreamError::SchemaVersionUnsupported`
+  (#64) rather than guessed at — the same code every read path returns, so a
+  future layout fails closed everywhere at once.
+* **Event**: `StreamRecordMigrated { stream_id, from_version, to_version }`,
+  emitted only when a rewrite actually happened.
+* **Legacy reads**: an untagged record still reads correctly (it is interpreted
+  as v1) precisely so that a deployment can be upgraded without a stop-the-world
+  migration; the tag is what makes the *unknown* case distinguishable.
+* **Planning the work off-chain**: `bash scripts/migrate_audit.sh --contract
+  <C...> --owner <address>` walks the discovery indexes and prints which streams
+  are legacy, current, or blocked. The committed example report is
+  [docs/MIGRATION_AUDIT.md](MIGRATION_AUDIT.md), regenerated and diffed in CI by
+  `bash scripts/migrate_audit.sh --check`.
+
 ### Phase 5: Executing Code Upgrade
 Once the timelock duration has elapsed (`ledger.timestamp >= pending.unlock_time`), the governor triggers execution:
 * **Entrypoint**: `execute_upgrade(caller)`
@@ -129,6 +156,50 @@ Once the timelock duration has elapsed (`ledger.timestamp >= pending.unlock_time
    ```bash
    stellar contract invoke --id <CONTRACT_ID> --source-account <GOVERNOR_SECRET> -- set_frozen --caller <GOVERNOR_ADDRESS> --frozen false
    ```
+
+### Phases 2-6 After Governance Bootstrap
+
+`governance_bootstrap` installs the two-key signer set (issue #119). Once it has
+run, the *direct* form of every upgrade step above reverts with
+`StreamError::GovernanceTimelockRequired` (code 79) — each step becomes a
+proposal that must clear its veto window and collect two distinct signer
+signatures. The actions themselves, their events and their guards are
+unchanged; only the path to invoking them changes.
+
+| Phase | Direct entry point | Governance action arm |
+| --- | --- | --- |
+| 2. Propose upgrade | `propose_upgrade` | `GovernanceAction::ProposeUpgrade(hash, delay_seconds)` |
+| 3. Freeze | `set_frozen(true)` | *not gated* — see below |
+| 4. Migrate storage | `migrate_storage` | `GovernanceAction::MigrateStorage(start_id, count)` |
+| 5. Execute upgrade | `execute_upgrade` | `GovernanceAction::ExecuteUpgrade` |
+| 6. Unfreeze | `set_frozen(false)` | `GovernanceAction::SetFrozen(false)` |
+
+```bash
+# One proposal per step, signed by both keys, executed after the veto window.
+stellar contract invoke --id <CONTRACT_ID> --source-account <SIGNER_A> -- \
+  governance_propose --caller <SIGNER_A> --action '{"set_frozen":true}'
+# -> proposal id 1; then sign, wait out the window, execute.
+```
+
+Two carve-outs survive bootstrap because they are risk-*reducing*:
+
+* **`set_frozen(true)` stays immediate.** A timelock on the break-glass is worse
+  than no break-glass, so freezing needs only the governor's signature.
+  Unfreezing reopens the contract to activity and is therefore proposed.
+* **`cancel_upgrade` stays immediate.** Aborting a pending upgrade removes
+  authority; the governor calls it directly.
+
+Note that the two clocks are independent and both must expire: a
+`ProposeUpgrade` waits out the governance veto window (default 172,800 s)
+*and* the wasm hash stays locked until `delay_seconds` after the proposal
+executes.
+
+Storage migration is the expensive one under governance: each executed proposal
+applies a single batch of at most `MAX_MIGRATION_BATCH_SIZE` (50) streams, and an
+executed proposal cannot be replayed, so a 1,000-stream migration is 20
+proposals, each with its own veto window. Bootstrap governance *after* the v1→v2
+migration for exactly this reason; a contract that still has streams to migrate
+and has already bootstrapped should expect the multi-proposal schedule.
 
 ---
 

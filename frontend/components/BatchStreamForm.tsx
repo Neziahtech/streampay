@@ -1,7 +1,9 @@
 "use client";
 
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { parseBatchCsv, type BatchStreamEntry } from "@/lib/batch";
+import { fetchAssetMeta, type AssetMeta } from "@/lib/stellar";
+import { formatAmount } from "@/lib/format";
 
 export default function BatchStreamForm({
   onCreate,
@@ -13,10 +15,26 @@ export default function BatchStreamForm({
   ) => Promise<boolean>;
 }) {
   const [token, setToken] = useState("");
+  const [loadedMeta, setLoadedMeta] = useState<AssetMeta | null>(null);
   const [csv, setCsv] = useState("");
   const [cancelable, setCancelable] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+
+  const assetMeta: AssetMeta = loadedMeta ?? { code: "TOKEN", decimals: 7 };
+
+  useEffect(() => {
+    let active = true;
+    const trimmed = token.trim();
+    if (trimmed) {
+      fetchAssetMeta(trimmed).then((meta) => {
+        if (active) setLoadedMeta(meta);
+      });
+    }
+    return () => {
+      active = false;
+    };
+  }, [token]);
 
   // Stable IDs for ARIA associations (WCAG 1.3.1 / 4.1.2)
   const formId = useId();
@@ -130,6 +148,76 @@ export default function BatchStreamForm({
         summed deposits (plus any configured fees) before submitting. The
         contract applies this batch atomically.
       </p>
+
+      {(() => {
+        let previewEntries: BatchStreamEntry[] = [];
+        try {
+          if (csv.trim()) {
+            previewEntries = parseBatchCsv(csv);
+          }
+        } catch {
+          // Incomplete input while typing
+        }
+
+        if (previewEntries.length === 0) return null;
+
+        const totalDeposit = previewEntries.reduce(
+          (sum, e) => sum + BigInt(e.deposit),
+          0n
+        );
+
+        return (
+          <div
+            className="stream-preview"
+            style={{
+              background: "rgba(255, 255, 255, 0.02)",
+              border: "1px solid var(--line)",
+              borderRadius: "8px",
+              padding: "12px 16px",
+              marginTop: "14px",
+              marginBottom: "14px",
+            }}
+            aria-label="Batch stream preview"
+          >
+            <div
+              style={{
+                fontSize: "0.75rem",
+                fontWeight: 700,
+                color: "var(--accent2)",
+                textTransform: "uppercase",
+                letterSpacing: "0.05em",
+                marginBottom: "8px",
+              }}
+            >
+              Batch Preview
+            </div>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+                gap: "12px",
+              }}
+            >
+              <div>
+                <div className="muted" style={{ fontSize: "0.8rem" }}>
+                  Total Batch Deposit
+                </div>
+                <div className="mono" style={{ fontSize: "1.05rem", fontWeight: 600 }}>
+                  {formatAmount(totalDeposit, assetMeta.decimals)} {assetMeta.code}
+                </div>
+              </div>
+              <div>
+                <div className="muted" style={{ fontSize: "0.8rem" }}>
+                  Streams in Batch
+                </div>
+                <div className="mono" style={{ fontSize: "1.05rem", fontWeight: 600 }}>
+                  {previewEntries.length} stream{previewEntries.length === 1 ? "" : "s"}
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Error — role="alert" so SR reads it immediately (WCAG 4.1.3) */}
       {error && (
