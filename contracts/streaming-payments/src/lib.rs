@@ -105,6 +105,8 @@ mod policy;
 mod schedule;
 #[cfg(test)]
 mod schedule_test;
+#[cfg(test)]
+mod schema_guard_test;
 pub(crate) mod sponsor;
 #[cfg(test)]
 mod sponsor_test;
