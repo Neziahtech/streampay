@@ -69,7 +69,8 @@ test.describe("visual gate self-test", () => {
     // of guessed at.
     await page.evaluate(() => {
       const host = globalThis as unknown as { __STREAMPAY_VISUAL_EVIDENCE__?: string[] };
-      const log = (host.__STREAMPAY_VISUAL_EVIDENCE__ = []);
+      const log: string[] = [];
+      host.__STREAMPAY_VISUAL_EVIDENCE__ = log;
       const t0 = performance.now();
       const label = (node: Node | null): string => {
         const el = node instanceof Element ? node : (node?.parentElement ?? null);
@@ -137,40 +138,43 @@ test.describe("visual gate self-test", () => {
 
     expect(await counter.textContent()).toBe(before);
 
+    let evidence = "";
     const drift =
       `render drifted while the clock was frozen: ${first.png.length} vs ${second.png.length} bytes, ` +
       `scrollHeight ${first.height} -> ${second.height}, ` +
       `animations ${first.animations.join(",") || "none"} -> ${second.animations.join(",") || "none"}, ` +
-      `${mutations.length} DOM mutations [${mutations.slice(0, 12).join(" ;; ")}]`;
+      `${mutations.length} DOM mutations [${mutations.slice(0, 25).join(" ;; ").slice(0, 1_500)}]`;
 
+    // Attaching by `body` rather than by `path`: the test's output directory is
+    // not created until Playwright itself writes to it, so writing a file there
+    // from the test body fails with ENOENT — and an evidence bug that throws
+    // replaces the very failure the evidence exists to explain. So nothing
+    // touches the filesystem, and the whole capture is wrapped anyway: if it
+    // ever does go wrong the message says so and the assertion still runs.
     if (Buffer.compare(first.png, second.png) !== 0) {
-      await Promise.all([
-        fs.promises.writeFile(`${testInfo.outputDir}/drift-before.png`, first.png),
-        fs.promises.writeFile(`${testInfo.outputDir}/drift-after.png`, second.png),
-      ]);
-      await testInfo.attach("drift-before", {
-        path: `${testInfo.outputDir}/drift-before.png`,
-        contentType: "image/png",
-      });
-      await testInfo.attach("drift-after", {
-        path: `${testInfo.outputDir}/drift-after.png`,
-        contentType: "image/png",
-      });
-      await testInfo.attach("drift-dom-mutations", {
-        body: Buffer.from(
-          [
-            drift,
-            `capture 1 animations: ${first.animations.join(", ") || "none"}`,
-            `capture 2 animations: ${second.animations.join(", ") || "none"}`,
-            ...mutations,
-          ].join("\n"),
-          "utf8"
-        ),
-        contentType: "text/plain",
-      });
+      try {
+        await Promise.all([
+          testInfo.attach("drift-before", { body: first.png, contentType: "image/png" }),
+          testInfo.attach("drift-after", { body: second.png, contentType: "image/png" }),
+          testInfo.attach("drift-dom-mutations", {
+            body: Buffer.from(
+              [
+                drift,
+                `capture 1 animations: ${first.animations.join(", ") || "none"}`,
+                `capture 2 animations: ${second.animations.join(", ") || "none"}`,
+                ...mutations,
+              ].join("\n"),
+              "utf8"
+            ),
+            contentType: "text/plain",
+          }),
+        ]);
+      } catch (e) {
+        evidence = `evidence capture failed: ${String(e)}`;
+      }
     }
 
-    expect(Buffer.compare(first.png, second.png), drift).toBe(0);
+    expect(Buffer.compare(first.png, second.png), [drift, evidence].filter(Boolean).join(" — ")).toBe(0);
 
     // Positive control: the counter is clock-driven, so moving the fake clock
     // a minute forward must move it on the next tick.
