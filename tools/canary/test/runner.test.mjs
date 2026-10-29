@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -99,4 +99,37 @@ test("forced failure writes alert-ready XDR evidence without network access", ()
       if (error.code !== "ENOENT") throw error;
     }
   }
+});
+
+test("the canary and the frontend lock the same @stellar/stellar-sdk build", () => {
+  // runner.ts imports the operation builders out of frontend/lib/stellar-ops.ts
+  // instead of copying them, and Node resolves a bare specifier from the importing
+  // file upwards — so one process ends up holding two installs of the SDK: the
+  // canary's own copy for its direct import, and the copy that the frontend module
+  // loads for itself. buildTransaction() then hands an xdr.Operation built by one
+  // copy to a TransactionBuilder from the other.
+  //
+  // That is only safe while both trees lock the identical version. Dependabot
+  // bumps one tree at a time, and a silent cross-version canary is worse than a
+  // red one — it reports the lifecycle as healthy while testing a combination that
+  // ships nowhere. Pin the invariant so the drift fails at review time rather than
+  // inside a scheduled job nobody is watching.
+  const lockedSdkVersion = (lockPath) => {
+    const { packages } = JSON.parse(readFileSync(lockPath, "utf8"));
+    const entry = Object.entries(packages ?? {}).find(([name]) =>
+      name.endsWith("node_modules/@stellar/stellar-sdk")
+    );
+    assert.ok(entry, `${lockPath} does not lock @stellar/stellar-sdk`);
+    return entry[1].version;
+  };
+
+  const canaryVersion = lockedSdkVersion(join(packagePath, "package-lock.json"));
+  const frontendVersion = lockedSdkVersion(
+    resolve(packagePath, "../../frontend/package-lock.json")
+  );
+  assert.equal(
+    canaryVersion,
+    frontendVersion,
+    `tools/canary locks @stellar/stellar-sdk ${canaryVersion} and frontend locks ${frontendVersion}; the canary executes frontend modules against its own copy, so bump both lockfiles together`
+  );
 });
