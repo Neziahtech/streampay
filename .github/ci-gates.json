@@ -33,6 +33,16 @@
         "Dependency audit",
         "Explain a dependency-audit failure"
       ],
+      "storybook-visual": [
+        "Install dependencies",
+        "Playwright matches the container image",
+        "Storybook build",
+        "Visual regression (Playwright screenshot diff)",
+        "Upload visual diffs",
+        "Render candidate baselines",
+        "Upload candidate baselines",
+        "Explain a visual-regression failure"
+      ],
       "ttl-sentinel": [
         "Typecheck",
         "Unit + fast-forward ledger tests",
