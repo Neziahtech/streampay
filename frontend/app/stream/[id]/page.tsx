@@ -15,6 +15,7 @@ import {
   RELAY_URL,
   SPONSOR_ADDRESS,
   STREAMING_CONTRACT_ID,
+  sweepStream,
   withdrawFromStream,
   withdrawMaxFromStream,
   fetchAssetMeta,
@@ -43,7 +44,7 @@ import {
 } from "@/lib/sponsor";
 import { useToast } from "@/components/toast";
 import { useWallet } from "@/lib/wallet-context";
-import { validateWithdrawal } from "@/lib/withdrawal";
+import { validateWithdrawal, isClaimWorthwhile, MIN_CLAIM_AMOUNT } from "@/lib/withdrawal";
 import { formatAmount } from "@/lib/format";
 import DiscoveryConsentModal from "@/components/DiscoveryConsentModal";
 
@@ -235,6 +236,12 @@ export default function StreamDetail() {
     setSubmitting(true);
     try {
       if (max) {
+        if (available !== null && !isClaimWorthwhile(available)) {
+          toast.error(
+            `Accrued balance (${available.toString()} units) is below the minimum economic claim threshold (${MIN_CLAIM_AMOUNT.toString()} units). Not worth claiming yet.`
+          );
+          return;
+        }
         const paid = await withdrawMaxFromStream(address, stream!.id, signTransaction);
         const paidStr = assetMeta
           ? `${formatAmount(paid, assetMeta.decimals)} ${assetMeta.code}`
@@ -263,6 +270,22 @@ export default function StreamDetail() {
         setIsAmountDirty(false);
       }
       setAmount("");
+      await engineRef.current?.refresh();
+    } catch (e) {
+      toast.error(describeError(e));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function doSweep() {
+    if (!address) return;
+    setSubmitting(true);
+    try {
+      const refund = await sweepStream(address, stream!.id, address, signTransaction);
+      toast.success(
+        `Stream storage purged! Residual rent refund of ${refund.toString()} stroops credited.`
+      );
       await engineRef.current?.refresh();
     } catch (e) {
       toast.error(describeError(e));
@@ -498,6 +521,24 @@ export default function StreamDetail() {
       {isRecipient && stream.status === "Active" && (
         <section className="card">
           <h2>Withdraw accrued funds</h2>
+          {available !== null && available > 0n && !isClaimWorthwhile(available) && (
+            <div
+              className="notice warning"
+              role="status"
+              style={{
+                marginBottom: "1rem",
+                padding: "0.75rem 1rem",
+                borderRadius: "6px",
+                border: "1px solid rgba(234, 179, 8, 0.4)",
+                backgroundColor: "rgba(234, 179, 8, 0.1)",
+                color: "#eab308",
+                fontSize: "0.9rem",
+                lineHeight: "1.4",
+              }}
+            >
+              <strong>⚠️ Not worth claiming yet:</strong> Accrued balance ({available.toString()} units) is below the minimum economic claim threshold ({MIN_CLAIM_AMOUNT.toString()} units). Network gas fees would exceed the value received.
+            </div>
+          )}
           <div className="row">
             <input
               type="number"
@@ -536,8 +577,16 @@ export default function StreamDetail() {
             </button>
             <button
               onClick={() => void doWithdraw(true)}
-              disabled={submitting || available === 0n}
-              title="withdraw_max: atomic claim of the full accrued balance"
+              disabled={
+                submitting ||
+                available === 0n ||
+                (available !== null && !isClaimWorthwhile(available))
+              }
+              title={
+                available !== null && !isClaimWorthwhile(available)
+                  ? "Accrued balance is below the minimum economic claim threshold"
+                  : "withdraw_max: atomic claim of the full accrued balance"
+              }
             >
               Withdraw max
             </button>
@@ -644,6 +693,23 @@ export default function StreamDetail() {
             </button>
           </section>
         )}
+
+      {(stream.status === "Depleted" || stream.status === "Cancelled") && (
+        <section className="card">
+          <h2>Reclaim residual storage rent</h2>
+          <p className="muted">
+            This stream is <strong>{stream.status.toLowerCase()}</strong> and no longer active, but its entry still occupies Soroban persistent storage.
+            Anyone can permissionlessly sweep it to purge ledger state and refund residual rent.
+          </p>
+          <button
+            onClick={() => void doSweep()}
+            disabled={submitting || !address}
+            title="Permissionlessly sweep depleted or cancelled stream and refund storage rent"
+          >
+            {submitting ? "Sweeping…" : "Sweep & Refund Rent"}
+          </button>
+        </section>
+      )}
 
       {(isSender || isRecipient) && (
         <section className="card">

@@ -32,6 +32,7 @@ import { sanitizeAddress } from "./privacy.ts";
 import {
   buildCancelStreamOperation,
   buildCreateStreamOperationForDays,
+  buildSweepStreamOperation,
   buildWithdrawAllOperation,
   buildWithdrawOperation,
   buildWithdrawMaxOperation,
@@ -571,6 +572,24 @@ export async function withdrawAllFromStreams(
     recipient,
     buildWithdrawAllOperation(CONTRACT_ID, recipient, pageBounds),
     (v) => decodeWithdrawAllResult(v),
+    signer
+  );
+}
+
+/**
+ * Permissionlessly sweeps a depleted or cancelled stream, purging persistent
+ * ledger state and crediting residual storage rent (in stroops).
+ */
+export async function sweepStream(
+  caller: string,
+  streamId: string,
+  designatedParty: string | undefined,
+  signer: TxSigner
+): Promise<bigint> {
+  return send(
+    caller,
+    buildSweepStreamOperation(CONTRACT_ID, caller, streamId, designatedParty),
+    (v) => BigInt(scValToNative(v) as bigint),
     signer
   );
 }

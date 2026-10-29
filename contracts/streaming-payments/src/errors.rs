@@ -759,6 +759,26 @@ pub enum StreamError {
         doc = " paused, or `resume_stream` on a stream that is not paused."
     )]
     InvalidPauseTransition = 99,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Stream deposit is below the protocol minimum funding threshold (MIN_STREAM_DEPOSIT)."
+    )]
+    DepositBelowMinimum = 100,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Withdrawal amount is below the protocol minimum claim threshold (MIN_CLAIM_AMOUNT)."
+    )]
+    ClaimBelowMinimum = 101,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Stream does not qualify for sweeping (it is still active with unwithdrawn funds)."
+    )]
+    StreamNotSweepable = 102,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Token transfer failed when crediting a rent refund to the designated party."
+    )]
+    RentRefundTransferFailed = 103,
 }
 
 impl StreamError {
@@ -865,6 +885,10 @@ impl StreamError {
         StreamError::WithdrawBatchTooLarge,
         StreamError::WithdrawDuplicateStreamIds,
         StreamError::InvalidPauseTransition,
+        StreamError::DepositBelowMinimum,
+        StreamError::ClaimBelowMinimum,
+        StreamError::StreamNotSweepable,
+        StreamError::RentRefundTransferFailed,
     ];
 
     /// The stable numeric value carried across the contract boundary

@@ -225,6 +225,19 @@ fn probe(branch: Branch) -> Option<StreamError> {
                 &false,
             )))
         }
+        Branch::CreateDepositBelowMinimum => {
+            let f = Fixture::setup_quiet();
+            let now = f.env.ledger().timestamp();
+            Some(rejected!(f.client.mock_all_auths().try_create_stream(
+                &f.sender,
+                &f.recipient,
+                &f.token,
+                &(crate::stream::MIN_STREAM_DEPOSIT - 1),
+                &(now + DAY),
+                &(now + 2 * DAY),
+                &false,
+            )))
+        }
         Branch::CreateStartTimeInPast => {
             let f = Fixture::setup_quiet();
             let now = f.env.ledger().timestamp();
@@ -285,6 +298,15 @@ fn probe(branch: Branch) -> Option<StreamError> {
             f.advance_time(2 * DAY);
             Some(rejected!(f.client.mock_all_auths().try_withdraw(&id, &0)))
         }
+        Branch::WithdrawAmountBelowMinimum => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            f.advance_time(2 * DAY);
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_withdraw(&id, &(crate::stream::MIN_CLAIM_AMOUNT - 1))))
+        }
         Branch::WithdrawAmountExceedsAvailable => {
             let f = Fixture::setup_quiet();
             let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
@@ -299,6 +321,35 @@ fn probe(branch: Branch) -> Option<StreamError> {
             let f = Fixture::setup_quiet();
             let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
             Some(rejected!(f.client.mock_all_auths().try_withdraw_max(&id)))
+        }
+        Branch::WithdrawMaxAmountBelowMinimum => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(10_000, DAY, DAY + 10_000, false);
+            f.advance_time(DAY + 10);
+            Some(rejected!(f.client.mock_all_auths().try_withdraw_max(&id)))
+        }
+        // ------------------------------------------------------ sweep_stream
+        Branch::StreamNotSweepable => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            let caller = Address::generate(&f.env);
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_sweep_stream(&caller, &id, &None)))
+        }
+        // -------------------------------------------------- claim_rent_refund
+        Branch::RentRefundTransferFailed => {
+            let f = RefusingFixture::setup_quiet();
+            f.env.as_contract(&f.client.address, || {
+                let _ = crate::stream::credit_rent_refund(&f.env, &f.sender, 1_000);
+            });
+            f.refuse(true, false);
+            Some(rejected!(f.client.mock_all_auths().try_claim_rent_refund(
+                &f.sender,
+                &f.token,
+                &f.recipient,
+            )))
         }
         // ----------------------------------------------------- cancel_stream
         Branch::CancelStreamNotCancellable => {
@@ -500,7 +551,7 @@ fn probe(branch: Branch) -> Option<StreamError> {
             let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
             f.advance_time(2 * DAY); // accrue so the amount checks pass
                                      // Deliberately skip `enroll_beneficiary`.
-            Some(rejected!(sponsored_claim(&f, &sponsor, id, 1, 1, {
+            Some(rejected!(sponsored_claim(&f, &sponsor, id, 100, 1, {
                 f.env.ledger().timestamp() + DAY
             })))
         }
@@ -512,7 +563,7 @@ fn probe(branch: Branch) -> Option<StreamError> {
             f.advance_time(2 * DAY);
             enroll(&f, &f.recipient);
             // deadline is far in the past relative to the advanced clock.
-            Some(rejected!(sponsored_claim(&f, &sponsor, id, 1, 1, 0)))
+            Some(rejected!(sponsored_claim(&f, &sponsor, id, 100, 1, 0)))
         }
         Branch::ClaimNonceReplay => {
             let f = Fixture::setup_quiet();
@@ -526,7 +577,7 @@ fn probe(branch: Branch) -> Option<StreamError> {
             f.env.as_contract(&f.client.address, || {
                 sponsor::mark_nonce(&f.env, &sponsor, &f.recipient, 5);
             });
-            Some(rejected!(sponsored_claim(&f, &sponsor, id, 1, 5, {
+            Some(rejected!(sponsored_claim(&f, &sponsor, id, 100, 5, {
                 f.env.ledger().timestamp() + DAY
             })))
         }
@@ -1914,7 +1965,11 @@ fn stream_error_variant_list_is_exhaustive() {
             | StreamError::RefundTargetUnchanged
             | StreamError::WithdrawBatchEmpty
             | StreamError::WithdrawBatchTooLarge
-            | StreamError::WithdrawDuplicateStreamIds => StreamError::ALL.contains(&e),
+            | StreamError::WithdrawDuplicateStreamIds
+            | StreamError::DepositBelowMinimum
+            | StreamError::ClaimBelowMinimum
+            | StreamError::StreamNotSweepable
+            | StreamError::RentRefundTransferFailed => StreamError::ALL.contains(&e),
         }
     }
 

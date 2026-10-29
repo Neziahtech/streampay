@@ -8,7 +8,7 @@ Every expected failure is a `StreamError` with a stable numeric code. This docum
 
 | Code | Variant | Status | Processed by | Meaning |
 | ---: | --- | --- | --- | --- |
-| 1 | `StreamNotFound` | reachable (1 branch(es)) | `accept_ownership_transfer`, `accept_rate_change`, `accept_sender_transfer`, `available`, `cancel_stream`, `expire_dispute`, `get_stream`, `migrate_stream_version`, `pause_stream`, `propose_ownership_transfer`, `propose_rate_change`, `propose_sender_transfer`, `raise_dispute`, `refund_target`, `required_dispute_bond`, `resolve_dispute`, `resume_stream`, `sender_history`, `set_refund_target`, `sponsored_withdraw`, `stream_record_version`, `top_up`, `withdraw`, `withdraw_all`, `withdraw_many`, `withdraw_max` | no stream is stored under the id |
+| 1 | `StreamNotFound` | reachable (1 branch(es)) | `accept_ownership_transfer`, `accept_rate_change`, `accept_sender_transfer`, `available`, `cancel_stream`, `expire_dispute`, `get_stream`, `migrate_stream_version`, `pause_stream`, `propose_ownership_transfer`, `propose_rate_change`, `propose_sender_transfer`, `raise_dispute`, `refund_target`, `required_dispute_bond`, `resolve_dispute`, `resume_stream`, `sender_history`, `set_refund_target`, `sponsored_withdraw`, `stream_record_version`, `sweep_stream`, `top_up`, `withdraw`, `withdraw_all`, `withdraw_many`, `withdraw_max` | no stream is stored under the id |
 | 2 | `NotStreamSender` | **retired** (unreachable) | — | Reserved role check from the original draft. The contract authorizes sender-only actions by comparing the caller address directly and uses `NotAuthorized` (#12) otherwise, so this variant is never returned. Retained for wire compatibility. |
 | 3 | `NotStreamRecipient` | **retired** (unreachable) | — | Reserved role check from the original draft. Recipient-only actions require the recipient's authorization (`require_auth`) and use `NotAuthorized` (#12) for business-rule rejections, so this variant is never returned. Retained for wire compatibility. |
 | 4 | `StreamNotCancellable` | reachable (1 branch(es)) | `cancel_stream` | the recipient calls cancel_stream on a stream created non-cancelable |
@@ -107,18 +107,27 @@ Every expected failure is a `StreamError` with a stable numeric code. This docum
 | 97 | `WithdrawBatchTooLarge` | reachable (1 branch(es)) | `withdraw_many` | the batch withdraw exceeds MAX_WITHDRAW_BATCH stream ids |
 | 98 | `WithdrawDuplicateStreamIds` | reachable (1 branch(es)) | `withdraw_many` | the same stream id appears more than once in the batch |
 | 99 | `InvalidPauseTransition` | reachable (2 branch(es)) | `pause_stream`, `resume_stream` | the stream is already paused; the stream is not paused |
+| 100 | `DepositBelowMinimum` | reachable (1 branch(es)) | `create_stream`, `create_streams` | deposit_amount is below MIN_STREAM_DEPOSIT |
+| 101 | `ClaimBelowMinimum` | reachable (2 branch(es)) | `withdraw`, `withdraw_all`, `withdraw_many`, `withdraw_max` | withdraw amount is below MIN_CLAIM_AMOUNT; available amount is below MIN_CLAIM_AMOUNT |
+| 102 | `StreamNotSweepable` | reachable (1 branch(es)) | `sweep_stream` | the stream is active or has unwithdrawn funds and cannot be swept |
+| 103 | `RentRefundTransferFailed` | reachable (1 branch(es)) | `claim_rent_refund` | token transfer failed when crediting the rent refund to the designated party |
 
 ## Branch matrix (entrypoint × condition → error)
 
 | Branch | Entrypoint(s) | Error | Code | Condition | Reachability |
 | --- | --- | --- | ---: | --- | --- |
 | `CreateDepositNonPositive` | `create_stream`, `create_streams` | `ZeroAmount` | 9 | deposit_amount is zero or negative | reachable |
+| `CreateDepositBelowMinimum` | `create_stream`, `create_streams` | `DepositBelowMinimum` | 100 | deposit_amount is below MIN_STREAM_DEPOSIT | reachable |
 | `CreateStartTimeInPast` | `create_stream`, `create_streams` | `StartTimeInPast` | 6 | start_time is before the current ledger timestamp | reachable |
 | `CreateInvalidTimeRange` | `create_stream`, `create_streams` | `InvalidTimeRange` | 7 | end_time is not strictly after start_time (zero or negative duration) | reachable |
 | `CreateDurationTooLong` | `create_stream`, `create_streams` | `DurationTooLong` | 8 | duration exceeds MAX_DURATION_SECONDS (100 years) | reachable |
 | `WithdrawAmountNonPositive` | `withdraw` | `ZeroAmount` | 9 | withdraw amount is zero or negative | reachable |
+| `WithdrawAmountBelowMinimum` | `withdraw` | `ClaimBelowMinimum` | 101 | withdraw amount is below MIN_CLAIM_AMOUNT | reachable |
 | `WithdrawAmountExceedsAvailable` | `withdraw` | `AmountExceedsAvailable` | 10 | amount exceeds the accrued-but-unwithdrawn balance | reachable |
 | `WithdrawMaxNothingToWithdraw` | `withdraw_max`, `withdraw_many`, `withdraw_all` | `NothingToWithdraw` | 13 | nothing has accrued yet, or everything accrued was already withdrawn | reachable |
+| `WithdrawMaxAmountBelowMinimum` | `withdraw_max`, `withdraw_many`, `withdraw_all` | `ClaimBelowMinimum` | 101 | available amount is below MIN_CLAIM_AMOUNT | reachable |
+| `StreamNotSweepable` | `sweep_stream` | `StreamNotSweepable` | 102 | the stream is active or has unwithdrawn funds and cannot be swept | reachable |
+| `RentRefundTransferFailed` | `claim_rent_refund` | `RentRefundTransferFailed` | 103 | token transfer failed when crediting the rent refund to the designated party | reachable |
 | `CancelStreamNotCancellable` | `cancel_stream` | `StreamNotCancellable` | 4 | the recipient calls cancel_stream on a stream created non-cancelable | reachable |
 | `CancelStreamNotAuthorized` | `cancel_stream` | `NotAuthorized` | 12 | the caller is neither the sender nor the recipient | reachable |
 | `TopUpAmountNonPositive` | `top_up` | `ZeroAmount` | 9 | top-up amount is zero or negative | reachable |
@@ -129,7 +138,7 @@ Every expected failure is a `StreamError` with a stable numeric code. This docum
 | `DisputeNotOpen` | `get_dispute`, `resolve_dispute`, `expire_dispute` | `DisputeNotFound` | 81 | no open dispute exists on the stream | reachable |
 | `ExpireDisputeTooEarly` | `expire_dispute` | `DisputeNotExpired` | 82 | expire_dispute called before the dispute timelock elapsed | reachable |
 | `ResolveCallerNotSender` | `resolve_dispute` | `NotAuthorized` | 12 | resolve_dispute called by a non-sender | reachable |
-| `StreamNotFound` | `get_stream`, `available`, `withdraw`, `withdraw_max`, `withdraw_many`, `withdraw_all`, `cancel_stream`, `top_up`, `raise_dispute`, `expire_dispute`, `resolve_dispute`, `required_dispute_bond`, `sponsored_withdraw`, `propose_ownership_transfer`, `accept_ownership_transfer`, `propose_rate_change`, `accept_rate_change`, `propose_sender_transfer`, `accept_sender_transfer`, `set_refund_target`, `stream_record_version`, `migrate_stream_version`, `refund_target`, `sender_history`, `pause_stream`, `resume_stream` | `StreamNotFound` | 1 | no stream is stored under the id | reachable |
+| `StreamNotFound` | `get_stream`, `available`, `withdraw`, `withdraw_max`, `withdraw_many`, `withdraw_all`, `cancel_stream`, `top_up`, `raise_dispute`, `expire_dispute`, `resolve_dispute`, `required_dispute_bond`, `sponsored_withdraw`, `propose_ownership_transfer`, `accept_ownership_transfer`, `propose_rate_change`, `accept_rate_change`, `propose_sender_transfer`, `accept_sender_transfer`, `set_refund_target`, `stream_record_version`, `migrate_stream_version`, `refund_target`, `sender_history`, `pause_stream`, `resume_stream`, `sweep_stream` | `StreamNotFound` | 1 | no stream is stored under the id | reachable |
 | `StreamNotActive` | `withdraw`, `withdraw_max`, `withdraw_many`, `withdraw_all`, `cancel_stream`, `top_up`, `raise_dispute`, `sponsored_withdraw`, `propose_ownership_transfer`, `accept_ownership_transfer`, `propose_rate_change`, `accept_rate_change`, `propose_sender_transfer`, `accept_sender_transfer`, `set_refund_target`, `pause_stream`, `resume_stream` | `StreamNotActive` | 5 | the stream status is Cancelled or Depleted | reachable |
 | `CapacityOverflow` | `create_stream`, `top_up`, `accept_rate_change` | `MathOverflow` | 11 | deposit * duration would overflow u128 | reachable |
 | `RateProductOverflow` | `streamed_at`, `available`, `withdraw`, `withdraw_max`, `withdraw_many`, `withdraw_all`, `cancel_stream`, `sponsored_withdraw`, `accept_rate_change` | `MathOverflow` | 11 | deposit * elapsed would overflow u128 | reachable |
