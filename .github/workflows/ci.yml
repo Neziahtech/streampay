@@ -362,6 +362,25 @@ jobs:
       - name: Client parity smoke tests
         run: npm run test:parity
 
+      # The scheduled testnet canary imports this tree's signing-free builders
+      # (tools/canary/runner.ts -> frontend/lib/stellar-ops.ts), so its suite is
+      # the only check that proves the cross-tree import still resolves *at
+      # runtime* and still produces operations the frontend can build. Nothing
+      # here ever ran it: the canary workflow is schedule-only, and the first
+      # scheduled run after it landed (2026-10-29, ten days later) died before it
+      # reached testnet with ERR_MODULE_NOT_FOUND, because Node resolves a bare
+      # specifier from the importing file upwards and cannot see
+      # tools/canary/node_modules from a module in frontend/lib.
+      #
+      # This job is where that check belongs: the frontend install it already made
+      # is the half the canary could not provide for itself, so the marginal cost
+      # is one small, locked, script-free install of the canary's own tree. It runs
+      # the forced-failure path, so it needs no network and no testnet credentials.
+      - name: Testnet canary suite (imports the frontend builders)
+        run: |
+          npm ci --prefix ../tools/canary --ignore-scripts --no-audit --no-fund
+          cd ../tools/canary && npm test
+
       # -----------------------------------------------------------------------
       # Clock-skew suite (issue #211): the time-matrix harness runs the accrual
       # paths under controlled skew between the three clocks (local Date.now(),
