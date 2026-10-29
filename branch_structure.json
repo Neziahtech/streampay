@@ -1,0 +1,21 @@
+{
+  "default_branch": "main",
+  "branches": [
+    "feat/issue-82-test-signing-request-conformance-suite-for",
+    "main",
+    "origin",
+    "security/issue-56-feat-session-keys-capped-automated-withdrawals"
+  ],
+  "parent": {
+    "feat/issue-82-test-signing-request-conformance-suite-for": "main",
+    "main": null,
+    "origin": "main",
+    "security/issue-56-feat-session-keys-capped-automated-withdrawals": "main"
+  },
+  "order": [
+    "main",
+    "feat/issue-82-test-signing-request-conformance-suite-for",
+    "origin",
+    "security/issue-56-feat-session-keys-capped-automated-withdrawals"
+  ]
+}
