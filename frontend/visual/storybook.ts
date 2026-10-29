@@ -56,9 +56,29 @@ declare global {
 }
 
 /**
+ * A settled render is not yet a *pinned* one: elements can still be animating.
+ * A baseline has exactly one committed state, and an infinite CSS animation has
+ * none. Playwright's `animations: "disabled"` pauses or cancels an animation at
+ * capture time rather than removing it, so what lands in the PNG depends on
+ * where in its cycle the animation happened to be (`pulse` and `wallet-spin` in
+ * app/globals.css are both infinite, and a transition that a re-render restarts
+ * mid-flight behaves the same way). Declaring the animation away instead — the
+ * same thing the app's own `prefers-reduced-motion` block does to `.live-dot` —
+ * pins every element to its static specified style, which is the only state a
+ * baseline can commit to. The caret is hidden the same way, so a focused field
+ * cannot blink between two captures of the same render.
+ */
+const PIN_RENDERED_STATE = `*, *::before, *::after {
+  animation: none !important;
+  transition: none !important;
+  caret-color: transparent !important;
+}`;
+
+/**
  * Opens a story in the bare preview iframe and waits until it is settled:
- * the render (including its `play` function) has completed, web fonts have
- * loaded, and two animation frames have passed so the last commit is painted.
+ * the render (including its `play` function) has completed, the animation and
+ * transition state is pinned, web fonts have loaded, and two animation frames
+ * have passed so the last commit is painted.
  *
  * Fails the test if the story errored, threw an uncaught exception, or tried
  * to reach anything other than the local Storybook server.
@@ -91,6 +111,8 @@ export async function renderStory(page: Page, id: string): Promise<void> {
     page.locator(".sb-show-errordisplay"),
     `story ${id} rendered Storybook's error display`
   ).toHaveCount(0);
+
+  await page.addStyleTag({ content: PIN_RENDERED_STATE });
 
   await page.evaluate(async () => {
     await document.fonts.ready;
