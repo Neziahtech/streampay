@@ -1,5 +1,5 @@
 use soroban_sdk::{Env, Address};
-use crate::types::{GovernanceCaps, DataKey};
+use crate::types:{GovernanceCaps, DataKey};
 
 pub fn set_governance_caps(env: Env, admin: Address, max_per_stream: i128, max_global: i128) {
     admin.require_auth();
