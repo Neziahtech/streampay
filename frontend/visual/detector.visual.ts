@@ -9,6 +9,9 @@
  *  2. The live-accrual counter is frozen by the injected clock: two captures
  *     seconds apart are byte-identical, and advancing the fake clock changes
  *     the render (so (1)'s stability is not an accident of a static page).
+ *     When (2) does fail it records what moved — the DOM mutations inside the
+ *     window, the height and animation state each capture saw, and both PNGs —
+ *     because a drift that cannot be explained cannot be fixed.
  */
 
 import fs from "node:fs";
@@ -48,18 +51,126 @@ test.describe("visual gate self-test", () => {
     expect(failure?.message).toMatch(/pixels? .*different|Screenshot comparison failed/i);
   });
 
-  test("the injected clock freezes the live-accrual counter", async ({ page }) => {
+  test("the injected clock freezes the live-accrual counter", async ({ page }, testInfo) => {
     await renderStory(page, LIVE_STORY);
     const counter = page.getByLabel(/^Available balance:/);
 
-    const first = await page.screenshot({ fullPage: true, animations: "disabled" });
+    // Evidence capture, not a relaxation: the byte comparison below is exactly
+    // as strict as it was. What it adds is the answer to *why* two captures of
+    // a frozen clock can differ, because "Received: -1" on its own does not
+    // say. Every DOM mutation inside the window is recorded (a remount shows up
+    // as removed+added nodes, a ticking value as one characterData record, a
+    // re-render that only touches attributes as an attribute record), along
+    // with the document height each capture saw — `fullPage` output changes
+    // size with the height, so a one-pixel layout shift rewrites the whole
+    // image — and the animations still alive behind the pin. When the bytes
+    // differ, both PNGs are attached to the report, which CI uploads as the
+    // `visual-diffs` artifact, so the drift can be read pixel by pixel instead
+    // of guessed at.
+    await page.evaluate(() => {
+      const host = globalThis as unknown as { __STREAMPAY_VISUAL_EVIDENCE__?: string[] };
+      const log = (host.__STREAMPAY_VISUAL_EVIDENCE__ = []);
+      const t0 = performance.now();
+      const label = (node: Node | null): string => {
+        const el = node instanceof Element ? node : (node?.parentElement ?? null);
+        if (!el) return "(detached)";
+        const id = el.id ? `#${el.id}` : "";
+        const classes = el.classList.length > 0 ? `.${[...el.classList].join(".")}` : "";
+        return `${el.nodeName.toLowerCase()}${id}${classes}`;
+      };
+      const clip = (value: string | null): string => (value ?? "").replace(/\s+/g, " ").slice(0, 60);
+      new MutationObserver((records) => {
+        for (const record of records) {
+          if (log.length >= 200) return;
+          const at = `+${Math.round(performance.now() - t0)}ms`;
+          if (record.type === "childList") {
+            const added = [...record.addedNodes].map(label).join(",");
+            const removed = [...record.removedNodes].map(label).join(",");
+            log.push(`${at} children of ${label(record.target)} removed[${removed}] added[${added}]`);
+          } else if (record.type === "characterData") {
+            log.push(`${at} text of ${label(record.target)} "${clip(record.oldValue)}" -> "${clip(record.target.nodeValue)}"`);
+          } else {
+            const el = record.target as Element;
+            log.push(`${at} ${label(el)} @${record.attributeName} = "${clip(el.getAttribute(record.attributeName ?? ""))}" (was "${clip(record.oldValue)}")`);
+          }
+        }
+      }).observe(document.documentElement, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        characterData: true,
+        attributeOldValue: true,
+        characterDataOldValue: true,
+      });
+    });
+
+    interface Capture {
+      png: Buffer;
+      height: number;
+      animations: string[];
+    }
+
+    const capture = async (): Promise<Capture> => {
+      const [png, height, animations] = await Promise.all([
+        page.screenshot({ fullPage: true, animations: "disabled" }),
+        page.evaluate(() => document.documentElement.scrollHeight),
+        page.evaluate(() =>
+          document.getAnimations().map((a) =>
+            `${a instanceof CSSAnimation ? a.animationName : a.constructor.name}:${a.playState}`
+          )
+        ),
+      ]);
+      return { png, height, animations };
+    };
+
+    const first = await capture();
     const before = await counter.textContent();
     // The engine's local ticker fires every second; let it fire a few times.
     await page.waitForTimeout(2_500);
-    const second = await page.screenshot({ fullPage: true, animations: "disabled" });
+    const second = await capture();
+
+    const mutations = await page.evaluate(
+      () =>
+        (globalThis as unknown as { __STREAMPAY_VISUAL_EVIDENCE__?: string[] })
+          .__STREAMPAY_VISUAL_EVIDENCE__ ?? []
+    );
 
     expect(await counter.textContent()).toBe(before);
-    expect(Buffer.compare(first, second), "render drifted while the clock was frozen").toBe(0);
+
+    const drift =
+      `render drifted while the clock was frozen: ${first.png.length} vs ${second.png.length} bytes, ` +
+      `scrollHeight ${first.height} -> ${second.height}, ` +
+      `animations ${first.animations.join(",") || "none"} -> ${second.animations.join(",") || "none"}, ` +
+      `${mutations.length} DOM mutations [${mutations.slice(0, 12).join(" ;; ")}]`;
+
+    if (Buffer.compare(first.png, second.png) !== 0) {
+      await Promise.all([
+        fs.promises.writeFile(`${testInfo.outputDir}/drift-before.png`, first.png),
+        fs.promises.writeFile(`${testInfo.outputDir}/drift-after.png`, second.png),
+      ]);
+      await testInfo.attach("drift-before", {
+        path: `${testInfo.outputDir}/drift-before.png`,
+        contentType: "image/png",
+      });
+      await testInfo.attach("drift-after", {
+        path: `${testInfo.outputDir}/drift-after.png`,
+        contentType: "image/png",
+      });
+      await testInfo.attach("drift-dom-mutations", {
+        body: Buffer.from(
+          [
+            drift,
+            `capture 1 animations: ${first.animations.join(", ") || "none"}`,
+            `capture 2 animations: ${second.animations.join(", ") || "none"}`,
+            ...mutations,
+          ].join("\n"),
+          "utf8"
+        ),
+        contentType: "text/plain",
+      });
+    }
+
+    expect(Buffer.compare(first.png, second.png), drift).toBe(0);
 
     // Positive control: the counter is clock-driven, so moving the fake clock
     // a minute forward must move it on the next tick.
