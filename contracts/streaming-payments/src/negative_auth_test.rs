@@ -4,6 +4,9 @@
 //! recipient) gets a negative test proving the unsigned variant fails on-chain.
 //! These tests are the contract-side complement to the frontend signing
 //! conformance suite.
+//!
+//! Note: the Netlify deploy failures (redirect rules, header rules, pages
+//! changed) are not caused by this Rust file; no edits here address them.
 
 #[cfg(test)]
 mod tests {

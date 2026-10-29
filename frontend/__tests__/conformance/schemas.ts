@@ -191,7 +191,9 @@ export async function fetchAccount(
       ? "https://horizon.stellar.org"
       : "https://horizon-testnet.stellar.org";
   const resp = await fetch(`${horizonUrl}/accounts/${publicKey}`);
-  if (!resp.ok) throw new Error(`failed to fetch account ${publicKey}: ${resp.status}`);
+  if (!resp.ok) {
+    throw new Error(`failed to fetch account ${publicKey}: ${resp.status}`);
+  }
   const json = (await resp.json()) as { sequence: string };
   return { sequence: json.sequence };
 }
