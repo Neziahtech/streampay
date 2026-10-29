@@ -12,9 +12,13 @@
  *     When (2) does fail it records what moved — the DOM mutations inside the
  *     window, the height, scroll offset, focus and animation state each capture
  *     saw, and both PNGs — because a drift that cannot be explained cannot be
- *     fixed. (It has: the first run of that instrumentation showed the only
- *     changes were the caret-hiding styles Playwright writes on the focused
- *     element around its own captures.)
+ *     fixed. (It has been: the first run of that instrumentation showed the
+ *     only DOM changes were the caret-hiding styles Playwright writes around its
+ *     own captures, and the two images turned out to be identical in every pixel
+ *     they shared — the "drift" was one extra row of background added by the
+ *     viewport resize a `fullPage` capture performs. So the captures are taken
+ *     through a viewport pinned to the page instead, which never resizes under
+ *     them.)
  */
 
 import fs from "node:fs";
@@ -116,11 +120,9 @@ test.describe("visual gate self-test", () => {
       animations: string[];
     }
 
-    // The page is read as one snapshot *before* the image, never alongside it. A
-    // `fullPage` capture temporarily resizes the viewport, so a `scrollHeight`
-    // read in parallel with the screenshot can catch either height — and one
-    // pixel of height rewrites the entire PNG. CI measured exactly that: 1063
-    // then 1064, with no DOM mutation to account for it.
+    // The page is read as one snapshot *before* the image, never alongside it,
+    // so the numbers describe the state the image was taken from rather than
+    // whichever step of a parallel batch happened to finish first.
     const capture = async (): Promise<Capture> => {
       const state = await page.evaluate(() => {
         // Duplicated from the evidence recorder because Playwright serialises an
@@ -141,7 +143,7 @@ test.describe("visual gate self-test", () => {
           ),
         };
       });
-      const png = await page.screenshot({ fullPage: true, animations: "disabled" });
+      const png = await page.screenshot({ animations: "disabled" });
       return { png, ...state };
     };
 
@@ -159,6 +161,43 @@ test.describe("visual gate self-test", () => {
       if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
       window.scrollTo(0, 0);
     });
+
+    // Pin the viewport, then shoot the viewport instead of the page.
+    //
+    // `fullPage` is what made this test fail, and the CI evidence says so
+    // exactly: of the 1,088,512 pixels the two images shared (1024 × 1063), zero
+    // differed — not by a shade, not by one byte — and the whole difference was
+    // that the second image carried one extra row, painted `rgb(10, 14, 22)`,
+    // the page background. Nothing in the render moved; the *canvas* grew.
+    //
+    // A document's scroll height is never smaller than its viewport, and a
+    // `fullPage` capture resizes the viewport to the document to frame it before
+    // restoring it. The 1063 → 1064 step is consistent with that round trip
+    // leaving the viewport one CSS pixel taller than it was — which is enough to
+    // make `scrollHeight`, and therefore the next full-page image, a pixel taller
+    // with the content unchanged. Either way the point stands: a `fullPage`
+    // capture reshapes the page it is measuring, so two of them are not
+    // comparable.
+    //
+    // A pinned viewport takes the resize out of the capture path entirely, and
+    // the strictness is untouched: the viewport is the whole page plus a margin,
+    // so every pixel of content is still in the compared image, the comparison is
+    // still byte-for-byte, and a render that genuinely moved would still fail.
+    const contentHeight = await page.evaluate(() => {
+      const bottom = document.body.getBoundingClientRect().bottom + window.scrollY;
+      const last = [...document.body.children].reduce(
+        (max, el) => Math.max(max, el.getBoundingClientRect().bottom + window.scrollY),
+        0
+      );
+      return Math.ceil(Math.max(bottom, last));
+    });
+    await page.setViewportSize({ width: 1024, height: contentHeight + 60 });
+    await page.evaluate(
+      () =>
+        new Promise((done) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => done(null)))
+        )
+    );
 
     const first = await capture();
     const before = await counter.textContent();
