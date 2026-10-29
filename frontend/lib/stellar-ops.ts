@@ -79,6 +79,25 @@ export function buildWithdrawOperation(
   );
 }
 
+export function buildWithdrawMaxOperation(
+  contractId: string,
+  streamId: string
+): xdr.Operation {
+  return new Contract(contractId).call("withdraw_max", u64(streamId));
+}
+
+export function buildCancelStreamOperation(
+  contractId: string,
+  sender: string,
+  streamId: string
+): xdr.Operation {
+  return new Contract(contractId).call(
+    "cancel_stream",
+    scAddr(sender),
+    u64(streamId)
+  );
+}
+
 export function pageBoundsScVal(bounds?: { offset: number; limit: number }): xdr.ScVal {
   if (!bounds) {
     return xdr.ScVal.scvVoid();
@@ -106,4 +125,3 @@ export function buildWithdrawAllOperation(
     pageBoundsScVal(pageBounds)
   );
 }
-

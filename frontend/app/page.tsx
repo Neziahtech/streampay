@@ -45,9 +45,17 @@ export default function Home() {
       const views = await Promise.all(
         cached.map((id) => readStream(id).catch(() => null))
       );
-      setStreams(
-        views.filter((s): s is StreamView => s !== null).reverse()
-      );
+      const validViews = views
+        .filter((s): s is StreamView => s !== null)
+        .reverse();
+      setStreams((prev) => {
+        const byId = new Map<string, StreamView>();
+        for (const s of prev) byId.set(s.id, s);
+        for (const s of validViews) byId.set(s.id, s);
+        return Array.from(byId.values()).sort(
+          (a, b) => Number(b.id) - Number(a.id)
+        );
+      });
     }
   }
 
@@ -78,7 +86,14 @@ export default function Home() {
       const byId = new Map<string, StreamView>();
       for (const s of [...asRecipient, ...asSender]) byId.set(s.id, s);
       const found = [...byId.values()].sort((a, b) => Number(b.id) - Number(a.id));
-      setStreams(found);
+      setStreams((prev) => {
+        const map = new Map<string, StreamView>();
+        for (const s of prev) map.set(s.id, s);
+        for (const s of found) map.set(s.id, s);
+        return Array.from(map.values()).sort(
+          (a, b) => Number(b.id) - Number(a.id)
+        );
+      });
       toast.info(t("home.discovered", { count: found.length }));
       for (const s of found) saveStreamId(address, s.id);
     } catch (e) {
@@ -168,7 +183,14 @@ export default function Home() {
         const byId = new Map<string, StreamView>();
         for (const s of [...asRecipient, ...asSender]) byId.set(s.id, s);
         const found = [...byId.values()].sort((a, b) => Number(b.id) - Number(a.id));
-        setStreams(found);
+        setStreams((prev) => {
+          const map = new Map<string, StreamView>();
+          for (const s of prev) map.set(s.id, s);
+          for (const s of found) map.set(s.id, s);
+          return Array.from(map.values()).sort(
+            (a, b) => Number(b.id) - Number(a.id)
+          );
+        });
         for (const s of found) saveStreamId(address, s.id);
       } catch {
         // Silent on background poll errors to avoid disrupting user
@@ -458,6 +480,7 @@ export default function Home() {
             </span>
           )}
         </div>
+
         <StreamList
           streams={streams}
           onWithdraw={async (id, amount) => {
