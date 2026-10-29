@@ -10,8 +10,11 @@
  *     seconds apart are byte-identical, and advancing the fake clock changes
  *     the render (so (1)'s stability is not an accident of a static page).
  *     When (2) does fail it records what moved — the DOM mutations inside the
- *     window, the height and animation state each capture saw, and both PNGs —
- *     because a drift that cannot be explained cannot be fixed.
+ *     window, the height, scroll offset, focus and animation state each capture
+ *     saw, and both PNGs — because a drift that cannot be explained cannot be
+ *     fixed. (It has: the first run of that instrumentation showed the only
+ *     changes were the caret-hiding styles Playwright writes on the focused
+ *     element around its own captures.)
  */
 
 import fs from "node:fs";
@@ -108,21 +111,54 @@ test.describe("visual gate self-test", () => {
     interface Capture {
       png: Buffer;
       height: number;
+      scrollY: number;
+      focus: string;
       animations: string[];
     }
 
+    // The page is read as one snapshot *before* the image, never alongside it. A
+    // `fullPage` capture temporarily resizes the viewport, so a `scrollHeight`
+    // read in parallel with the screenshot can catch either height — and one
+    // pixel of height rewrites the entire PNG. CI measured exactly that: 1063
+    // then 1064, with no DOM mutation to account for it.
     const capture = async (): Promise<Capture> => {
-      const [png, height, animations] = await Promise.all([
-        page.screenshot({ fullPage: true, animations: "disabled" }),
-        page.evaluate(() => document.documentElement.scrollHeight),
-        page.evaluate(() =>
-          document.getAnimations().map((a) =>
+      const state = await page.evaluate(() => {
+        // Duplicated from the evidence recorder because Playwright serialises an
+        // evaluate callback without its Node closures.
+        const label = (node: Node | null): string => {
+          const el = node instanceof Element ? node : (node?.parentElement ?? null);
+          if (!el) return "(detached)";
+          const id = el.id ? `#${el.id}` : "";
+          const classes = el.classList.length > 0 ? `.${[...el.classList].join(".")}` : "";
+          return `${el.nodeName.toLowerCase()}${id}${classes}`;
+        };
+        return {
+          height: document.documentElement.scrollHeight,
+          scrollY: window.scrollY,
+          focus: label(document.activeElement),
+          animations: document.getAnimations().map((a) =>
             `${a instanceof CSSAnimation ? a.animationName : a.constructor.name}:${a.playState}`
-          )
-        ),
-      ]);
-      return { png, height, animations };
+          ),
+        };
+      });
+      const png = await page.screenshot({ fullPage: true, animations: "disabled" });
+      return { png, ...state };
     };
+
+    // Drop focus and reset the scroll before the first capture, because
+    // Playwright hides the caret by writing `caret-color: transparent
+    // !important` on the *focused element* and restoring it after the shot: the
+    // CI mutation log for this test contained exactly those four records and
+    // nothing else, which means the only thing that moved the render was the
+    // screenshot machinery itself. This normalises the harness once, before any
+    // measurement — it is not a re-normalisation between captures. A focus or
+    // scroll change inside the window is real drift, so the second capture
+    // simply reports what it found (the values are in the failure message)
+    // instead of being quietly reset to match the first.
+    await page.evaluate(() => {
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+      window.scrollTo(0, 0);
+    });
 
     const first = await capture();
     const before = await counter.textContent();
@@ -142,6 +178,8 @@ test.describe("visual gate self-test", () => {
     const drift =
       `render drifted while the clock was frozen: ${first.png.length} vs ${second.png.length} bytes, ` +
       `scrollHeight ${first.height} -> ${second.height}, ` +
+      `scrollY ${first.scrollY} -> ${second.scrollY}, ` +
+      `focus ${first.focus} -> ${second.focus}, ` +
       `animations ${first.animations.join(",") || "none"} -> ${second.animations.join(",") || "none"}, ` +
       `${mutations.length} DOM mutations [${mutations.slice(0, 25).join(" ;; ").slice(0, 1_500)}]`;
 
