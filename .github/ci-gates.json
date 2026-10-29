@@ -26,6 +26,7 @@
         "Differential tests (against shared vector corpus)",
         "Network indicator tests",
         "Client parity smoke tests",
+        "Testnet canary suite (imports the frontend builders)",
         "Accessibility audit (axe WCAG 2.1 AA gate)",
         "Scheduler + fee-series simulation (vitest)",
         "Build",
@@ -211,6 +212,18 @@
       ],
       "sla-sweep": [
         "Ping maintainers on overdue reports"
+      ]
+    },
+    "testnet-canary.yml": {
+      "canary": [
+        "Install canary dependencies",
+        "Install frontend dependencies",
+        "Audit production dependencies",
+        "Test alert formatting",
+        "Type-check canary",
+        "Run testnet lifecycle",
+        "Deliver failure alert",
+        "Preserve canary failure status"
       ]
     },
     "workflow-integrity.yml": {

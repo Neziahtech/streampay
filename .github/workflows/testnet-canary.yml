@@ -30,10 +30,25 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: tools/canary/package-lock.json
+          cache-dependency-path: |
+            tools/canary/package-lock.json
+            frontend/package-lock.json
 
       - name: Install canary dependencies
         working-directory: tools/canary
+        run: npm ci --ignore-scripts
+
+      # runner.ts reuses the signing-free builders in
+      # frontend/lib/stellar-ops.ts instead of duplicating them. Node resolves a
+      # bare specifier from the importing file's own directory upwards, so that
+      # module looks for @stellar/stellar-sdk in frontend/lib/node_modules, then
+      # frontend/node_modules, then the repository root — never in
+      # tools/canary/node_modules. Installing the frontend's locked graph is what
+      # makes the imported module loadable; a tools/canary-only install leaves it
+      # unresolvable and the suite dies at import time with ERR_MODULE_NOT_FOUND.
+      # Same shape as the Nightly Client Parity job.
+      - name: Install frontend dependencies
+        working-directory: frontend
         run: npm ci --ignore-scripts
 
       - name: Audit production dependencies

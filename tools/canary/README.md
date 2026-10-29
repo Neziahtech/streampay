@@ -46,9 +46,17 @@ cancellation and reports any cleanup failure separately.
 
 Local validation (Node.js 22.6+):
 
+`runner.ts` executes `frontend/lib/stellar-ops.ts`, and Node resolves a bare
+specifier from the importing file upwards — so that module looks for
+`@stellar/stellar-sdk` in `frontend/lib/node_modules`, then
+`frontend/node_modules`, then the repository root, and never in this
+directory's own `node_modules`. Both trees therefore have to be installed for
+the suite to load; a `tools/canary`-only install fails at import time with
+`ERR_MODULE_NOT_FOUND`. The CI jobs install both.
+
 ```bash
-cd tools/canary
-npm ci --ignore-scripts
+npm ci --prefix ../../frontend --ignore-scripts   # the imported module's own tree
+npm ci --ignore-scripts                           # this tool's tree
 npm test
 npm run typecheck
 npm audit --omit=dev --audit-level=high
