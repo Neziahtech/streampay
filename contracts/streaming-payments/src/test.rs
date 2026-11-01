@@ -33,7 +33,7 @@ use soroban_sdk::{
 };
 
 use crate::stream::{
-    available_amount_at_segments, cancel_amounts_at_segments, streamed_amount_at,
+    self, available_amount_at_segments, cancel_amounts_at_segments, streamed_amount_at,
     streamed_amount_at_segments, streamed_at, RateSegment,
 };
 use crate::test_client::StreamingPaymentsClient as Client;
@@ -2923,7 +2923,9 @@ fn run_state_machine_sequence(seed: u64, steps: &[(u8, u16, u16)]) -> Result<(),
                 let now = env.ledger().timestamp();
                 let start = now + (first as u64 % 4);
                 let duration = 1 + (second as u64 % 100);
-                let deposit = 1 + (first as i128 % 20_000) * 257 + second as i128 % 257;
+                let deposit = stream::MIN_STREAM_DEPOSIT
+                    + (first as i128 % 20_000) * 257
+                    + second as i128 % 257;
                 let cancelable = operation & 0x80 != 0;
                 let id = client.mock_all_auths().create_stream(
                     &sender,
@@ -2954,7 +2956,7 @@ fn run_state_machine_sequence(seed: u64, steps: &[(u8, u16, u16)]) -> Result<(),
                 if streams[index].status == StreamStatus::Cancelled {
                     let error = client
                         .mock_all_auths()
-                        .try_withdraw(&id, &1)
+                        .try_withdraw(&id, &stream::MIN_CLAIM_AMOUNT)
                         .unwrap_err()
                         .unwrap();
                     prop_assert_eq!(error, StreamError::StreamNotActive, "{}", context);
@@ -2967,21 +2969,29 @@ fn run_state_machine_sequence(seed: u64, steps: &[(u8, u16, u16)]) -> Result<(),
                 } else if streams[index].status == StreamStatus::Depleted {
                     let error = client
                         .mock_all_auths()
-                        .try_withdraw(&id, &1)
+                        .try_withdraw(&id, &stream::MIN_CLAIM_AMOUNT)
                         .unwrap_err()
                         .unwrap();
                     prop_assert_eq!(error, StreamError::StreamNotActive, "{}", context);
                 } else {
                     let available =
                         streams[index].accrued(env.ledger().timestamp()) - streams[index].withdrawn;
-                    if available > 0 && second & 1 == 0 {
-                        let amount = 1 + second as i128 % available;
+                    if available >= stream::MIN_CLAIM_AMOUNT && second & 1 == 0 {
+                        let amount = stream::MIN_CLAIM_AMOUNT
+                            + second as i128 % (available - stream::MIN_CLAIM_AMOUNT + 1);
                         client.mock_all_auths().withdraw(&id, &amount);
                         streams[index].withdrawn += amount;
-                    } else if available > 0 {
+                    } else if available >= stream::MIN_CLAIM_AMOUNT {
                         let paid = client.mock_all_auths().withdraw_max(&id);
                         prop_assert_eq!(paid, available, "{}: withdraw_max amount", context);
                         streams[index].withdrawn += paid;
+                    } else if available > 0 {
+                        let error = client
+                            .mock_all_auths()
+                            .try_withdraw_max(&id)
+                            .unwrap_err()
+                            .unwrap();
+                        prop_assert_eq!(error, StreamError::ClaimBelowMinimum, "{}", context);
                     } else {
                         let error = client
                             .mock_all_auths()
@@ -3214,7 +3224,7 @@ fn run_fee_property(seed: u64, steps: usize) {
             0 => {
                 // create a stream
                 let ti = rng.below(2) as usize;
-                let deposit = 1 + rng.below(1_000_000) as i128;
+                let deposit = stream::MIN_STREAM_DEPOSIT + rng.below(1_000_000) as i128;
                 let duration = 1 + rng.below(200);
                 let start_in = rng.below(3);
                 let cancelable = rng.below(2) == 0;
@@ -3260,20 +3270,22 @@ fn run_fee_property(seed: u64, steps: usize) {
                 let now = env.ledger().timestamp();
                 let avail = streams[idx].available(now);
                 match rng.below(4) {
-                    0 if avail > 0 => {
+                    0 if avail >= stream::MIN_CLAIM_AMOUNT => {
                         client.mock_all_auths().withdraw(&id, &avail);
                         streams[idx].withdrawn += avail;
                     }
-                    1 if avail > 0 => {
-                        let amount = 1 + rng.below(avail as u64) as i128;
+                    1 if avail >= stream::MIN_CLAIM_AMOUNT => {
+                        let amount = stream::MIN_CLAIM_AMOUNT
+                            + rng.below((avail - stream::MIN_CLAIM_AMOUNT + 1) as u64) as i128;
                         client.mock_all_auths().withdraw(&id, &amount);
                         streams[idx].withdrawn += amount;
                     }
                     2 => {
                         // Over-withdrawal must always revert, leaving state intact.
+                        let test_amt = (avail + 1).max(stream::MIN_CLAIM_AMOUNT);
                         let err = client
                             .mock_all_auths()
-                            .try_withdraw(&id, &(avail + 1))
+                            .try_withdraw(&id, &test_amt)
                             .unwrap_err()
                             .unwrap();
                         assert_eq!(
@@ -3283,10 +3295,17 @@ fn run_fee_property(seed: u64, steps: usize) {
                         );
                     }
                     _ => {
-                        if avail > 0 {
+                        if avail >= stream::MIN_CLAIM_AMOUNT {
                             let paid = client.mock_all_auths().withdraw_max(&id);
                             assert_eq!(paid, avail, "{ctx}: withdraw_max pays available");
                             streams[idx].withdrawn += paid;
+                        } else if avail > 0 {
+                            let err = client
+                                .mock_all_auths()
+                                .try_withdraw_max(&id)
+                                .unwrap_err()
+                                .unwrap();
+                            assert_eq!(err, StreamError::ClaimBelowMinimum, "{ctx}");
                         } else {
                             let err = client
                                 .mock_all_auths()
@@ -3722,8 +3741,9 @@ fn run_value_conservation_property(seed: u64, steps: usize) {
                     let stream = client.get_stream(&id);
                     if stream.status == StreamStatus::Active {
                         let avail = client.available(&id);
-                        if avail > 0 {
-                            let withdraw_amt = 1 + rng.below(avail as u64) as i128;
+                        if avail >= stream::MIN_CLAIM_AMOUNT {
+                            let withdraw_amt = stream::MIN_CLAIM_AMOUNT
+                                + rng.below((avail - stream::MIN_CLAIM_AMOUNT + 1) as u64) as i128;
                             client.mock_all_auths().withdraw(&id, &withdraw_amt);
                         }
                     }
@@ -3736,7 +3756,7 @@ fn run_value_conservation_property(seed: u64, steps: usize) {
                     let stream = client.get_stream(&id);
                     if stream.status == StreamStatus::Active {
                         let avail = client.available(&id);
-                        if avail > 0 {
+                        if avail >= stream::MIN_CLAIM_AMOUNT {
                             let paid = client.mock_all_auths().withdraw_max(&id);
                             assert_eq!(paid, avail, "{ctx}: withdraw_max mismatch");
                         }
@@ -11378,7 +11398,7 @@ fn withdraw_and_cancel_while_paused_use_the_frozen_amount() {
     let err = f
         .client
         .mock_all_auths()
-        .try_withdraw(&id, &1)
+        .try_withdraw(&id, &crate::MIN_CLAIM_AMOUNT)
         .unwrap_err()
         .unwrap();
     assert_eq!(err, StreamError::AmountExceedsAvailable);
@@ -11790,4 +11810,256 @@ fn withdraw_all_frozen_reverts() {
         .mock_all_auths()
         .try_withdraw_all(&f.recipient, &None);
     assert!(err.is_err());
+}
+
+// ------------------------------------------------ dust economics & sweep ----
+
+#[test]
+fn create_stream_rejects_deposit_below_minimum() {
+    let f = Fixture::setup();
+    let now = f.env.ledger().timestamp();
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_create_stream(
+            &f.sender,
+            &f.recipient,
+            &f.token,
+            &(crate::MIN_STREAM_DEPOSIT - 1),
+            &(now + DAY),
+            &(now + 2 * DAY),
+            &false,
+        )
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::DepositBelowMinimum);
+}
+
+#[test]
+fn withdraw_rejects_claim_below_minimum() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+    f.advance_time(2 * DAY);
+
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_withdraw(&id, &(crate::MIN_CLAIM_AMOUNT - 1))
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::ClaimBelowMinimum);
+}
+
+#[test]
+fn withdraw_max_rejects_claim_below_minimum() {
+    let f = Fixture::setup();
+    // 10_000 stroops over 10_000 seconds -> 1 stroop per second
+    let id = f.create_stream(10_000, DAY, DAY + 10_000, false);
+    f.advance_time(DAY + 10); // only 10 stroops accrued (< MIN_CLAIM_AMOUNT)
+
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_withdraw_max(&id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::ClaimBelowMinimum);
+}
+
+#[test]
+fn sweep_depleted_stream_permissionless_and_refunds_rent() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, true);
+    f.advance_time(11 * DAY);
+
+    // Fully withdraw the stream so it becomes Depleted
+    let withdrawn = f.client.mock_all_auths().withdraw_max(&id);
+    assert_eq!(withdrawn, DEPOSIT);
+
+    let s = f.client.mock_all_auths().get_stream(&id);
+    assert_eq!(s.status, StreamStatus::Depleted);
+    assert!(f.client.mock_all_auths().is_stream_sweepable(&id));
+
+    let stranger = Address::generate(&f.env);
+    let designated_beneficiary = Address::generate(&f.env);
+
+    // Stranger sweeps the stream, designating a third party for rent refund
+    let refund = f.client.mock_all_auths().sweep_stream(
+        &stranger,
+        &id,
+        &Some(designated_beneficiary.clone()),
+    );
+    assert_eq!(refund, crate::STREAM_RENT_REFUND);
+
+    // Global counters updated
+    assert_eq!(f.client.total_streams_swept(), 1);
+    assert_eq!(f.client.total_rent_refunded(), crate::STREAM_RENT_REFUND);
+    assert_eq!(
+        f.client.rent_refund_balance(&designated_beneficiary),
+        crate::STREAM_RENT_REFUND
+    );
+
+    // Stream no longer exists
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_get_stream(&id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::StreamNotFound);
+}
+
+#[test]
+fn sweep_cancelled_stream_defaults_to_sender() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, true);
+    f.advance_time(2 * DAY);
+
+    // Cancel the stream
+    f.client.mock_all_auths().cancel_stream(&f.sender, &id);
+    let s = f.client.mock_all_auths().get_stream(&id);
+    assert_eq!(s.status, StreamStatus::Cancelled);
+    assert!(f.client.mock_all_auths().is_stream_sweepable(&id));
+
+    // Sweep with None designated_party -> refunds stream sender
+    let refund = f
+        .client
+        .mock_all_auths()
+        .sweep_stream(&f.sender, &id, &None);
+    assert_eq!(refund, crate::STREAM_RENT_REFUND);
+
+    assert_eq!(
+        f.client.mock_all_auths().rent_refund_balance(&f.sender),
+        crate::STREAM_RENT_REFUND
+    );
+}
+
+#[test]
+fn adversarial_sweep_attempts_cannot_touch_live_streams() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, true);
+    let adversary = Address::generate(&f.env);
+
+    // 1. Attempt to sweep live stream before start
+    let err1 = f
+        .client
+        .mock_all_auths()
+        .try_sweep_stream(&adversary, &id, &Some(adversary.clone()))
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err1, StreamError::StreamNotSweepable);
+
+    // 2. Attempt to sweep active stream during streaming
+    f.advance_time(5 * DAY);
+    let err2 = f
+        .client
+        .mock_all_auths()
+        .try_sweep_stream(&adversary, &id, &Some(adversary.clone()))
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err2, StreamError::StreamNotSweepable);
+
+    // 3. Attempt to sweep active stream after end_time when funds are unwithdrawn
+    f.advance_time(20 * DAY);
+    let err3 = f
+        .client
+        .mock_all_auths()
+        .try_sweep_stream(&adversary, &id, &Some(adversary.clone()))
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err3, StreamError::StreamNotSweepable);
+
+    // 4. Attempt to sweep non-existent stream
+    let err4 = f
+        .client
+        .mock_all_auths()
+        .try_sweep_stream(&adversary, &999_999, &Some(adversary.clone()))
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err4, StreamError::StreamNotFound);
+
+    // 5. Drain stream, sweep it, and verify second sweep fails with StreamNotFound
+    f.client.mock_all_auths().withdraw_max(&id);
+    f.client
+        .mock_all_auths()
+        .sweep_stream(&f.sender, &id, &None);
+    let err5 = f
+        .client
+        .mock_all_auths()
+        .try_sweep_stream(&adversary, &id, &Some(adversary.clone()))
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err5, StreamError::StreamNotFound);
+}
+
+#[test]
+fn test_claim_rent_refund_transfers_tokens_and_clears_balance() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, true);
+    f.advance_time(11 * DAY);
+    f.client.mock_all_auths().withdraw_max(&id);
+
+    // Sender sweeps the depleted stream
+    let refund = f
+        .client
+        .mock_all_auths()
+        .sweep_stream(&f.sender, &id, &None);
+    assert_eq!(refund, crate::STREAM_RENT_REFUND);
+    assert_eq!(
+        f.client.rent_refund_balance(&f.sender),
+        crate::STREAM_RENT_REFUND
+    );
+
+    // Mint tokens to the contract so it has balance to pay the refund
+    StellarAssetClient::new(&f.env, &f.token).mint(&f.client.address, &10_000);
+
+    let recipient = Address::generate(&f.env);
+    let before_balance = TokenClient::new(&f.env, &f.token).balance(&recipient);
+    assert_eq!(before_balance, 0);
+
+    // Sender claims rent refund
+    let claimed = f
+        .client
+        .mock_all_auths()
+        .claim_rent_refund(&f.sender, &f.token, &recipient);
+    assert_eq!(claimed, crate::STREAM_RENT_REFUND);
+
+    // Balance transferred and counter cleared
+    assert_eq!(
+        TokenClient::new(&f.env, &f.token).balance(&recipient),
+        crate::STREAM_RENT_REFUND
+    );
+    assert_eq!(f.client.rent_refund_balance(&f.sender), 0);
+
+    // Second claim fails because balance is now zero
+    let err = f
+        .client
+        .mock_all_auths()
+        .try_claim_rent_refund(&f.sender, &f.token, &recipient)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, StreamError::ZeroAmount);
+}
+
+#[test]
+fn test_sweep_removes_stream_from_discovery_indexes() {
+    let f = Fixture::setup();
+    let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, true);
+
+    // Initially in both indexes
+    assert_eq!(f.client.sender_streams(&f.sender, &0, &10).len(), 1);
+    assert_eq!(f.client.recipient_streams(&f.recipient, &0, &10).len(), 1);
+
+    // Advance and drain
+    f.advance_time(11 * DAY);
+    f.client.mock_all_auths().withdraw_max(&id);
+
+    // Sweep stream
+    f.client
+        .mock_all_auths()
+        .sweep_stream(&f.sender, &id, &None);
+
+    // After sweep, removed from both indexes
+    assert_eq!(f.client.sender_streams(&f.sender, &0, &10).len(), 0);
+    assert_eq!(f.client.recipient_streams(&f.recipient, &0, &10).len(), 0);
 }

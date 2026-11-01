@@ -145,7 +145,8 @@ pub use events::{
     SenderTransferExpired, SenderTransferProposed, SenderTransferred, SponsorActiveSet,
     SponsorClaim, SponsorRegistered, StorageMigrated, StreamCancelled, StreamCreated, StreamPaused,
     StreamPolicySet, StreamRecordMigrated, StreamRefundTargetChanged, StreamResumed,
-    StreamScheduled, StreamToppedUp, StreamsCreated, UpgradeCancelled, UpgradeProposed, Withdrawn,
+    StreamScheduled, StreamSwept, StreamToppedUp, StreamsCreated, UpgradeCancelled,
+    UpgradeProposed, Withdrawn,
 };
 pub use governance::{
     GovernanceAction, Proposal, DEFAULT_VETO_WINDOW_SECONDS, MAX_SIGNERS, MIN_VETO_WINDOW_SECONDS,
@@ -166,9 +167,9 @@ pub use stream::{
     Stream, StreamStatus, StreamVersionReport, VersionedStream, WithdrawAllResult, WithdrawEntry,
     WithdrawOutcome, CURRENT_STREAM_RECORD_VERSION, INITIAL_SCHEMA_VERSION, MAX_BATCH,
     MAX_DURATION_SECONDS, MAX_MIGRATION_BATCH_SIZE, MAX_PAGE_SIZE, MAX_RATE_SEGMENTS,
-    MAX_WITHDRAW_BATCH, MIN_BATCH, MIN_UPGRADE_DELAY_SECONDS, OWNERSHIP_PROPOSAL_TTL_SECONDS,
-    RATE_PROPOSAL_TTL_SECONDS, STREAM_RECORD_VERSION_V1, STREAM_RECORD_VERSION_V2,
-    TARGET_SCHEMA_VERSION,
+    MAX_WITHDRAW_BATCH, MIN_BATCH, MIN_CLAIM_AMOUNT, MIN_STREAM_DEPOSIT, MIN_UPGRADE_DELAY_SECONDS,
+    OWNERSHIP_PROPOSAL_TTL_SECONDS, RATE_PROPOSAL_TTL_SECONDS, STREAM_RECORD_VERSION_V1,
+    STREAM_RECORD_VERSION_V2, STREAM_RENT_REFUND, TARGET_SCHEMA_VERSION,
 };
 pub use treasury::{fee_amount, FeeScan, Treasury, TreasuryStatus, BPS_DENOMINATOR, MAX_FEE_BPS};
 
@@ -797,6 +798,9 @@ impl StreamingPayments {
         if deposit_amount <= 0 {
             return Err(surface::reject(Branch::CreateDepositNonPositive));
         }
+        if deposit_amount < stream::MIN_STREAM_DEPOSIT {
+            return Err(surface::reject(Branch::CreateDepositBelowMinimum));
+        }
         if start_time < now {
             return Err(surface::reject(Branch::CreateStartTimeInPast));
         }
@@ -1288,6 +1292,9 @@ impl StreamingPayments {
             return Err(surface::reject(Branch::WithdrawAmountNonPositive));
         }
         let mut s = Self::authorize_withdrawal(&env, stream_id)?;
+        if amount < stream::MIN_CLAIM_AMOUNT {
+            return Err(surface::reject(Branch::WithdrawAmountBelowMinimum));
+        }
 
         let resolved = oracle::resolve_stream_time(&env, stream_id, s.uses_oracle());
         let available = stream::available_amount_with_plan(&env, &s, resolved.timestamp)?;
@@ -1569,6 +1576,9 @@ impl StreamingPayments {
         let amount = stream::available_amount_with_plan(env, s, resolved.timestamp)?;
         if amount <= 0 {
             return Err(surface::reject(Branch::WithdrawMaxNothingToWithdraw));
+        }
+        if amount < stream::MIN_CLAIM_AMOUNT {
+            return Err(surface::reject(Branch::WithdrawMaxAmountBelowMinimum));
         }
         Ok(amount)
     }
@@ -3550,6 +3560,187 @@ impl StreamingPayments {
         stream::page_stream_ids(&env, &stream::DataKey::SenderStreams(sender), offset, limit)
     }
 
+    // --------------------------------------------------- stale stream sweep ---
+
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Checks whether a stream qualifies for permissionless sweeping."
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = "")]
+    #[cfg_attr(not(target_family = "wasm"), doc = " # Security Invariant")]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Sweep is provably unable to touch live streams:"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " - An `Active` stream NEVER qualifies, even if past `end_time` (unwithdrawn funds remain)."
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " - Only terminal streams where all token liabilities are completely extinguished"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = "   (`Depleted` with `withdrawn == deposit`, or `Cancelled` where splits are fully settled)"
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = "   qualify for storage sweeping.")]
+    pub fn is_stream_sweepable(env: Env, stream_id: u64) -> bool {
+        let Ok(s) = stream::get_stream(&env, stream_id) else {
+            return false;
+        };
+        Self::is_stream_sweepable_internal(&s)
+    }
+
+    fn is_stream_sweepable_internal(s: &Stream) -> bool {
+        match s.status {
+            StreamStatus::Depleted => s.withdrawn == s.deposit,
+            StreamStatus::Cancelled => true,
+            StreamStatus::Active => false,
+        }
+    }
+
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Permissionlessly sweeps a fully-depleted-but-storage-occupying stream,"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " removing its persistent storage entry and crediting residual rent"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " to `designated_party` (or the original stream sender if None)."
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = "")]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Reverts with [`StreamError::StreamNotFound`] if no stream exists with `stream_id`."
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Reverts with [`StreamError::StreamNotSweepable`] if the stream is active or has unwithdrawn funds."
+    )]
+    pub fn sweep_stream(
+        env: Env,
+        caller: Address,
+        stream_id: u64,
+        designated_party: Option<Address>,
+    ) -> Result<i128, StreamError> {
+        caller.require_auth();
+        Self::require_not_frozen(&env)?;
+
+        let s = stream::get_stream(&env, stream_id)?;
+        if !Self::is_stream_sweepable_internal(&s) {
+            return Err(surface::reject(Branch::StreamNotSweepable));
+        }
+
+        let target = designated_party.unwrap_or(s.sender.clone());
+        let refund = stream::STREAM_RENT_REFUND;
+
+        // Checks-Effects-Interactions:
+        // 1. Credit rent refund to designated party and record sweep statistics
+        stream::credit_rent_refund(&env, &target, refund)?;
+        stream::record_sweep(&env, refund);
+
+        // 2. Remove stream state from persistent storage (including discovery indexes)
+        stream::remove_stream(&env, stream_id, &s.sender, &s.recipient);
+
+        #[cfg(test)]
+        cei_trace::record("event StreamSwept");
+        StreamSwept {
+            stream_id,
+            caller,
+            designated_party: target,
+            rent_refund: refund,
+        }
+        .publish(&env);
+
+        Ok(refund)
+    }
+
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Returns the accumulated rent refund credit balance for `party`."
+    )]
+    pub fn rent_refund_balance(env: Env, party: Address) -> i128 {
+        stream::rent_refund_balance(&env, &party)
+    }
+
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Returns total number of stale streams swept."
+    )]
+    pub fn total_streams_swept(env: Env) -> u64 {
+        stream::total_streams_swept(&env)
+    }
+
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Returns total residual rent refunded across all sweeps."
+    )]
+    pub fn total_rent_refunded(env: Env) -> i128 {
+        stream::total_rent_refunded(&env)
+    }
+
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Transfers the accumulated rent-refund credit for `party`"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " to `recipient` using the contract's native token balance."
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = "")]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " `party` must authorize this call. The accumulated credit is cleared"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " atomically — the balance can only be claimed once per sweep cycle."
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = "")]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Reverts with [`StreamError::NothingToWithdraw`] if the balance is zero."
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Reverts with [`StreamError::RentRefundTransferFailed`] if the token transfer fails."
+    )]
+    pub fn claim_rent_refund(
+        env: Env,
+        party: Address,
+        token: Address,
+        recipient: Address,
+    ) -> Result<i128, StreamError> {
+        party.require_auth();
+        Self::require_not_frozen(&env)?;
+
+        let balance = stream::rent_refund_balance(&env, &party);
+        if balance == 0 {
+            return Err(surface::reject(Branch::WithdrawTreasuryAmountNonPositive));
+        }
+
+        // Effect: clear the balance before the transfer (CEI).
+        stream::clear_rent_refund(&env, &party);
+
+        // Interaction: transfer tokens from contract to recipient.
+        #[cfg(test)]
+        cei_trace::record("transfer rent refund");
+        token_result(
+            TokenClient::new(&env, &token).try_transfer(
+                &env.current_contract_address(),
+                &recipient,
+                &balance,
+            ),
+            Branch::RentRefundTransferFailed,
+        )?;
+
+        Ok(balance)
+    }
+
     // ------------------------------------------------- scheduled intents ----
 
     #[cfg_attr(
@@ -3793,6 +3984,11 @@ impl StreamingPayments {
         }
 
         let (start_time, end_time) = intent.occurrence_window(index);
+
+        // Blocker 3: enforce economic floor on scheduled paths too.
+        if intent.deposit < stream::MIN_STREAM_DEPOSIT {
+            return Err(surface::reject(Branch::CreateDepositBelowMinimum));
+        }
 
         // Effects first (CEI): advance the intent before moving any tokens.
         intent.occurrences_remaining = intent
