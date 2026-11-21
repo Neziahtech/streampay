@@ -70,6 +70,8 @@ export interface MessageParams {
   "form.depositTooSmallForDuration": { min: string };
   "form.batchTooLarge": { max: number };
   "form.batchRowIssue": { row: number; detail: string };
+  "notFound.stream.malformedBody": { id: string };
+  "notFound.address.malformedBody": { address: string };
 }
 
 export type ParamsOf<K extends MessageKey> = K extends keyof MessageParams
@@ -128,6 +130,8 @@ export const MESSAGE_SAMPLES: { [K in keyof MessageParams]: MessageParams[K] } =
   "form.depositTooSmallForDuration": { min: "2,592" },
   "form.batchTooLarge": { max: 25 },
   "form.batchRowIssue": { row: 2, detail: "Enter a valid Stellar address." },
+  "notFound.stream.malformedBody": { id: "abc" },
+  "notFound.address.malformedBody": { address: "GABC" },
 };
 
 /** Every key, in catalog order. Used by the snapshot suite and the CI check. */
