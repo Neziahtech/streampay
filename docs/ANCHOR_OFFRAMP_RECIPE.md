@@ -16,6 +16,23 @@ In a continuous payroll stream:
 3. A recipient triggers a stream withdrawal (`withdraw` or `withdraw_max`) landing funds directly into their Stellar account.
 4. Through a regulated **Stellar Anchor (SEP-24 / SEP-6)**, those stable assets are routed through traditional banking rails (ACH, SEPA, PIX, Wire) into the recipient's local bank account.
 
+5.                 {shareKnown ? (
+                  <p className="text-lg font-semibold text-foreground">
+                    {formatToken(shareBalance)}
+                  </p>
+                ) : (
+                  <div role="alert" className="text-right">
+                    <p className="text-lg font-semibold text-foreground">Unavailable</p>
+                    <button
+                      type="button"
+                      className="text-xs text-amber-600 underline dark:text-amber-400"
+                      onClick={() => userData.refetch?.()}
+                    >
+                      Retry
+                    </button>
+                  </div>
+                )}
+
 ```
 +-----------------------------------------------------------------------------------------------------+
 |                                          STREAMPAY PROTOCOL (SOROBAN)                               |
