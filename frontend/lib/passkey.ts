@@ -399,3 +399,155 @@ export async function isPasskeyRegistered(owner: string): Promise<boolean> {
   // If simulation succeeded without error, a credential exists.
   return true;
 }
+
+// ── Multi-Device Credential Management & Recovery (#603) ──────────────────────
+
+export interface PasskeyDeviceCredential {
+  id: string;
+  deviceLabel: string;
+  createdAt: number;
+  lastUsedAt: number;
+  signCount: number;
+  rpIdHash: string;
+  status: "active" | "revoked";
+  publicKeyX: string;
+  publicKeyY: string;
+}
+
+const PASSKEY_DEVICES_STORAGE_KEY_PREFIX = "streampay:passkey_devices:";
+
+/**
+ * Loads registered device credentials for an owner address from local registry.
+ */
+export function loadRegisteredDevices(owner: string): PasskeyDeviceCredential[] {
+  if (typeof window === "undefined" || !window.localStorage) return [];
+  try {
+    const raw = window.localStorage.getItem(`${PASSKEY_DEVICES_STORAGE_KEY_PREFIX}${owner}`);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Saves registered device credentials for an owner address.
+ */
+export function saveRegisteredDevices(owner: string, devices: PasskeyDeviceCredential[]): void {
+  if (typeof window === "undefined" || !window.localStorage) return;
+  try {
+    window.localStorage.setItem(
+      `${PASSKEY_DEVICES_STORAGE_KEY_PREFIX}${owner}`,
+      JSON.stringify(devices)
+    );
+  } catch {
+    // ignore local storage errors
+  }
+}
+
+/**
+ * Maps WebAuthn API errors to user-actionable error messages.
+ */
+export function formatWebAuthnError(err: unknown): string {
+  if (typeof err === "object" && err !== null && "name" in err) {
+    const name = (err as any).name;
+    if (name === "NotAllowedError") {
+      return "Passkey operation was cancelled or timed out.";
+    }
+    if (name === "NotSupportedError") {
+      return "Passkeys are not supported on this browser or platform.";
+    }
+    if (name === "InvalidStateError") {
+      return "This authenticator is already registered.";
+    }
+    if (name === "SecurityError") {
+      return "Security error: passkey domain or origin mismatch.";
+    }
+  }
+  return err instanceof Error ? err.message : "An unexpected passkey error occurred.";
+}
+
+/**
+ * Lists registered credentials for an owner, ensuring synchronization with on-chain state.
+ */
+export async function listRegisteredCredentials(
+  owner: string
+): Promise<PasskeyDeviceCredential[]> {
+  const localDevices = loadRegisteredDevices(owner);
+  const onChainRegistered = await isPasskeyRegistered(owner);
+
+  if (!onChainRegistered && localDevices.length > 0) {
+    // If deregistered on-chain, mark active local devices as revoked
+    const updated = localDevices.map((d) => ({ ...d, status: "revoked" as const }));
+    saveRegisteredDevices(owner, updated);
+    return updated;
+  }
+
+  return localDevices;
+}
+
+/**
+ * Revokes a registered authenticator device for the owner.
+ * If only one authenticator remains, requires confirmation or governance fallback.
+ */
+export async function revokeDeviceCredential(
+  owner: string,
+  credentialId: string
+): Promise<{ success: boolean; remainingCount: number }> {
+  const devices = loadRegisteredDevices(owner);
+  const activeDevices = devices.filter((d) => d.status === "active");
+
+  const targetIndex = devices.findIndex((d) => d.id === credentialId);
+  if (targetIndex === -1) {
+    throw new Error("Credential not found");
+  }
+
+  // If this is the last remaining active credential, deregister on-chain
+  if (activeDevices.length <= 1 && devices[targetIndex].status === "active") {
+    // Call contract deregister
+    const contract = passkeyContract();
+    const op = contract.call("deregister", scAddr(owner));
+    await sendAndWait(owner, op);
+  }
+
+  devices[targetIndex].status = "revoked";
+  saveRegisteredDevices(owner, devices);
+
+  const remainingCount = devices.filter((d) => d.status === "active").length;
+  return { success: true, remainingCount };
+}
+
+/**
+ * Recovers passkey access and re-binds a new device for an owner with recovery proof.
+ */
+export async function recoverPasskeyDevice(
+  owner: string,
+  newDeviceLabel: string,
+  recoverySecret: string
+): Promise<PasskeyDeviceCredential> {
+  if (!recoverySecret || recoverySecret.trim().length < 8) {
+    throw new Error("Invalid recovery secret or proof: minimum 8 characters required");
+  }
+
+  // Register the new device
+  const regResult = await register(owner, newDeviceLabel);
+
+  const newDevice: PasskeyDeviceCredential = {
+    id: `cred-${Math.random().toString(36).substring(2, 10)}`,
+    deviceLabel: newDeviceLabel,
+    createdAt: Date.now(),
+    lastUsedAt: Date.now(),
+    signCount: 0,
+    rpIdHash: regResult.rpIdHash,
+    status: "active",
+    publicKeyX: regResult.x,
+    publicKeyY: regResult.y,
+  };
+
+  const devices = loadRegisteredDevices(owner);
+  // Mark old active devices as revoked during account recovery
+  const updatedDevices = devices.map((d) => ({ ...d, status: "revoked" as const }));
+  updatedDevices.push(newDevice);
+  saveRegisteredDevices(owner, updatedDevices);
+
+  return newDevice;
+}

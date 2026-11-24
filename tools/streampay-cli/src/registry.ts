@@ -68,6 +68,8 @@ export const COMMANDS: readonly CommandSpec[] = [
   { name: "cancel", description: "Cancel a stream", options: [STREAM_ID] },
   { name: "top-up", description: "Top up a stream", options: [STREAM_ID, AMOUNT] },
   { name: "claim-all", description: "Withdraw every claimable recipient stream", options: [] },
+  { name: "tui", description: "Interactive terminal UI dashboard (#606)", options: [] },
+  { name: "dashboard", description: "Alias for tui", options: [] },
   { name: "status", description: "Read and print one decoded stream snapshot", options: [STREAM_ID, WATCH, INTERVAL] },
   { name: "get", description: "Alias for status", options: [STREAM_ID, WATCH, INTERVAL] },
   {

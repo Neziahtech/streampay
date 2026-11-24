@@ -36,6 +36,7 @@ import {
   MIN_WATCH_INTERVAL_MS,
   watchStream,
 } from "./watch.ts";
+import { createInitialTuiState, renderTuiDashboard } from "./tui.ts";
 import {
   ConfigError,
   PROFILE_FIELDS,
@@ -751,6 +752,16 @@ async function resolveOptionsAndRun(options: Options): Promise<{ value: Record<s
     }
     return { value: { schemaVersion: 1, ok: true, command: "key encrypt", keyFile: output }, exitCode: 0 };
   }
+  if (options.command === "tui" || options.command === "dashboard") {
+    applyProfile(options);
+    const isTty = Boolean(process.stdout.isTTY) && !options.json && !options.flags.has("--no-tty");
+    const tuiState = createInitialTuiState([]);
+    if (!isTty) {
+      return { value: { schemaVersion: 1, ok: true, command: "tui", tui: renderTuiDashboard(tuiState, false) }, exitCode: 0 };
+    }
+    const rendered = renderTuiDashboard(tuiState, true);
+    return { value: { schemaVersion: 1, ok: true, command: "tui", rendered }, exitCode: 0 };
+  }
   if (READ_COMMANDS.includes(options.command)) {
     applyProfile(options);
     requireProfileContract(options);
@@ -1121,6 +1132,10 @@ function printResult(value: Record<string, unknown>, mode: OutputMode): void {
   }
   if (typeof value.command === "string" && value.command.startsWith("profile")) {
     printProfileResult(value);
+    return;
+  }
+  if (value.rendered) {
+    console.log(String(value.rendered));
     return;
   }
   if (value.command === "key encrypt") {
