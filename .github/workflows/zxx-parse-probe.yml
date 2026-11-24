@@ -1,0 +1,23 @@
+name: Probe A
+
+# Throwaway. Purpose: measure whether GitHub's workflow parser rejects
+# `working-directory` on a step that has `uses:` and no `run:`. Oracle: a file
+# that parses creates no run at all on this branch (only workflow_dispatch can
+# start it); a file that GitHub refuses to load creates one named after the
+# path, with no jobs, immediately failed.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+        working-directory: frontend
+
+      - name: say
+        run: echo ok
