@@ -1,0 +1,16 @@
+name: Probe B - job-level defaults only
+
+on:
+  push:
+    branches: [ci/parse-probe2]
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - name: say
+        run: pwd

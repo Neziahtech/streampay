@@ -1,0 +1,14 @@
+name: Probe C - step-level working-directory on a uses step
+
+on:
+  push:
+    branches: [ci/parse-probe2]
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        working-directory: frontend
+      - name: say
+        run: pwd
