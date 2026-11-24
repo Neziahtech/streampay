@@ -8,6 +8,7 @@ import AnalyticsError from "@/app/analytics/error";
 import ListingsError from "@/app/listings/error";
 import SimulatorError from "@/app/simulator/error";
 import StreamError from "@/app/stream/[id]/error";
+import GovernanceError from "@/app/governance/error";
 import type { RouteErrorBoundaryProps, RouteErrorSegment } from "./RouteError";
 
 const telemetry = vi.hoisted(() => ({
@@ -73,6 +74,7 @@ const boundaries: Array<{
   { segment: "analytics", label: "analytics", Fallback: AnalyticsError },
   { segment: "listings", label: "stream listings", Fallback: ListingsError },
   { segment: "simulator", label: "accrual simulator", Fallback: SimulatorError },
+  { segment: "governance", label: "governance console", Fallback: GovernanceError },
 ];
 
 describe("route error boundaries", () => {

@@ -9,7 +9,8 @@ export type RouteErrorSegment =
   | "address"
   | "analytics"
   | "listings"
-  | "simulator";
+  | "simulator"
+  | "governance";
 
 export interface RouteErrorProps {
   error: Error & { digest?: string };
@@ -25,6 +26,7 @@ const SEGMENT_LABELS: Record<RouteErrorSegment, string> = {
   analytics: "analytics",
   listings: "stream listings",
   simulator: "accrual simulator",
+  governance: "governance console",
 };
 
 export default function RouteError({ error, reset, segment }: RouteErrorProps) {

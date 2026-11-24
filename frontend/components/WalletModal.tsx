@@ -50,6 +50,18 @@ export default function WalletModal({ open, onClose }: WalletModalProps) {
   const { connect, connectionState, lastError } = useWallet();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [connecting, setConnecting] = useState<WalletId | null>(null);
+  const [availability, setAvailability] = useState<Record<WalletId, boolean>>({ freighter: false, albedo: false });
+
+  useEffect(() => {
+    if (!open) return;
+    const timer = window.setTimeout(() => {
+      setAvailability({
+        freighter: checkAvailability("freighter"),
+        albedo: checkAvailability("albedo"),
+      });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [open]);
 
   // Sync HTML dialog open/close.
   useEffect(() => {
@@ -123,7 +135,7 @@ export default function WalletModal({ open, onClose }: WalletModalProps) {
 
         <ul className="wallet-modal__list" role="list">
           {WALLET_DESCRIPTORS.map((d) => {
-            const available = checkAvailability(d.id);
+            const available = availability[d.id];
             const isBusy =
               connectionState === "connecting" && connecting === d.id;
 
