@@ -449,7 +449,7 @@ export function saveRegisteredDevices(owner: string, devices: PasskeyDeviceCrede
  */
 export function formatWebAuthnError(err: unknown): string {
   if (typeof err === "object" && err !== null && "name" in err) {
-    const name = (err as any).name;
+    const name = (err as { name?: unknown }).name;
     if (name === "NotAllowedError") {
       return "Passkey operation was cancelled or timed out.";
     }
@@ -514,40 +514,4 @@ export async function revokeDeviceCredential(
 
   const remainingCount = devices.filter((d) => d.status === "active").length;
   return { success: true, remainingCount };
-}
-
-/**
- * Recovers passkey access and re-binds a new device for an owner with recovery proof.
- */
-export async function recoverPasskeyDevice(
-  owner: string,
-  newDeviceLabel: string,
-  recoverySecret: string
-): Promise<PasskeyDeviceCredential> {
-  if (!recoverySecret || recoverySecret.trim().length < 8) {
-    throw new Error("Invalid recovery secret or proof: minimum 8 characters required");
-  }
-
-  // Register the new device
-  const regResult = await register(owner, newDeviceLabel);
-
-  const newDevice: PasskeyDeviceCredential = {
-    id: `cred-${Math.random().toString(36).substring(2, 10)}`,
-    deviceLabel: newDeviceLabel,
-    createdAt: Date.now(),
-    lastUsedAt: Date.now(),
-    signCount: 0,
-    rpIdHash: regResult.rpIdHash,
-    status: "active",
-    publicKeyX: regResult.x,
-    publicKeyY: regResult.y,
-  };
-
-  const devices = loadRegisteredDevices(owner);
-  // Mark old active devices as revoked during account recovery
-  const updatedDevices = devices.map((d) => ({ ...d, status: "revoked" as const }));
-  updatedDevices.push(newDevice);
-  saveRegisteredDevices(owner, updatedDevices);
-
-  return newDevice;
 }

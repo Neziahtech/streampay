@@ -11,7 +11,7 @@
  * - Route-level performance budgets: evaluate field measurements against lab thresholds.
  */
 
-import { loadTelemetryConsent } from "./storage.ts";
+import { loadRumConsent } from "./storage.ts";
 import { sanitizeAttributes } from "./privacy.ts";
 
 export interface CoreWebVitals {
@@ -90,7 +90,7 @@ export class RumCollector {
     deviceClass: "desktop" | "mobile" | "tablet" = "desktop"
   ): boolean {
     // 1. Consent Gate: strictly default-off
-    if (!loadTelemetryConsent()) {
+    if (!loadRumConsent()) {
       return false;
     }
 
@@ -133,11 +133,20 @@ export class RumCollector {
    * Beacons queued RUM metrics to ingest endpoint.
    */
   public async flush(): Promise<boolean> {
-    if (this.queue.length === 0 || !loadTelemetryConsent() || this.killSwitchActive) {
+    if (this.queue.length === 0 || !loadRumConsent() || this.killSwitchActive) {
       return false;
     }
 
-    const batch = [...this.queue];
+    const batch = this.queue.map((item) => ({
+      ...item,
+      attributes: sanitizeAttributes({
+        route: item.route,
+        deviceClass: item.deviceClass,
+        timestamp: item.timestamp,
+        sampleRate: item.sampleRate,
+        ...item.vitals,
+      }),
+    }));
     this.queue = [];
 
     if (typeof fetch === "undefined") {

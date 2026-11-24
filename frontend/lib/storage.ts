@@ -14,6 +14,26 @@ const NETWORK_LABEL =
  * before the consent control. Stored values are intentionally site-wide.
  */
 export const TELEMETRY_CONSENT_STORAGE_KEY = "streampay:telemetryConsent";
+export const RUM_CONSENT_STORAGE_KEY = "streampay:rumConsent";
+
+export function loadRumConsent(): boolean {
+  if (typeof window === "undefined" || !window.localStorage) return false;
+  try {
+    const value = window.localStorage.getItem(RUM_CONSENT_STORAGE_KEY);
+    return value === "true";
+  } catch {
+    return false;
+  }
+}
+
+export function saveRumConsent(enabled: boolean): void {
+  if (typeof window === "undefined" || !window.localStorage) return;
+  try {
+    window.localStorage.setItem(RUM_CONSENT_STORAGE_KEY, String(enabled));
+  } catch {
+    // ignore
+  }
+}
 let telemetryConsentOverride: boolean | undefined;
 const telemetryConsentSubscribers = new Set<() => void>();
 

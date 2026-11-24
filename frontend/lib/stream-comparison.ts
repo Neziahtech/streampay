@@ -120,10 +120,11 @@ export function serializeComparisonToUrl(streams: HypotheticalStreamParams[]): s
     k: s.tokenSymbol,
   }));
   const json = JSON.stringify(payload);
-  if (typeof btoa !== "undefined") {
-    return encodeURIComponent(btoa(json));
-  }
-  return encodeURIComponent(Buffer.from(json).toString("base64"));
+  const utf8Base64 =
+    typeof Buffer !== "undefined"
+      ? Buffer.from(json, "utf-8").toString("base64")
+      : btoa(encodeURIComponent(json).replace(/%([0-9A-F]{2})/g, (_, p1) => String.fromCharCode(parseInt(p1, 16))));
+  return encodeURIComponent(utf8Base64);
 }
 
 /**
@@ -132,11 +133,18 @@ export function serializeComparisonToUrl(streams: HypotheticalStreamParams[]): s
 export function parseComparisonFromUrl(encoded: string): HypotheticalStreamParams[] {
   try {
     const raw = decodeURIComponent(encoded);
-    const json = typeof atob !== "undefined" ? atob(raw) : Buffer.from(raw, "base64").toString();
+    const json =
+      typeof Buffer !== "undefined"
+        ? Buffer.from(raw, "base64").toString("utf-8")
+        : decodeURIComponent(
+            Array.prototype.map
+              .call(atob(raw), (c: string) => "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2))
+              .join("")
+          );
     const parsed = JSON.parse(json);
     if (!Array.isArray(parsed)) return [];
 
-    return parsed.map((item: any) => ({
+    return (parsed as Record<string, unknown>[]).map((item) => ({
       name: String(item.n || "Benchmark"),
       depositAmount: Number(item.d) || 0,
       ratePerSecond: Number(item.r) || 0,

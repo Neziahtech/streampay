@@ -54,6 +54,8 @@ complete -c streampay -n '__streampay_depth 0' -f -a withdraw -d 'Withdraw from 
 complete -c streampay -n '__streampay_depth 0' -f -a cancel -d 'Cancel a stream'
 complete -c streampay -n '__streampay_depth 0' -f -a top-up -d 'Top up a stream'
 complete -c streampay -n '__streampay_depth 0' -f -a claim-all -d 'Withdraw every claimable recipient stream'
+complete -c streampay -n '__streampay_depth 0' -f -a tui -d 'Interactive terminal UI dashboard (#606)'
+complete -c streampay -n '__streampay_depth 0' -f -a dashboard -d 'Alias for tui'
 complete -c streampay -n '__streampay_depth 0' -f -a status -d 'Read and print one decoded stream snapshot'
 complete -c streampay -n '__streampay_depth 0' -f -a get -d 'Alias for status'
 complete -c streampay -n '__streampay_depth 0' -f -a key -d 'Manage encrypted signer keys'
@@ -78,6 +80,12 @@ complete -c streampay -n '__streampay_is cancel' -l stream-id -x -d 'Stream id'
 # top-up
 complete -c streampay -n '__streampay_is top-up' -l stream-id -x -d 'Stream id'
 complete -c streampay -n '__streampay_is top-up' -l amount -x -d 'Amount in smallest token units'
+
+# tui
+complete -c streampay -n '__streampay_is tui' -l no-tty -d 'Disable raw TUI mode and render plain snapshot'
+
+# dashboard
+complete -c streampay -n '__streampay_is dashboard' -l no-tty -d 'Disable raw TUI mode and render plain snapshot'
 
 # status
 complete -c streampay -n '__streampay_is status' -l stream-id -x -d 'Stream id'

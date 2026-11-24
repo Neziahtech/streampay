@@ -51,6 +51,7 @@ const STREAM_ID: OptionSpec = { name: "stream-id", kind: "value", description: "
 const AMOUNT: OptionSpec = { name: "amount", kind: "value", description: "Amount in smallest token units" };
 const WATCH: OptionSpec = { name: "watch", kind: "flag", description: "Poll and emit JSON Lines, one line per state change" };
 const INTERVAL: OptionSpec = { name: "interval", kind: "value", description: "Watch poll interval in milliseconds (default 5000, minimum 1000)" };
+const NO_TTY: OptionSpec = { name: "no-tty", kind: "flag", description: "Disable raw TUI mode and render plain snapshot" };
 
 export const COMMANDS: readonly CommandSpec[] = [
   {
@@ -68,8 +69,8 @@ export const COMMANDS: readonly CommandSpec[] = [
   { name: "cancel", description: "Cancel a stream", options: [STREAM_ID] },
   { name: "top-up", description: "Top up a stream", options: [STREAM_ID, AMOUNT] },
   { name: "claim-all", description: "Withdraw every claimable recipient stream", options: [] },
-  { name: "tui", description: "Interactive terminal UI dashboard (#606)", options: [] },
-  { name: "dashboard", description: "Alias for tui", options: [] },
+  { name: "tui", description: "Interactive terminal UI dashboard (#606)", options: [NO_TTY] },
+  { name: "dashboard", description: "Alias for tui", options: [NO_TTY] },
   { name: "status", description: "Read and print one decoded stream snapshot", options: [STREAM_ID, WATCH, INTERVAL] },
   { name: "get", description: "Alias for status", options: [STREAM_ID, WATCH, INTERVAL] },
   {

@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   evaluateVitalsBudget,
   RumCollector,
-  DEFAULT_ROUTE_BUDGETS,
 } from "./rum-vitals";
 import * as storage from "./storage";
 
@@ -12,7 +11,7 @@ describe("RUM and Core Web Vitals telemetry (#604)", () => {
 
   beforeEach(() => {
     consentValue = true;
-    vi.spyOn(storage, "loadTelemetryConsent").mockImplementation(() => consentValue);
+    vi.spyOn(storage, "loadRumConsent").mockImplementation(() => consentValue);
     collector = new RumCollector("/api/telemetry/rum", 1.0);
   });
 
@@ -21,6 +20,16 @@ describe("RUM and Core Web Vitals telemetry (#604)", () => {
   });
 
   describe("consent gating", () => {
+    it("strictly defaults to false when no consent has been stored", () => {
+      vi.restoreAllMocks();
+      if (typeof window !== "undefined" && window.localStorage) {
+        window.localStorage.clear();
+      }
+      expect(storage.loadRumConsent()).toBe(false);
+      const unconsentedCollector = new RumCollector("/api/telemetry/rum", 1.0);
+      expect(unconsentedCollector.recordRouteVitals("/streams", { lcpMs: 1000 })).toBe(false);
+    });
+
     it("drops all measurements when telemetry consent is false (default-off)", () => {
       consentValue = false;
       const recorded = collector.recordRouteVitals("/streams", {
