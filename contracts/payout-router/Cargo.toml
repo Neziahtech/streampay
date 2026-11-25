@@ -1,0 +1,21 @@
+[package]
+name = "streampay-payout-router"
+version = "0.1.0"
+edition = "2021"
+description = "StreamPay payout router: recipient-bound alternate payout address (delay + confirm) plugged into the streaming contract's withdraw hook."
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+testutils = []
+
+[dependencies]
+soroban-sdk.workspace = true
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }
+# Integration tests register the REAL streaming contract. Dev-only: the router
+# Wasm never links the streaming crate (see docs/PAYOUT_ROUTING.md).
+streampay-contract = { path = "../streaming-payments", features = ["testutils"] }

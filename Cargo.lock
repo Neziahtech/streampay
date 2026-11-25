@@ -3036,6 +3036,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "streampay-payout-router"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+ "streampay-contract",
+]
+
+[[package]]
 name = "streampay-state"
 version = "0.1.0"
 dependencies = [
