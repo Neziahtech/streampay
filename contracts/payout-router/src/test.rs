@@ -10,6 +10,7 @@ use soroban_sdk::{
 };
 use streampay_contract::{
     test_client::StreamingPaymentsClient, HookEventClass, HookFailurePolicy, StreamingPayments,
+    MIN_CLAIM_AMOUNT,
 };
 
 use crate::{
@@ -19,6 +20,8 @@ use crate::{
 
 const DAY: u64 = 86_400;
 const DEPOSIT: i128 = 10_000_000_000;
+/// Smallest mid-stream single claim the streaming contract accepts (#78).
+const CLAIM: i128 = MIN_CLAIM_AMOUNT;
 
 struct F {
     env: Env,
@@ -311,13 +314,13 @@ fn repropose_while_active_keeps_old_route_until_confirm() {
     let view = f.router.binding(&id);
     assert_eq!(view.active, Some(f.payout.clone()));
     assert_eq!(view.pending, Some(other.clone()));
-    f.streaming.withdraw(&id, &1_000);
-    assert_eq!(f.bal(&f.payout), 1_000);
+    f.streaming.withdraw(&id, &CLAIM);
+    assert_eq!(f.bal(&f.payout), CLAIM);
     assert_eq!(f.bal(&other), 0);
     f.advance(BIND_DELAY_SECS);
     f.router.confirm(&id);
-    f.streaming.withdraw(&id, &2_000);
-    assert_eq!(f.bal(&other), 2_000);
+    f.streaming.withdraw(&id, &(2 * CLAIM));
+    assert_eq!(f.bal(&other), 2 * CLAIM);
 }
 
 #[test]
@@ -354,8 +357,8 @@ fn cancel_from_active_returns_claims_to_recipient() {
     let view = f.router.binding(&id);
     assert_eq!((view.active, view.pending), (None, None));
     let before = f.bal(&f.recipient);
-    f.streaming.withdraw(&id, &5_000);
-    assert_eq!(f.bal(&f.recipient), before + 5_000);
+    f.streaming.withdraw(&id, &(5 * CLAIM));
+    assert_eq!(f.bal(&f.recipient), before + 5 * CLAIM);
     assert_eq!(f.bal(&f.payout), 0);
 }
 
@@ -597,11 +600,11 @@ fn recipient_change_makes_forward_fail_and_new_recipient_can_cancel() {
         invoke: &MockAuthInvoke {
             contract: &f.streaming.address,
             fn_name: "withdraw",
-            args: (id, 1_000i128).into_val(&f.env),
+            args: (id, CLAIM).into_val(&f.env),
             sub_invokes: &[],
         },
     }]);
-    assert!(f.streaming.try_withdraw(&id, &1_000).is_err());
+    assert!(f.streaming.try_withdraw(&id, &CLAIM).is_err());
 
     // The old (stored) recipient can no longer clear the binding.
     f.env.mock_auths(&[MockAuth {
@@ -636,8 +639,8 @@ fn recipient_change_makes_forward_fail_and_new_recipient_can_cancel() {
         [ev.to_xdr(&f.env, &f.router.address)]
     );
     let before = f.bal(&new_owner);
-    f.streaming.withdraw(&id, &1_000);
-    assert_eq!(f.bal(&new_owner), before + 1_000);
+    f.streaming.withdraw(&id, &CLAIM);
+    assert_eq!(f.bal(&new_owner), before + CLAIM);
 }
 
 #[test]
@@ -692,9 +695,9 @@ fn emit_and_continue_policy_also_routes_when_forward_succeeds() {
     f.advance(BIND_DELAY_SECS);
     f.router.confirm(&id);
     let before = f.bal(&f.recipient);
-    f.streaming.withdraw(&id, &1_000);
-    // Streaming paid the recipient 1_000, router forwarded it on.
-    assert_eq!(f.bal(&f.payout), 1_000);
+    f.streaming.withdraw(&id, &CLAIM);
+    // Streaming paid the recipient CLAIM, router forwarded it on.
+    assert_eq!(f.bal(&f.payout), CLAIM);
     assert_eq!(f.bal(&f.recipient), before);
 }
 

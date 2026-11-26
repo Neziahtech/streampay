@@ -18,4 +18,4 @@ soroban-sdk.workspace = true
 soroban-sdk = { workspace = true, features = ["testutils"] }
 # Integration tests register the REAL streaming contract. Dev-only: the router
 # Wasm never links the streaming crate (see docs/PAYOUT_ROUTING.md).
-streampay-contract = { path = "../streaming-payments", features = ["testutils"] }
+streampay-contract = { version = "0.1.0", path = "../streaming-payments", features = ["testutils"] }
