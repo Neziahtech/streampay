@@ -1,0 +1,16 @@
+read instance ContractFrozen
+read persistent Swap(1)
+read persistent Stream(1)
+read persistent Stream(2)
+read persistent Stream(1)
+read persistent Stream(2)
+read persistent StreamPause(1)
+read persistent StreamPause(2)
+write persistent Stream(1)
+write persistent Stream(2)
+write persistent Swap(1)
+transfer recipient payout
+read persistent Stream(1)
+read persistent Stream(2)
+read persistent StreamPause(1)
+read persistent StreamPause(2)

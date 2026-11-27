@@ -362,6 +362,24 @@
       "struct": "StreamsCreated"
     },
     {
+      "event_key": "swap_executed",
+      "fingerprint": "sha256:235feda01227275127d032061f085a0e47078ff4072b34308b61acdfd1dc0c7c",
+      "schema": "events/swap_executed.json",
+      "struct": "SwapExecuted"
+    },
+    {
+      "event_key": "swap_proposed",
+      "fingerprint": "sha256:259ce33cb5e0ab171c9981ac80f3df436875c95431fc2894f899672e634bfc9b",
+      "schema": "events/swap_proposed.json",
+      "struct": "SwapProposed"
+    },
+    {
+      "event_key": "swap_unwound",
+      "fingerprint": "sha256:4de3682a59569abf078156362b57a8d3eb09928ed2beb86f732c87498375b497",
+      "schema": "events/swap_unwound.json",
+      "struct": "SwapUnwound"
+    },
+    {
       "event_key": "template_approved",
       "fingerprint": "sha256:2556ce26fef265a2d6a39bec5ffe01924ad60ca4e3bd4f96310ad439fb6f0b3b",
       "schema": "events/template_approved.json",

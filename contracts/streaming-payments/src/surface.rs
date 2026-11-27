@@ -405,13 +405,42 @@ pub enum Branch {
     /// `lineage::check_conservation`: the outputs do not carry exactly the
     /// inputs' withdrawn, claimable and refundable value.
     LineageConservationViolated,
+    // -------------------------------------------------------- rate swaps (#568)
+    /// `propose_swap`: both legs name the same stream.
+    SwapSameStream,
+    /// `propose_swap`: the two streams do not share a token.
+    SwapIncompatibleStreams,
+    /// `propose_swap` / `accept_swap` / `settle_swap` / `unwind_swap`: the
+    /// caller is not one of the swap's two parties (or the offer's recorded
+    /// pair no longer matches the streams' senders).
+    SwapNotParty,
+    /// `propose_swap`: a leg is already linked to a swap (pending or active).
+    SwapAlreadyLinked,
+    /// `propose_swap`: a leg's stream window has already elapsed.
+    SwapWindowElapsed,
+    /// No swap is stored under the supplied id.
+    SwapNotFound,
+    /// `accept_swap`: the swap is not awaiting acceptance.
+    SwapNotPending,
+    /// `accept_swap`: the proposal's acceptance window elapsed.
+    SwapProposalExpired,
+    /// `settle_swap` / `unwind_swap`: the swap is not active.
+    SwapNotActive,
+    /// `withdraw` / `withdraw_max` / `withdraw_many` / `withdraw_all`: the
+    /// stream is on an active swap and is settled through `settle_swap`.
+    SwapStreamBusy,
+    /// Swap arithmetic would overflow; defensive (valid streams bound every
+    /// intermediate to `i128`).
+    SwapMathOverflow,
+    /// The pair's conservation identity failed to re-derive; defensive.
+    SwapConservationViolated,
 }
 
 impl Branch {
     /// Every branch, in declaration order. The matrix test walks this list and
     /// the coverage test requires each [`StreamError`] variant to be produced by
     /// one of these (or retired).
-    pub const ALL: [Branch; 174] = [
+    pub const ALL: [Branch; 186] = [
         Branch::CreateDepositNonPositive,
         Branch::CreateStartTimeInPast,
         Branch::CreateInvalidTimeRange,
@@ -586,6 +615,18 @@ impl Branch {
         Branch::MergeSameStream,
         Branch::MergeIncompatible,
         Branch::LineageConservationViolated,
+        Branch::SwapSameStream,
+        Branch::SwapIncompatibleStreams,
+        Branch::SwapNotParty,
+        Branch::SwapAlreadyLinked,
+        Branch::SwapWindowElapsed,
+        Branch::SwapNotFound,
+        Branch::SwapNotPending,
+        Branch::SwapProposalExpired,
+        Branch::SwapNotActive,
+        Branch::SwapStreamBusy,
+        Branch::SwapMathOverflow,
+        Branch::SwapConservationViolated,
     ];
 
     /// The entrypoint(s) through which this branch can fire. Shared helpers
@@ -966,6 +1007,24 @@ impl Branch {
             | Branch::SplitEndBeforeParent
             | Branch::SplitDurationTooLong => &["split_stream"],
             Branch::MergeSameStream | Branch::MergeIncompatible => &["merge_streams"],
+            Branch::SwapSameStream
+            | Branch::SwapIncompatibleStreams
+            | Branch::SwapAlreadyLinked
+            | Branch::SwapWindowElapsed => &["propose_swap"],
+            Branch::SwapNotParty => &["propose_swap", "accept_swap", "settle_swap", "unwind_swap"],
+            Branch::SwapNotFound => &["get_swap", "accept_swap", "settle_swap", "unwind_swap"],
+            Branch::SwapNotPending | Branch::SwapProposalExpired => &["accept_swap"],
+            Branch::SwapNotActive => &["settle_swap", "unwind_swap"],
+            Branch::SwapStreamBusy => {
+                &["withdraw", "withdraw_max", "withdraw_many", "withdraw_all"]
+            }
+            Branch::SwapMathOverflow | Branch::SwapConservationViolated => &[
+                "propose_swap",
+                "accept_swap",
+                "settle_swap",
+                "unwind_swap",
+                "cancel_stream",
+            ],
         }
     }
 
@@ -1163,6 +1222,24 @@ impl Branch {
             Branch::MergeSameStream => StreamError::MergeSameStream,
             Branch::MergeIncompatible => StreamError::MergeIncompatibleStreams,
             Branch::LineageConservationViolated => StreamError::MathOverflow,
+            // ------------------------------------------------ rate swaps (#568)
+            Branch::SwapSameStream => StreamError::SwapSameStream,
+            Branch::SwapIncompatibleStreams => StreamError::SwapIncompatibleStreams,
+            Branch::SwapNotParty => StreamError::NotAuthorized,
+            Branch::SwapAlreadyLinked => StreamError::SwapAlreadyLinked,
+            Branch::SwapWindowElapsed => StreamError::SwapWindowElapsed,
+            Branch::SwapNotFound => StreamError::SwapNotFound,
+            Branch::SwapNotPending => StreamError::SwapNotPending,
+            Branch::SwapProposalExpired => StreamError::SwapProposalExpired,
+            Branch::SwapNotActive => StreamError::SwapNotActive,
+            Branch::SwapStreamBusy => StreamError::SwapStreamBusy,
+            // A conservation alarm is reported as `MathOverflow`, matching the
+            // lineage conservation guard: the dedicated
+            // `SwapConservationViolated` wire code stays retired until a
+            // reachable trigger exists for it.
+            Branch::SwapMathOverflow | Branch::SwapConservationViolated => {
+                StreamError::MathOverflow
+            }
         }
     }
 
@@ -1542,6 +1619,29 @@ impl Branch {
             Branch::LineageConservationViolated => {
                 "split/merge outputs do not carry exactly the inputs' withdrawn, claimable and refundable value"
             }
+            // ------------------------------------------------ rate swaps (#568)
+            Branch::SwapSameStream => "both swap legs name the same stream",
+            Branch::SwapIncompatibleStreams => {
+                "the two swap legs do not share one token"
+            }
+            Branch::SwapNotParty => {
+                "the caller is not one of the swap's two parties (or the offer's parties changed)"
+            }
+            Branch::SwapAlreadyLinked => {
+                "a leg is already linked to a pending or active swap"
+            }
+            Branch::SwapWindowElapsed => "a leg's stream window has already elapsed",
+            Branch::SwapNotFound => "no swap is stored under the supplied id",
+            Branch::SwapNotPending => "the swap is not awaiting acceptance",
+            Branch::SwapProposalExpired => "the swap proposal's acceptance window elapsed",
+            Branch::SwapNotActive => "the swap is not active",
+            Branch::SwapStreamBusy => {
+                "the stream is on an active swap; settle it through settle_swap"
+            }
+            Branch::SwapMathOverflow => "swap arithmetic would overflow",
+            Branch::SwapConservationViolated => {
+                "the swap pair's combined conservation identity failed to re-derive"
+            }
         }
     }
 
@@ -1579,7 +1679,9 @@ impl Branch {
             // records, an identity the construction already guarantees: clipped
             // segments accrue exactly the input history, and each tail carries
             // exactly its share of `deposit - accrued`.
-            | Branch::LineageConservationViolated => Reachability::Defensive,
+            | Branch::LineageConservationViolated
+            | Branch::SwapMathOverflow
+            | Branch::SwapConservationViolated => Reachability::Defensive,
             _ => Reachability::Reachable,
         }
     }
@@ -1605,6 +1707,12 @@ pub const RETIRED_CODES: &[StreamError] = &[
     StreamError::AgentExpired,
     StreamError::CapExceededPeriod,
     StreamError::CapExceededStream,
+    // Dedicated defensive code: `swap::check_pair_conservation` re-derives an
+    // identity the construction already guarantees, so no reachable input can
+    // produce it. Kept as its own wire code (rather than folded into
+    // `MathOverflow`) so a client can distinguish a swap-conservation alarm
+    // from ordinary arithmetic failure if the impossible ever happens.
+    StreamError::SwapConservationViolated,
 ];
 
 /// Records a rejection branch and returns the error it maps to.

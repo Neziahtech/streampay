@@ -690,6 +690,56 @@
       "code": 138,
       "name": "MergeIncompatibleStreams",
       "retired": false
+    },
+    {
+      "code": 139,
+      "name": "SwapNotFound",
+      "retired": false
+    },
+    {
+      "code": 140,
+      "name": "SwapNotPending",
+      "retired": false
+    },
+    {
+      "code": 141,
+      "name": "SwapNotActive",
+      "retired": false
+    },
+    {
+      "code": 142,
+      "name": "SwapProposalExpired",
+      "retired": false
+    },
+    {
+      "code": 143,
+      "name": "SwapAlreadyLinked",
+      "retired": false
+    },
+    {
+      "code": 144,
+      "name": "SwapSameStream",
+      "retired": false
+    },
+    {
+      "code": 145,
+      "name": "SwapIncompatibleStreams",
+      "retired": false
+    },
+    {
+      "code": 146,
+      "name": "SwapWindowElapsed",
+      "retired": false
+    },
+    {
+      "code": 147,
+      "name": "SwapStreamBusy",
+      "retired": false
+    },
+    {
+      "code": 148,
+      "name": "SwapConservationViolated",
+      "retired": false
     }
   ],
   "events": [
@@ -1985,7 +2035,7 @@
       "xdr_sample_hex": "000000000000000100000000000000000000000000000000000000000000000000000000000000020000000100000000000000020000000f0000000977697468647261776e0000000000000500000000000000010000001100000001000000030000000f00000006616d6f756e7400000000000a000000000000000000000000000001f40000000f00000009726563697069656e74000000000000120000000100000000000000000000000000000000000000000000000000000000000000040000000f0000000f77697468647261776e5f746f74616c000000000a000000000000000000000000000001f4"
     }
   ],
-  "fingerprint": "8e8bb6012ded7319fb1cca1820fee6ac65a2464ebb15026c3b3423172638e234",
+  "fingerprint": "b59abc9f4ffe21c46b840d6ca6734ce2d6b8797e3713544b77dd8003cc1b27b8",
   "storage_keys": [
     {
       "enum": "DataKey",
@@ -2035,6 +2085,13 @@
       "shape": "NextStreamId",
       "storage_type": "instance",
       "xdr_sample_hex": "0000001000000001000000010000000f0000000c4e65787453747265616d4964"
+    },
+    {
+      "enum": "DataKey",
+      "name": "NextSwapId",
+      "shape": "NextSwapId",
+      "storage_type": "instance",
+      "xdr_sample_hex": "0000001000000001000000010000000f0000000a4e6578745377617049640000"
     },
     {
       "enum": "DataKey",
@@ -2161,6 +2218,20 @@
       "shape": "StreamPause(u64)",
       "storage_type": "persistent",
       "xdr_sample_hex": "0000001000000001000000020000000f0000000b53747265616d506175736500000000050000000000000001"
+    },
+    {
+      "enum": "DataKey",
+      "name": "StreamSwap",
+      "shape": "StreamSwap(u64)",
+      "storage_type": "persistent",
+      "xdr_sample_hex": "0000001000000001000000020000000f0000000a53747265616d537761700000000000050000000000000001"
+    },
+    {
+      "enum": "DataKey",
+      "name": "Swap",
+      "shape": "Swap(u64)",
+      "storage_type": "persistent",
+      "xdr_sample_hex": "0000001000000001000000020000000f0000000453776170000000050000000000000001"
     },
     {
       "enum": "DataKey",

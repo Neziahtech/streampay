@@ -26,7 +26,7 @@ use crate::test::{Fixture, RefusingFixture};
 use crate::{
     StreamError, MAX_DURATION_SECONDS, MAX_FEE_BPS, MAX_RATE_SEGMENTS, MAX_WITHDRAW_BATCH,
     MIN_CLAIM_AMOUNT, MIN_STREAM_DEPOSIT, OWNERSHIP_PROPOSAL_TTL_SECONDS,
-    RATE_PROPOSAL_TTL_SECONDS, SWEEP_GRACE_SECONDS,
+    RATE_PROPOSAL_TTL_SECONDS, SWAP_PROPOSAL_TTL_SECONDS, SWEEP_GRACE_SECONDS,
 };
 
 const DAY: u64 = 24 * 60 * 60;
@@ -82,6 +82,40 @@ fn schedule_intent(f: &Fixture, execute_after: u64, expires_at: u64) -> u64 {
         &execute_after,
         &expires_at,
     )
+}
+
+/// Two active streams on one token, funded by two distinct senders: the
+/// canonical swap pair. Returns `(stream_a, stream_b, other_party)`.
+fn two_party_streams(f: &Fixture) -> (u64, u64, Address) {
+    let now = f.env.ledger().timestamp();
+    let payer = f.fund_payer();
+    let a = f.client.create_stream(
+        &f.sender,
+        &f.recipient,
+        &f.token,
+        &DEPOSIT,
+        &(now + DAY),
+        &(now + 10 * DAY),
+        &false,
+    );
+    let b = f.client.create_stream(
+        &payer,
+        &f.recipient,
+        &f.token,
+        &DEPOSIT,
+        &(now + DAY),
+        &(now + 10 * DAY),
+        &false,
+    );
+    (a, b, payer)
+}
+
+/// Proposes and accepts a swap over a fresh pair; returns the swap id.
+fn active_swap(f: &Fixture) -> (u64, u64, u64, Address) {
+    let (a, b, payer) = two_party_streams(f);
+    let swap_id = f.client.mock_all_auths().propose_swap(&f.sender, &a, &b);
+    f.client.mock_all_auths().accept_swap(&payer, &swap_id);
+    (swap_id, a, b, payer)
 }
 
 /// Unwraps the contract's rejection into its `StreamError`.
@@ -2271,6 +2305,119 @@ fn probe(branch: Branch) -> Option<StreamError> {
                 .try_merge_streams(&a, &b)))
         }
         Branch::LineageConservationViolated => None,
+        // ------------------------------------------------ rate swaps (#568)
+        Branch::SwapSameStream => {
+            let f = Fixture::setup_quiet();
+            let id = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_propose_swap(&f.sender, &id, &id)))
+        }
+        Branch::SwapIncompatibleStreams => {
+            let f = Fixture::setup_quiet();
+            let now = f.env.ledger().timestamp();
+            let a = f.create_stream(DEPOSIT, DAY, 10 * DAY, false);
+            let other = f
+                .env
+                .register_stellar_asset_contract_v2(Address::generate(&f.env))
+                .address();
+            let sac = soroban_sdk::token::StellarAssetClient::new(&f.env, &other);
+            sac.mint(&f.sender, &DEPOSIT);
+            sac.approve(&f.sender, &f.client.address, &DEPOSIT, &1_000_000u32);
+            let b = f.client.create_stream(
+                &f.sender,
+                &f.recipient,
+                &other,
+                &DEPOSIT,
+                &(now + DAY),
+                &(now + 10 * DAY),
+                &false,
+            );
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_propose_swap(&f.sender, &a, &b)))
+        }
+        Branch::SwapNotParty => {
+            let f = Fixture::setup_quiet();
+            let (a, b, _payer) = two_party_streams(&f);
+            let stranger = Address::generate(&f.env);
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_propose_swap(&stranger, &a, &b)))
+        }
+        Branch::SwapAlreadyLinked => {
+            let f = Fixture::setup_quiet();
+            let (a, b, _payer) = two_party_streams(&f);
+            f.client.mock_all_auths().propose_swap(&f.sender, &a, &b);
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_propose_swap(&f.sender, &a, &b)))
+        }
+        Branch::SwapWindowElapsed => {
+            let f = Fixture::setup_quiet();
+            let now = f.env.ledger().timestamp();
+            let a = f.create_stream(DEPOSIT, 0, DAY, false);
+            f.advance_time(2 * DAY);
+            let payer = f.fund_payer();
+            let b = f.client.create_stream(
+                &payer,
+                &f.recipient,
+                &f.token,
+                &DEPOSIT,
+                &(now + 2 * DAY),
+                &(now + 12 * DAY),
+                &false,
+            );
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_propose_swap(&f.sender, &a, &b)))
+        }
+        Branch::SwapNotFound => {
+            let f = Fixture::setup_quiet();
+            Some(rejected!(f.client.try_get_swap(&9_999)))
+        }
+        Branch::SwapNotPending => {
+            let f = Fixture::setup_quiet();
+            let (swap_id, _a, _b, payer) = active_swap(&f);
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_accept_swap(&payer, &swap_id)))
+        }
+        Branch::SwapProposalExpired => {
+            let f = Fixture::setup_quiet();
+            let (a, b, payer) = two_party_streams(&f);
+            let swap_id = f.client.mock_all_auths().propose_swap(&f.sender, &a, &b);
+            f.advance_time(SWAP_PROPOSAL_TTL_SECONDS);
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_accept_swap(&payer, &swap_id)))
+        }
+        Branch::SwapNotActive => {
+            let f = Fixture::setup_quiet();
+            let (a, b, _payer) = two_party_streams(&f);
+            let swap_id = f.client.mock_all_auths().propose_swap(&f.sender, &a, &b);
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_settle_swap(&f.sender, &swap_id)))
+        }
+        Branch::SwapStreamBusy => {
+            let f = Fixture::setup_quiet();
+            let (_swap_id, a, _b, _payer) = active_swap(&f);
+            f.advance_time(2 * DAY);
+            Some(rejected!(f
+                .client
+                .mock_all_auths()
+                .try_withdraw(&a, &(DEPOSIT / 10))))
+        }
+        Branch::SwapMathOverflow | Branch::SwapConservationViolated => None,
     }
 }
 
@@ -2370,6 +2517,8 @@ fn defensive_branches_are_exactly_documented() {
             Branch::RateHeadroomUnderflow,
             Branch::WithdrawManyTotalOverflow,
             Branch::LineageConservationViolated,
+            Branch::SwapMathOverflow,
+            Branch::SwapConservationViolated,
         ],
         "the defensive set changed; update the matrix test and docs/ERROR_SURFACE.md"
     );
@@ -2519,7 +2668,17 @@ fn stream_error_variant_list_is_exhaustive() {
             | StreamError::InvalidLineageEndTime
             | StreamError::LineageWindowElapsed
             | StreamError::MergeSameStream
-            | StreamError::MergeIncompatibleStreams => StreamError::ALL.contains(&e),
+            | StreamError::MergeIncompatibleStreams
+            | StreamError::SwapNotFound
+            | StreamError::SwapNotPending
+            | StreamError::SwapNotActive
+            | StreamError::SwapProposalExpired
+            | StreamError::SwapAlreadyLinked
+            | StreamError::SwapSameStream
+            | StreamError::SwapIncompatibleStreams
+            | StreamError::SwapWindowElapsed
+            | StreamError::SwapStreamBusy
+            | StreamError::SwapConservationViolated => StreamError::ALL.contains(&e),
         }
     }
 

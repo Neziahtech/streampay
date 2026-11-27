@@ -1,0 +1,64 @@
+{
+  "$defs": {},
+  "$id": "https://streampay.dev/schemas/events/v1/events/swap_proposed.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Emitted when one stream party proposes exchanging the rate legs of two sibling streams. Nothing changes about either stream until the named counterparty accepts; `stream_a` / `stream_b` are the parent↔leg links.",
+  "properties": {
+    "counterparty": {
+      "description": "Stellar account or contract address (StrKey).",
+      "type": "string",
+      "x-soroban-type": "Address"
+    },
+    "expires_at": {
+      "minimum": 0,
+      "type": "integer",
+      "x-soroban-type": "u64"
+    },
+    "proposed_by": {
+      "description": "Stellar account or contract address (StrKey).",
+      "type": "string",
+      "x-soroban-type": "Address"
+    },
+    "stream_a": {
+      "minimum": 0,
+      "type": "integer",
+      "x-soroban-type": "u64"
+    },
+    "stream_b": {
+      "minimum": 0,
+      "type": "integer",
+      "x-soroban-type": "u64"
+    }
+  },
+  "required": [
+    "stream_a",
+    "stream_b",
+    "proposed_by",
+    "counterparty",
+    "expires_at"
+  ],
+  "title": "SwapProposed",
+  "type": "object",
+  "x-streampay": {
+    "event_key": "swap_proposed",
+    "fingerprint": "sha256:259ce33cb5e0ab171c9981ac80f3df436875c95431fc2894f899672e634bfc9b",
+    "registry_version": 1,
+    "topicSchema": {
+      "items": [
+        {
+          "minimum": 0,
+          "type": "integer",
+          "x-soroban-type": "u64"
+        }
+      ],
+      "type": "array"
+    },
+    "topics": [
+      {
+        "name": "swap_id",
+        "type": "u64"
+      }
+    ]
+  }
+}

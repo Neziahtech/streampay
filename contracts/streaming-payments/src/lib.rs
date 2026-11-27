@@ -134,6 +134,9 @@ mod sponsor_test;
 mod storage_golden;
 mod stream;
 pub mod surface;
+mod swaps;
+#[cfg(test)]
+mod swaps_test;
 pub mod templates;
 #[cfg(test)]
 mod test;
@@ -175,8 +178,8 @@ pub use events::{
     SplitStream, SponsorActiveSet, SponsorClaim, SponsorRegistered, StorageMigrated,
     StreamCancelled, StreamCreated, StreamPaused, StreamPolicySet, StreamRecordMigrated,
     StreamRefundTargetChanged, StreamResumed, StreamScheduled, StreamSwept, StreamToppedUp,
-    StreamsCreated, TemplateApproved, TemplateInstantiated, UpgradeCancelled, UpgradeProposed,
-    Withdrawn,
+    StreamsCreated, SwapExecuted, SwapProposed, SwapUnwound, TemplateApproved,
+    TemplateInstantiated, UpgradeCancelled, UpgradeProposed, Withdrawn,
 };
 pub use governance::{
     GovernanceAction, Proposal, DEFAULT_VETO_WINDOW_SECONDS, MAX_SIGNERS, MIN_VETO_WINDOW_SECONDS,
@@ -201,6 +204,7 @@ pub use stream::{
     RATE_PROPOSAL_TTL_SECONDS, STREAM_RECORD_VERSION_V1, STREAM_RECORD_VERSION_V2,
     TARGET_SCHEMA_VERSION,
 };
+pub use swaps::{net_settlement, NetSettlement, RateSwap, SwapStatus, SWAP_PROPOSAL_TTL_SECONDS};
 pub use treasury::{fee_amount, FeeScan, Treasury, TreasuryStatus, BPS_DENOMINATOR, MAX_FEE_BPS};
 
 #[cfg_attr(
@@ -1772,6 +1776,9 @@ impl StreamingPayments {
         if s.status != StreamStatus::Active {
             return Err(surface::reject(Branch::StreamNotActive));
         }
+        if swaps::active_swap_for(env, stream_id) {
+            return Err(surface::reject(Branch::SwapStreamBusy));
+        }
         Ok(s)
     }
 
@@ -1782,6 +1789,9 @@ impl StreamingPayments {
         s.recipient.require_auth();
         if s.status != StreamStatus::Active {
             return Err(surface::reject(Branch::StreamNotActive));
+        }
+        if swaps::active_swap_for(env, stream_id) {
+            return Err(surface::reject(Branch::SwapStreamBusy));
         }
         Ok(s)
     }
@@ -1990,6 +2000,14 @@ impl StreamingPayments {
             } else {
                 return Err(surface::reject(Branch::CancelStreamNotAuthorized));
             }
+        }
+
+        // A swapped leg unwinds first: its netted offsets are refunded and the
+        // pair's routing is restored before this stream's own split is priced,
+        // so the cancel pays out of the post-refund deposit. Only a swap that
+        // actually rewrote the record needs a reload.
+        if swaps::unwind_for_cancel(&env, stream_id)? {
+            s = stream::get_stream(&env, stream_id)?;
         }
 
         let resolved = oracle::resolve_stream_time(&env, stream_id, s.uses_oracle());
@@ -3554,6 +3572,145 @@ impl StreamingPayments {
     )]
     pub fn rate_segments(env: Env, stream_id: u64) -> Vec<RateSegment> {
         stream::get_rate_segments(&env, stream_id)
+    }
+
+    // ------------------------------------------------------ rate swaps (#568) --
+    //
+    // Two sibling streams exchange rate legs. Both parties must consent (the
+    // proposer at proposal time, the counterparty at acceptance, mirroring the
+    // rate-change amendment model), settlement routes only the net difference,
+    // and unwinding restores each stream's original routing with the netted
+    // offsets refunded to the senders that funded them.
+
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Proposes a two-party rate swap between `stream_a` and `stream_b` and"
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = " returns the new swap id.")]
+    #[cfg_attr(not(target_family = "wasm"), doc = "")]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The caller must be the sender of one leg and their authorization is"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " required; the counterparty is the other leg's sender. Both streams must"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " be `Active`, share one token, have distinct ids and senders, be free of"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " any other swap link, and still have window left. No accounting field"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " changes at proposal time: the offer lives under its own storage key for"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " [`SWAP_PROPOSAL_TTL_SECONDS`] and takes effect only on acceptance."
+    )]
+    pub fn propose_swap(
+        env: Env,
+        caller: Address,
+        stream_a: u64,
+        stream_b: u64,
+    ) -> Result<u64, StreamError> {
+        Self::require_not_frozen(&env)?;
+        caller.require_auth();
+        swaps::propose(&env, caller, stream_a, stream_b)
+    }
+
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Accepts a pending swap as its named counterparty, activating net"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " settlement from the current instant onward."
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = "")]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The acceptance boundary is recorded as each leg's baseline, so accrual"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " before it stays with the leg's own recipient and is never netted."
+    )]
+    pub fn accept_swap(env: Env, caller: Address, swap_id: u64) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
+        caller.require_auth();
+        swaps::accept(&env, caller, swap_id)
+    }
+
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Settles a swap pair up to now, moving only the net difference between"
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = " the two legs' accruals.")]
+    #[cfg_attr(not(target_family = "wasm"), doc = "")]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Either sender may settle. At most one transfer happens: the larger"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " leg's escrow pays the smaller leg's recipient; the offset is booked as a"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " refund credit to each sender rather than transferred gross."
+    )]
+    pub fn settle_swap(env: Env, caller: Address, swap_id: u64) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
+        caller.require_auth();
+        swaps::settle(&env, caller, swap_id)
+    }
+
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Unwinds a swap: settles it to now, refunds both offset credits to the"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " legs' senders and restores each stream's original routing."
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = "")]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Either sender may unwind at any time; after either leg's window elapsed"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " anyone may, so an expired swap can never strand a leg. Cancelling either"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " leg unwinds the pair through the same path before the cancel split."
+    )]
+    pub fn unwind_swap(env: Env, caller: Address, swap_id: u64) -> Result<(), StreamError> {
+        Self::require_not_frozen(&env)?;
+        caller.require_auth();
+        swaps::unwind(&env, caller, swap_id)
+    }
+
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Read-only view of a stored swap, including its parent↔leg links."
+    )]
+    pub fn get_swap(env: Env, swap_id: u64) -> Result<RateSwap, StreamError> {
+        swaps::get_swap(&env, swap_id)
+    }
+
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The swap id linked to a stream, if any (pending or active)."
+    )]
+    pub fn stream_swap(env: Env, stream_id: u64) -> Option<u64> {
+        swaps::stream_swap(&env, stream_id)
     }
 
     #[cfg_attr(

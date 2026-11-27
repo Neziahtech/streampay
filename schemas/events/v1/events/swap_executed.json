@@ -1,0 +1,62 @@
+{
+  "$defs": {},
+  "$id": "https://streampay.dev/schemas/events/v1/events/swap_executed.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Emitted when the counterparty accepts a swap. `baseline_a` / `baseline_b` are each leg's cumulative accrual at `executed_at`; only accrual after that boundary is ever netted, so nothing already earned is re-routed.",
+  "properties": {
+    "baseline_a": {
+      "type": "integer",
+      "x-soroban-type": "i128"
+    },
+    "baseline_b": {
+      "type": "integer",
+      "x-soroban-type": "i128"
+    },
+    "executed_at": {
+      "minimum": 0,
+      "type": "integer",
+      "x-soroban-type": "u64"
+    },
+    "stream_a": {
+      "minimum": 0,
+      "type": "integer",
+      "x-soroban-type": "u64"
+    },
+    "stream_b": {
+      "minimum": 0,
+      "type": "integer",
+      "x-soroban-type": "u64"
+    }
+  },
+  "required": [
+    "stream_a",
+    "stream_b",
+    "executed_at",
+    "baseline_a",
+    "baseline_b"
+  ],
+  "title": "SwapExecuted",
+  "type": "object",
+  "x-streampay": {
+    "event_key": "swap_executed",
+    "fingerprint": "sha256:235feda01227275127d032061f085a0e47078ff4072b34308b61acdfd1dc0c7c",
+    "registry_version": 1,
+    "topicSchema": {
+      "items": [
+        {
+          "minimum": 0,
+          "type": "integer",
+          "x-soroban-type": "u64"
+        }
+      ],
+      "type": "array"
+    },
+    "topics": [
+      {
+        "name": "swap_id",
+        "type": "u64"
+      }
+    ]
+  }
+}

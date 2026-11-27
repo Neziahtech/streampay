@@ -18,8 +18,8 @@ Every expected failure is a `StreamError` with a stable numeric code. This docum
 | 8 | `DurationTooLong` | reachable (2 branch(es)) | `create_stream`, `create_streams`, `split_stream` | duration exceeds MAX_DURATION_SECONDS (100 years); a child window exceeds MAX_DURATION_SECONDS (100 years) |
 | 9 | `ZeroAmount` | reachable (7 branch(es)) | `create_stream`, `create_streams`, `propose_rate_change`, `register_sponsor`, `sponsored_withdraw`, `top_up`, `withdraw`, `withdraw_treasury` | deposit_amount is zero or negative; withdraw amount is zero or negative; top-up amount is zero or negative; treasury withdrawal amount is zero or negative; a sponsor budget cap (per-period or per-beneficiary) is zero or negative; a sponsored claim requests a zero or negative payout; the proposed amount_per_second is zero or negative |
 | 10 | `AmountExceedsAvailable` | reachable (2 branch(es)) | `sponsored_withdraw`, `withdraw` | amount exceeds the accrued-but-unwithdrawn balance; a sponsored claim exceeds the stream's accrued-but-unwithdrawn balance |
-| 11 | `MathOverflow` | reachable (11 branch(es)) | `accept_rate_change`, `available`, `cancel_stream`, `create_stream`, `merge_streams`, `split_stream`, `sponsored_withdraw`, `streamed_at`, `top_up`, `withdraw`, `withdraw_all`, `withdraw_many`, `withdraw_max` | deposit + amount would overflow i128; deposit * duration would overflow u128; deposit * elapsed would overflow u128; withdrawn exceeds streamed (an invariant-violating stored stream); the cancel pro-rata split would underflow; withdrawn + amount would overflow i128; amount_per_second * remaining_seconds (or owed + that reserve) would overflow i128; adding a per-segment term would overflow i128 (accrual sum, or a top-up onto a segment's allocation); deposit - owed would underflow (an invariant-violating stored stream); summing the batch's per-stream payouts into the summary total would overflow; split/merge outputs do not carry exactly the inputs' withdrawn, claimable and refundable value |
-| 12 | `NotAuthorized` | reachable (11 branch(es)) | `accept_ownership_transfer`, `accept_rate_change`, `cancel_ownership_transfer`, `cancel_rate_change`, `cancel_stream`, `pause_stream`, `propose_ownership_transfer`, `propose_rate_change`, `propose_sender_transfer`, `resolve_dispute`, `resume_stream`, `withdraw_all`, `withdraw_many` | the caller is neither the sender nor the recipient; resolve_dispute called by a non-sender; the caller is neither the current sender nor the current recipient; the caller is not the proposal's named new owner; the caller did not create the pending ownership proposal; the caller is neither the current sender nor the current recipient; the caller is not the proposal's named counterparty; the proposal's proposer or counterparty no longer holds a role on the stream; the caller did not create the pending rate-change proposal; a stream in the batch belongs to a different recipient than the caller; the caller is not the stream's sender |
+| 11 | `MathOverflow` | reachable (13 branch(es)) | `accept_rate_change`, `accept_swap`, `available`, `cancel_stream`, `create_stream`, `merge_streams`, `propose_swap`, `settle_swap`, `split_stream`, `sponsored_withdraw`, `streamed_at`, `top_up`, `unwind_swap`, `withdraw`, `withdraw_all`, `withdraw_many`, `withdraw_max` | deposit + amount would overflow i128; deposit * duration would overflow u128; deposit * elapsed would overflow u128; withdrawn exceeds streamed (an invariant-violating stored stream); the cancel pro-rata split would underflow; withdrawn + amount would overflow i128; amount_per_second * remaining_seconds (or owed + that reserve) would overflow i128; adding a per-segment term would overflow i128 (accrual sum, or a top-up onto a segment's allocation); deposit - owed would underflow (an invariant-violating stored stream); summing the batch's per-stream payouts into the summary total would overflow; split/merge outputs do not carry exactly the inputs' withdrawn, claimable and refundable value; swap arithmetic would overflow; the swap pair's combined conservation identity failed to re-derive |
+| 12 | `NotAuthorized` | reachable (12 branch(es)) | `accept_ownership_transfer`, `accept_rate_change`, `accept_swap`, `cancel_ownership_transfer`, `cancel_rate_change`, `cancel_stream`, `pause_stream`, `propose_ownership_transfer`, `propose_rate_change`, `propose_sender_transfer`, `propose_swap`, `resolve_dispute`, `resume_stream`, `settle_swap`, `unwind_swap`, `withdraw_all`, `withdraw_many` | the caller is neither the sender nor the recipient; resolve_dispute called by a non-sender; the caller is neither the current sender nor the current recipient; the caller is not the proposal's named new owner; the caller did not create the pending ownership proposal; the caller is neither the current sender nor the current recipient; the caller is not the proposal's named counterparty; the proposal's proposer or counterparty no longer holds a role on the stream; the caller did not create the pending rate-change proposal; a stream in the batch belongs to a different recipient than the caller; the caller is not the stream's sender; the caller is not one of the swap's two parties (or the offer's parties changed) |
 | 13 | `NothingToWithdraw` | reachable (1 branch(es)) | `withdraw_all`, `withdraw_many`, `withdraw_max` | nothing has accrued yet, or everything accrued was already withdrawn |
 | 14 | `FeeRateTooHigh` | reachable (1 branch(es)) | `set_fee_bps` | new_fee_bps exceeds MAX_FEE_BPS (the protocol cap) |
 | 15 | `NotGovernor` | reachable (2 branch(es)) | `accept_governor`, `cancel_upgrade`, `execute_upgrade`, `governance_bootstrap`, `migrate_storage`, `nominate_governor`, `propose_upgrade`, `set_fee_bps`, `set_frozen`, `set_stream_policy`, `withdraw_treasury` | the caller is not the treasury governor; the caller is not the nominated governor |
@@ -146,6 +146,16 @@ Every expected failure is a `StreamError` with a stable numeric code. This docum
 | 136 | `LineageWindowElapsed` | reachable (1 branch(es)) | `merge_streams`, `split_stream` | the (earlier) stream window has elapsed; nothing is left to re-allocate |
 | 137 | `MergeSameStream` | reachable (1 branch(es)) | `merge_streams` | both ids name the same stream |
 | 138 | `MergeIncompatibleStreams` | reachable (1 branch(es)) | `merge_streams` | the streams differ in sender, recipient, token, status, cancelability, clock or refund target |
+| 139 | `SwapNotFound` | reachable (1 branch(es)) | `accept_swap`, `get_swap`, `settle_swap`, `unwind_swap` | no swap is stored under the supplied id |
+| 140 | `SwapNotPending` | reachable (1 branch(es)) | `accept_swap` | the swap is not awaiting acceptance |
+| 141 | `SwapNotActive` | reachable (1 branch(es)) | `settle_swap`, `unwind_swap` | the swap is not active |
+| 142 | `SwapProposalExpired` | reachable (1 branch(es)) | `accept_swap` | the swap proposal's acceptance window elapsed |
+| 143 | `SwapAlreadyLinked` | reachable (1 branch(es)) | `propose_swap` | a leg is already linked to a pending or active swap |
+| 144 | `SwapSameStream` | reachable (1 branch(es)) | `propose_swap` | both swap legs name the same stream |
+| 145 | `SwapIncompatibleStreams` | reachable (1 branch(es)) | `propose_swap` | the two swap legs do not share one token |
+| 146 | `SwapWindowElapsed` | reachable (1 branch(es)) | `propose_swap` | a leg's stream window has already elapsed |
+| 147 | `SwapStreamBusy` | reachable (1 branch(es)) | `withdraw`, `withdraw_all`, `withdraw_many`, `withdraw_max` | the stream is on an active swap; settle it through settle_swap |
+| 148 | `SwapConservationViolated` | **retired** (unreachable) | — | — |
 
 ## Branch matrix (entrypoint × condition → error)
 
@@ -325,6 +335,18 @@ Every expected failure is a `StreamError` with a stable numeric code. This docum
 | `MergeSameStream` | `merge_streams` | `MergeSameStream` | 137 | both ids name the same stream | reachable |
 | `MergeIncompatible` | `merge_streams` | `MergeIncompatibleStreams` | 138 | the streams differ in sender, recipient, token, status, cancelability, clock or refund target | reachable |
 | `LineageConservationViolated` | `split_stream`, `merge_streams` | `MathOverflow` | 11 | split/merge outputs do not carry exactly the inputs' withdrawn, claimable and refundable value | defensive (unreachable) |
+| `SwapSameStream` | `propose_swap` | `SwapSameStream` | 144 | both swap legs name the same stream | reachable |
+| `SwapIncompatibleStreams` | `propose_swap` | `SwapIncompatibleStreams` | 145 | the two swap legs do not share one token | reachable |
+| `SwapNotParty` | `propose_swap`, `accept_swap`, `settle_swap`, `unwind_swap` | `NotAuthorized` | 12 | the caller is not one of the swap's two parties (or the offer's parties changed) | reachable |
+| `SwapAlreadyLinked` | `propose_swap` | `SwapAlreadyLinked` | 143 | a leg is already linked to a pending or active swap | reachable |
+| `SwapWindowElapsed` | `propose_swap` | `SwapWindowElapsed` | 146 | a leg's stream window has already elapsed | reachable |
+| `SwapNotFound` | `get_swap`, `accept_swap`, `settle_swap`, `unwind_swap` | `SwapNotFound` | 139 | no swap is stored under the supplied id | reachable |
+| `SwapNotPending` | `accept_swap` | `SwapNotPending` | 140 | the swap is not awaiting acceptance | reachable |
+| `SwapProposalExpired` | `accept_swap` | `SwapProposalExpired` | 142 | the swap proposal's acceptance window elapsed | reachable |
+| `SwapNotActive` | `settle_swap`, `unwind_swap` | `SwapNotActive` | 141 | the swap is not active | reachable |
+| `SwapStreamBusy` | `withdraw`, `withdraw_max`, `withdraw_many`, `withdraw_all` | `SwapStreamBusy` | 147 | the stream is on an active swap; settle it through settle_swap | reachable |
+| `SwapMathOverflow` | `propose_swap`, `accept_swap`, `settle_swap`, `unwind_swap`, `cancel_stream` | `MathOverflow` | 11 | swap arithmetic would overflow | defensive (unreachable) |
+| `SwapConservationViolated` | `propose_swap`, `accept_swap`, `settle_swap`, `unwind_swap`, `cancel_stream` | `MathOverflow` | 11 | the swap pair's combined conservation identity failed to re-derive | defensive (unreachable) |
 
 ## Retired codes
 
@@ -338,7 +360,8 @@ Codes are append-only: a retired code is never renumbered, reused, or removed �
 | 127 | `AgentExpired` | — |
 | 128 | `CapExceededPeriod` | — |
 | 129 | `CapExceededStream` | — |
+| 148 | `SwapConservationViolated` | — |
 
 ## Defensive branches
 
-A defensive branch is a `checked_*` guard whose precondition the contract's invariants rule out for any stored stream. It has a code (so it is not a dead *code*) but cannot be triggered; the matrix test asserts it never fires: `AvailableBalanceOverflow`, `CancelSplitOverflow`, `PayoutOverflow`, `RateSegmentSumOverflow`, `RateHeadroomUnderflow`, `WithdrawManyTotalOverflow`, `LineageConservationViolated`.
+A defensive branch is a `checked_*` guard whose precondition the contract's invariants rule out for any stored stream. It has a code (so it is not a dead *code*) but cannot be triggered; the matrix test asserts it never fires: `AvailableBalanceOverflow`, `CancelSplitOverflow`, `PayoutOverflow`, `RateSegmentSumOverflow`, `RateHeadroomUnderflow`, `WithdrawManyTotalOverflow`, `LineageConservationViolated`, `SwapMathOverflow`, `SwapConservationViolated`.

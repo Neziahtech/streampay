@@ -66,6 +66,9 @@ Every event the contract emits, with its on-chain topic layout and decoded data 
 | `stream_swept` | `StreamSwept` | `stream_id: u64` | `refund_target: Address`, `depleted: bool`, `entries_removed: u32` | `sha256:245343ff47c…` |
 | `stream_topped_up` | `StreamToppedUp` | `stream_id: u64` | `sender: Address`, `amount: i128`, `new_deposit: i128` | `sha256:84629390198…` |
 | `streams_created` | `StreamsCreated` | `sender: Address` | `stream_ids: Vec<u64>` | `sha256:affd0ccd120…` |
+| `swap_executed` | `SwapExecuted` | `swap_id: u64` | `stream_a: u64`, `stream_b: u64`, `executed_at: u64`, `baseline_a: i128`, `baseline_b: i128` | `sha256:235feda0122…` |
+| `swap_proposed` | `SwapProposed` | `swap_id: u64` | `stream_a: u64`, `stream_b: u64`, `proposed_by: Address`, `counterparty: Address`, `expires_at: u64` | `sha256:259ce33cb5e…` |
+| `swap_unwound` | `SwapUnwound` | `swap_id: u64` | `stream_a: u64`, `stream_b: u64`, `unwound_at: u64`, `settled_a: i128`, `settled_b: i128`, `refund_a: i128`, `refund_b: i128` | `sha256:4de3682a595…` |
 | `template_approved` | `TemplateApproved` | `template_id: u32` | `version: u32`, `token: Address`, `duration: u64` | `sha256:2556ce26fef…` |
 | `template_instantiated` | `TemplateInstantiated` | `template_id: u32` | `version: u32`, `stream_id: u64`, `sender: Address`, `recipient: Address`, `deposit: i128` | `sha256:63f92af80b8…` |
 | `upgrade_cancelled` | `UpgradeCancelled` | `new_wasm_hash: BytesN<32>` | `cancelled_by: Address` | `sha256:f37b6e8e716…` |

@@ -5797,7 +5797,13 @@ fn hot_path_footprint_harness() {
     let mem_withdraw = f.env.cost_estimate().budget().memory_bytes_cost();
     measured("withdraw", cpu_withdraw, mem_withdraw);
     assert!(
-        cpu_withdraw <= 480_000,
+        // 480k pre-rate-swaps; the claim guard now reads the `StreamSwap` side
+        // key (absent for an unswapped stream, and a missing persistent key is
+        // metered too) so a swapped leg is refused before any effect. Same
+        // trade-off as the `StreamPause` / `RateSegments` side keys: one lookup
+        // instead of a new `Stream` field that would change every stored
+        // record's layout.
+        cpu_withdraw <= 495_000,
         "withdraw exceeded budget: {}",
         cpu_withdraw
     );
@@ -5819,8 +5825,9 @@ fn hot_path_footprint_harness() {
         // the merged rate-renegotiation code path another ~3K of hot-path
         // instructions through shared validation helpers, and the routed refund
         // one more persistent-key read; the pause side-key check (#24) another;
-        // receivables/hooks liquidation checks another.
-        cpu_cancel <= 680_000,
+        // receivables/hooks liquidation checks another, and the rate-swap
+        // unwind hook one `StreamSwap` lookup (a missing key is metered too).
+        cpu_cancel <= 695_000,
         "cancel_stream exceeded budget: {}",
         cpu_cancel
     );
@@ -5834,7 +5841,9 @@ fn hot_path_footprint_harness() {
     let mem_withdraw_max = f.env.cost_estimate().budget().memory_bytes_cost();
     measured("withdraw_max", cpu_withdraw_max, mem_withdraw_max);
     assert!(
-        cpu_withdraw_max <= 560_000,
+        // 560k pre-rate-swaps: the shared claim guard adds the `StreamSwap`
+        // lookup (566,243 measured).
+        cpu_withdraw_max <= 580_000,
         "withdraw_max exceeded budget: {}",
         cpu_withdraw_max
     );
@@ -11171,8 +11180,11 @@ fn withdraw_many_footprint_harness() {
     // it so a full batch leaves room for the caller's own footprint and rent.
     // 8,000,000 before pause/resume (#24): every entry now also looks up its
     // `StreamPause` side key (8,422,620 measured, 7,213,732 without it).
+    // Rate swaps (#568) add one more `StreamSwap` lookup per entry (15,112,213
+    // measured for the full batch): the claim guard refuses a leg on an active
+    // swap before writing anything.
     assert!(
-        batch_cpu <= 14_000_000,
+        batch_cpu <= 15_300_000,
         "withdraw_many of {MAX_WITHDRAW_BATCH} streams exceeded budget: {batch_cpu}"
     );
 }

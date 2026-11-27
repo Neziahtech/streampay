@@ -1008,6 +1008,77 @@ pub enum StreamError {
         doc = " cancelability, oracle clock or refund target."
     )]
     MergeIncompatibleStreams = 138,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " No rate swap is stored under the supplied id."
+    )]
+    SwapNotFound = 139,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The swap is not awaiting acceptance, so it cannot be accepted again."
+    )]
+    SwapNotPending = 140,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The swap is not active, so it cannot be settled or unwound."
+    )]
+    SwapNotActive = 141,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The swap proposal's acceptance window has elapsed; the counterparty"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " must propose it again if both parties still want the swap."
+    )]
+    SwapProposalExpired = 142,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " One of the streams is already linked to a swap (pending or active);"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " settle or unwind it before proposing another."
+    )]
+    SwapAlreadyLinked = 143,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Both legs of a swap proposal are the same stream."
+    )]
+    SwapSameStream = 144,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The two streams cannot be swapped: they do not share a token."
+    )]
+    SwapIncompatibleStreams = 145,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " A swap leg's stream window has already elapsed, so there is no future"
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = " accrual left to exchange.")]
+    SwapWindowElapsed = 146,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The stream is on an active rate swap: its claim is settled through"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " `settle_swap`, not by a direct withdrawal from its own recipient."
+    )]
+    SwapStreamBusy = 147,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " **Defensive — cannot occur.** The swap pair's combined conservation"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " identity (`deposit == withdrawn + refundable + remaining`) failed to"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " re-derive from stored records; a construction bug, not a user error."
+    )]
+    SwapConservationViolated = 148,
 }
 
 impl StreamError {
@@ -1153,6 +1224,16 @@ impl StreamError {
         StreamError::LineageWindowElapsed,
         StreamError::MergeSameStream,
         StreamError::MergeIncompatibleStreams,
+        StreamError::SwapNotFound,
+        StreamError::SwapNotPending,
+        StreamError::SwapNotActive,
+        StreamError::SwapProposalExpired,
+        StreamError::SwapAlreadyLinked,
+        StreamError::SwapSameStream,
+        StreamError::SwapIncompatibleStreams,
+        StreamError::SwapWindowElapsed,
+        StreamError::SwapStreamBusy,
+        StreamError::SwapConservationViolated,
     ];
 
     /// The stable numeric value carried across the contract boundary

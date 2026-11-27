@@ -1120,6 +1120,25 @@ pub enum DataKey {
         doc = " Split/merge lineage of a stream: the ids it came from and went to."
     )]
     StreamLineage(u64),
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Next rate-swap id to hand out; ids start at 1 (instance storage)."
+    )]
+    NextSwapId,
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The rate swap with the given id (persistent storage)."
+    )]
+    Swap(u64),
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The swap the given stream is a leg of, if any (persistent storage)."
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The parent↔leg link: a stream has at most one swap, pending or active."
+    )]
+    StreamSwap(u64),
 }
 
 /// Freeze point of stream `id` while it is paused; `None` while it streams.
