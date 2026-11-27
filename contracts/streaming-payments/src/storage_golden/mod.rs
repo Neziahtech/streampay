@@ -369,6 +369,9 @@ pub(crate) fn kind_for_key(env: &Env, key_sc: &xdr::ScVal) -> Option<String> {
             DataKey::StreamHook(_, _) => "stream_hook",
             DataKey::StreamReentrancyLock(_) => "stream_reentrancy_lock",
             DataKey::StreamLineage(_) => "stream_lineage",
+            DataKey::NextSwapId => "next_swap_id",
+            DataKey::Swap(_) => "swap",
+            DataKey::StreamSwap(_) => "stream_swap",
         }));
     }
     if let Ok(pk) = PolicyDataKey::try_from_val(env, key_sc) {

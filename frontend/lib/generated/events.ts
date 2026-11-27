@@ -579,6 +579,41 @@ export interface StreamsCreatedEvent {
   stream_ids: bigint[];
 }
 
+/** Emitted when the counterparty accepts a swap. `baseline_a` / `baseline_b` are each leg's cumulative accrual at `executed_at`; only accrual after that boundary is ever netted, so nothing already earned is re-routed. */
+/** Event key `swap_executed` — fingerprint `sha256:235feda01227275127d032061f085a0e47078ff4072b34308b61acdfd1dc0c7c`. */
+export interface SwapExecutedEvent {
+  swap_id: bigint;
+  stream_a: bigint;
+  stream_b: bigint;
+  executed_at: bigint;
+  baseline_a: bigint;
+  baseline_b: bigint;
+}
+
+/** Emitted when one stream party proposes exchanging the rate legs of two sibling streams. Nothing changes about either stream until the named counterparty accepts; `stream_a` / `stream_b` are the parent↔leg links. */
+/** Event key `swap_proposed` — fingerprint `sha256:259ce33cb5e0ab171c9981ac80f3df436875c95431fc2894f899672e634bfc9b`. */
+export interface SwapProposedEvent {
+  swap_id: bigint;
+  stream_a: bigint;
+  stream_b: bigint;
+  proposed_by: string;
+  counterparty: string;
+  expires_at: bigint;
+}
+
+/** Emitted when a swap is unwound (explicitly, or through cancelling either leg). `refund_a` / `refund_b` are the netted offsets returned to each leg's sender; `settled_a` / `settled_b` are the cumulative accruals the swap discharged. Both streams are back on their original routing. */
+/** Event key `swap_unwound` — fingerprint `sha256:4de3682a59569abf078156362b57a8d3eb09928ed2beb86f732c87498375b497`. */
+export interface SwapUnwoundEvent {
+  swap_id: bigint;
+  stream_a: bigint;
+  stream_b: bigint;
+  unwound_at: bigint;
+  settled_a: bigint;
+  settled_b: bigint;
+  refund_a: bigint;
+  refund_b: bigint;
+}
+
 /** Emitted when governance approves a new stream template or version. */
 /** Event key `template_approved` — fingerprint `sha256:2556ce26fef265a2d6a39bec5ffe01924ad60ca4e3bd4f96310ad439fb6f0b3b`. */
 export interface TemplateApprovedEvent {
@@ -685,6 +720,9 @@ export const EVENT_KEYS = {
   StreamSwept: "stream_swept",
   StreamToppedUp: "stream_topped_up",
   StreamsCreated: "streams_created",
+  SwapExecuted: "swap_executed",
+  SwapProposed: "swap_proposed",
+  SwapUnwound: "swap_unwound",
   TemplateApproved: "template_approved",
   TemplateInstantiated: "template_instantiated",
   UpgradeCancelled: "upgrade_cancelled",
@@ -696,7 +734,7 @@ export const EVENT_KEYS = {
 export type ContractEventName = (typeof EVENT_KEYS)[keyof typeof EVENT_KEYS];
 
 /** Every event this registry knows about, even if a consumer ignores it. */
-export const ALL_CONTRACT_EVENT_NAMES: readonly ContractEventName[] = ["advance_drawn", "advance_liquidated", "advance_repaid", "batch_withdraw_summary", "beneficiary_enrolled", "condition_expired", "condition_met", "condition_registered", "contract_frozen_state_changed", "contract_upgraded", "dispute_expired", "dispute_raised", "dispute_resolved", "fee_charged", "fee_withdrawn", "governance_action_executed", "governance_action_proposed", "governance_action_signed", "governance_action_vetoed", "governance_signers_set", "hook_failed", "hook_invoked", "hook_registered", "merge_stream", "operator_key_rotated", "oracle_config_updated", "oracle_stale_fallback", "oracle_time_reported", "ownership_accepted", "ownership_proposed", "policy_asset_executed", "policy_asset_queued", "policy_handoff_accepted", "policy_handoff_cancelled", "policy_handoff_proposed", "policy_initialized", "rate_change_accepted", "rate_change_proposed", "scheduled_intent_cancelled", "scheduled_intent_expired", "scheduled_stream_executed", "sender_transfer_expired", "sender_transfer_proposed", "sender_transferred", "split_stream", "sponsor_active_set", "sponsor_claim", "sponsor_registered", "storage_migrated", "stream_cancelled", "stream_created", "stream_paused", "stream_policy_set", "stream_record_migrated", "stream_refund_target_changed", "stream_resumed", "stream_scheduled", "stream_swept", "stream_topped_up", "streams_created", "template_approved", "template_instantiated", "upgrade_cancelled", "upgrade_proposed", "withdrawn"] as const;
+export const ALL_CONTRACT_EVENT_NAMES: readonly ContractEventName[] = ["advance_drawn", "advance_liquidated", "advance_repaid", "batch_withdraw_summary", "beneficiary_enrolled", "condition_expired", "condition_met", "condition_registered", "contract_frozen_state_changed", "contract_upgraded", "dispute_expired", "dispute_raised", "dispute_resolved", "fee_charged", "fee_withdrawn", "governance_action_executed", "governance_action_proposed", "governance_action_signed", "governance_action_vetoed", "governance_signers_set", "hook_failed", "hook_invoked", "hook_registered", "merge_stream", "operator_key_rotated", "oracle_config_updated", "oracle_stale_fallback", "oracle_time_reported", "ownership_accepted", "ownership_proposed", "policy_asset_executed", "policy_asset_queued", "policy_handoff_accepted", "policy_handoff_cancelled", "policy_handoff_proposed", "policy_initialized", "rate_change_accepted", "rate_change_proposed", "scheduled_intent_cancelled", "scheduled_intent_expired", "scheduled_stream_executed", "sender_transfer_expired", "sender_transfer_proposed", "sender_transferred", "split_stream", "sponsor_active_set", "sponsor_claim", "sponsor_registered", "storage_migrated", "stream_cancelled", "stream_created", "stream_paused", "stream_policy_set", "stream_record_migrated", "stream_refund_target_changed", "stream_resumed", "stream_scheduled", "stream_swept", "stream_topped_up", "streams_created", "swap_executed", "swap_proposed", "swap_unwound", "template_approved", "template_instantiated", "upgrade_cancelled", "upgrade_proposed", "withdrawn"] as const;
 
 /** Narrow an arbitrary RPC event name to a registered contract event. */
 export function isContractEventName(name: string): name is ContractEventName {
@@ -765,6 +803,9 @@ export const EVENT_STRUCT_BY_KEY: Record<ContractEventName, string> = {
   "stream_swept": "StreamSwept",
   "stream_topped_up": "StreamToppedUp",
   "streams_created": "StreamsCreated",
+  "swap_executed": "SwapExecuted",
+  "swap_proposed": "SwapProposed",
+  "swap_unwound": "SwapUnwound",
   "template_approved": "TemplateApproved",
   "template_instantiated": "TemplateInstantiated",
   "upgrade_cancelled": "UpgradeCancelled",
@@ -851,6 +892,9 @@ export const EVENT_SHAPES: Record<ContractEventName, EventShape> = {
   "stream_swept": { struct: "StreamSwept", eventKey: "stream_swept", fingerprint: "sha256:245343ff47cced9cf5751fb6977185d758cce635735e9f112dff7a82fa94e35d", topics: [{"name":"stream_id","type":"u64"}], data: [{"name":"refund_target","type":"Address"},{"name":"depleted","type":"bool"},{"name":"entries_removed","type":"u32"}] },
   "stream_topped_up": { struct: "StreamToppedUp", eventKey: "stream_topped_up", fingerprint: "sha256:846293901988cf6cfb2fc5e8a7821a66f8c61c2496e7e4c52c0e2f099df932c9", topics: [{"name":"stream_id","type":"u64"}], data: [{"name":"sender","type":"Address"},{"name":"amount","type":"i128"},{"name":"new_deposit","type":"i128"}] },
   "streams_created": { struct: "StreamsCreated", eventKey: "streams_created", fingerprint: "sha256:affd0ccd120eb20fa19a2b6072ab17bb95cf1349fdc89898e4eb9187583fbdd3", topics: [{"name":"sender","type":"Address"}], data: [{"name":"stream_ids","type":"Vec<u64>"}] },
+  "swap_executed": { struct: "SwapExecuted", eventKey: "swap_executed", fingerprint: "sha256:235feda01227275127d032061f085a0e47078ff4072b34308b61acdfd1dc0c7c", topics: [{"name":"swap_id","type":"u64"}], data: [{"name":"stream_a","type":"u64"},{"name":"stream_b","type":"u64"},{"name":"executed_at","type":"u64"},{"name":"baseline_a","type":"i128"},{"name":"baseline_b","type":"i128"}] },
+  "swap_proposed": { struct: "SwapProposed", eventKey: "swap_proposed", fingerprint: "sha256:259ce33cb5e0ab171c9981ac80f3df436875c95431fc2894f899672e634bfc9b", topics: [{"name":"swap_id","type":"u64"}], data: [{"name":"stream_a","type":"u64"},{"name":"stream_b","type":"u64"},{"name":"proposed_by","type":"Address"},{"name":"counterparty","type":"Address"},{"name":"expires_at","type":"u64"}] },
+  "swap_unwound": { struct: "SwapUnwound", eventKey: "swap_unwound", fingerprint: "sha256:4de3682a59569abf078156362b57a8d3eb09928ed2beb86f732c87498375b497", topics: [{"name":"swap_id","type":"u64"}], data: [{"name":"stream_a","type":"u64"},{"name":"stream_b","type":"u64"},{"name":"unwound_at","type":"u64"},{"name":"settled_a","type":"i128"},{"name":"settled_b","type":"i128"},{"name":"refund_a","type":"i128"},{"name":"refund_b","type":"i128"}] },
   "template_approved": { struct: "TemplateApproved", eventKey: "template_approved", fingerprint: "sha256:2556ce26fef265a2d6a39bec5ffe01924ad60ca4e3bd4f96310ad439fb6f0b3b", topics: [{"name":"template_id","type":"u32"}], data: [{"name":"version","type":"u32"},{"name":"token","type":"Address"},{"name":"duration","type":"u64"}] },
   "template_instantiated": { struct: "TemplateInstantiated", eventKey: "template_instantiated", fingerprint: "sha256:63f92af80b873f8cd742077a72498031574d7aa73521cd714154b8a3e3b588af", topics: [{"name":"template_id","type":"u32"}], data: [{"name":"version","type":"u32"},{"name":"stream_id","type":"u64"},{"name":"sender","type":"Address"},{"name":"recipient","type":"Address"},{"name":"deposit","type":"i128"}] },
   "upgrade_cancelled": { struct: "UpgradeCancelled", eventKey: "upgrade_cancelled", fingerprint: "sha256:f37b6e8e716733fe20e8a2dcba11444e9e1e842470b97f9b6d820f26db976523", topics: [{"name":"new_wasm_hash","type":"BytesN<32>"}], data: [{"name":"cancelled_by","type":"Address"}] },
@@ -920,6 +964,9 @@ export const EVENT_FINGERPRINTS: Record<string, string> = {
   "StreamSwept": "sha256:245343ff47cced9cf5751fb6977185d758cce635735e9f112dff7a82fa94e35d",
   "StreamToppedUp": "sha256:846293901988cf6cfb2fc5e8a7821a66f8c61c2496e7e4c52c0e2f099df932c9",
   "StreamsCreated": "sha256:affd0ccd120eb20fa19a2b6072ab17bb95cf1349fdc89898e4eb9187583fbdd3",
+  "SwapExecuted": "sha256:235feda01227275127d032061f085a0e47078ff4072b34308b61acdfd1dc0c7c",
+  "SwapProposed": "sha256:259ce33cb5e0ab171c9981ac80f3df436875c95431fc2894f899672e634bfc9b",
+  "SwapUnwound": "sha256:4de3682a59569abf078156362b57a8d3eb09928ed2beb86f732c87498375b497",
   "TemplateApproved": "sha256:2556ce26fef265a2d6a39bec5ffe01924ad60ca4e3bd4f96310ad439fb6f0b3b",
   "TemplateInstantiated": "sha256:63f92af80b873f8cd742077a72498031574d7aa73521cd714154b8a3e3b588af",
   "UpgradeCancelled": "sha256:f37b6e8e716733fe20e8a2dcba11444e9e1e842470b97f9b6d820f26db976523",

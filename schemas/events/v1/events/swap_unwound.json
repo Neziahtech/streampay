@@ -1,0 +1,72 @@
+{
+  "$defs": {},
+  "$id": "https://streampay.dev/schemas/events/v1/events/swap_unwound.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Emitted when a swap is unwound (explicitly, or through cancelling either leg). `refund_a` / `refund_b` are the netted offsets returned to each leg's sender; `settled_a` / `settled_b` are the cumulative accruals the swap discharged. Both streams are back on their original routing.",
+  "properties": {
+    "refund_a": {
+      "type": "integer",
+      "x-soroban-type": "i128"
+    },
+    "refund_b": {
+      "type": "integer",
+      "x-soroban-type": "i128"
+    },
+    "settled_a": {
+      "type": "integer",
+      "x-soroban-type": "i128"
+    },
+    "settled_b": {
+      "type": "integer",
+      "x-soroban-type": "i128"
+    },
+    "stream_a": {
+      "minimum": 0,
+      "type": "integer",
+      "x-soroban-type": "u64"
+    },
+    "stream_b": {
+      "minimum": 0,
+      "type": "integer",
+      "x-soroban-type": "u64"
+    },
+    "unwound_at": {
+      "minimum": 0,
+      "type": "integer",
+      "x-soroban-type": "u64"
+    }
+  },
+  "required": [
+    "stream_a",
+    "stream_b",
+    "unwound_at",
+    "settled_a",
+    "settled_b",
+    "refund_a",
+    "refund_b"
+  ],
+  "title": "SwapUnwound",
+  "type": "object",
+  "x-streampay": {
+    "event_key": "swap_unwound",
+    "fingerprint": "sha256:4de3682a59569abf078156362b57a8d3eb09928ed2beb86f732c87498375b497",
+    "registry_version": 1,
+    "topicSchema": {
+      "items": [
+        {
+          "minimum": 0,
+          "type": "integer",
+          "x-soroban-type": "u64"
+        }
+      ],
+      "type": "array"
+    },
+    "topics": [
+      {
+        "name": "swap_id",
+        "type": "u64"
+      }
+    ]
+  }
+}

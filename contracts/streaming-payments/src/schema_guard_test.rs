@@ -197,6 +197,14 @@ pub fn generate_schema_representation(env: &Env) -> serde_json::Value {
             "persistent",
             DataKey::StreamLineage(1)
         ),
+        ("NextSwapId", "NextSwapId", "instance", DataKey::NextSwapId),
+        ("Swap", "Swap(u64)", "persistent", DataKey::Swap(1)),
+        (
+            "StreamSwap",
+            "StreamSwap(u64)",
+            "persistent",
+            DataKey::StreamSwap(1)
+        ),
     ];
 
     let sponsor_key_cases: StdVec<(&str, &str, &str, SponsorKey)> = std::vec![

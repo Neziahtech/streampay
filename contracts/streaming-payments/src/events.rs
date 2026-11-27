@@ -1474,3 +1474,81 @@ pub struct MergeStream {
     pub claimable: i128,
     pub withdrawn: i128,
 }
+
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " Emitted when one stream party proposes exchanging the rate legs of two"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " sibling streams. Nothing changes about either stream until the named"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " counterparty accepts; `stream_a` / `stream_b` are the parent↔leg links."
+)]
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SwapProposed {
+    #[topic]
+    pub swap_id: u64,
+    pub stream_a: u64,
+    pub stream_b: u64,
+    pub proposed_by: Address,
+    pub counterparty: Address,
+    pub expires_at: u64,
+}
+
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " Emitted when the counterparty accepts a swap. `baseline_a` / `baseline_b`"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " are each leg's cumulative accrual at `executed_at`; only accrual after"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " that boundary is ever netted, so nothing already earned is re-routed."
+)]
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SwapExecuted {
+    #[topic]
+    pub swap_id: u64,
+    pub stream_a: u64,
+    pub stream_b: u64,
+    pub executed_at: u64,
+    pub baseline_a: i128,
+    pub baseline_b: i128,
+}
+
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " Emitted when a swap is unwound (explicitly, or through cancelling either"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " leg). `refund_a` / `refund_b` are the netted offsets returned to each"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " leg's sender; `settled_a` / `settled_b` are the cumulative accruals the"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " swap discharged. Both streams are back on their original routing."
+)]
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SwapUnwound {
+    #[topic]
+    pub swap_id: u64,
+    pub stream_a: u64,
+    pub stream_b: u64,
+    pub unwound_at: u64,
+    pub settled_a: i128,
+    pub settled_b: i128,
+    pub refund_a: i128,
+    pub refund_b: i128,
+}
