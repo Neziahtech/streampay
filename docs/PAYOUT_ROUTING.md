@@ -26,16 +26,19 @@ The streaming contract is at the Soroban Wasm size wall (see
 
 | Item | Bytes |
 |---|---|
-| Streaming contract Wasm (pinned stellar-cli 28.1.0) | 129,742 |
+| Streaming contract Wasm (pinned stellar-cli 28.1.0, as recorded in WASM_SIZE.md when this design was written) | 129,742 |
 | CI budget `WASM_SIZE_BUDGET_KB=127` | 130,048 |
 | Headroom under the budget | 306 |
 | Protocol limit | 131,072 |
 | Cost of one more entrypoint | about 680 |
 | Payout router Wasm | 7,712 |
 
+For current figures, see [WASM_SIZE.md](WASM_SIZE.md).
+
 No new entrypoint fits in the streaming contract; splitting it into more
 contracts is the declared route (#441). The router is a first such split and
-changes no streaming source: its Wasm is unchanged at 129,742 bytes. It uses
+changes no streaming source: the streaming contract's Wasm is byte-identical
+with and without this change. It uses
 the streaming contract's existing per-stream callback hook (`register_hook`),
 which calls `selector(stream_id, amount)` from inside the payout on
 `withdraw`, `withdraw_max` and `withdraw_many`.

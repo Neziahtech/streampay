@@ -9,8 +9,8 @@ use soroban_sdk::{
     Address, Env, Event as _, IntoVal, Symbol, Vec,
 };
 use streampay_contract::{
-    test_client::StreamingPaymentsClient, HookEventClass, HookFailurePolicy, StreamingPayments,
-    MIN_CLAIM_AMOUNT,
+    test_client::StreamingPaymentsClient, HookEventClass, HookFailurePolicy, StreamError,
+    StreamingPayments, MIN_CLAIM_AMOUNT,
 };
 
 use crate::{
@@ -604,7 +604,10 @@ fn recipient_change_makes_forward_fail_and_new_recipient_can_cancel() {
             sub_invokes: &[],
         },
     }]);
-    assert!(f.streaming.try_withdraw(&id, &CLAIM).is_err());
+    assert_eq!(
+        f.streaming.try_withdraw(&id, &CLAIM).unwrap_err().unwrap(),
+        StreamError::HookExecutionFailed
+    );
 
     // The old (stored) recipient can no longer clear the binding.
     f.env.mock_auths(&[MockAuth {
@@ -719,6 +722,9 @@ fn revert_policy_reverts_claim_when_forward_fails() {
     let held = f.bal(&f.recipient);
     TokenClient::new(&f.env, &f.token).transfer(&f.recipient, &sink, &held);
     f.advance(DAY);
-    assert!(f.streaming.try_withdraw(&id, &1_000_000).is_err());
+    assert_eq!(
+        f.streaming.try_withdraw(&id, &CLAIM).unwrap_err().unwrap(),
+        StreamError::HookExecutionFailed
+    );
     assert_eq!(f.bal(&f.payout), 0);
 }
