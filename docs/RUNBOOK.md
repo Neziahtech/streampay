@@ -23,6 +23,20 @@ This runbook carries an end-to-end worked example of onboarding a **50-employee 
 | `IndexerOutboxDeliveryLagHigh`     | Warning (P2)      | Indexer Outbox | Oldest pending intent < 5s at steady state | [#indexeroutboxdeliverylaghigh](#indexeroutboxdeliverylaghigh)       |
 | `IndexerOutboxDeadLetterRateHigh`  | Warning (P2)      | Indexer Outbox | 0 dead letters for healthy endpoints       | [#indexeroutboxdeadletterratehigh](#indexeroutboxdeadletterratehigh) |
 | `IndexerOutboxBackpressured`       | Warning (P2)      | Indexer Outbox | Never engages at soak ingestion rates      | [#indexeroutboxbackpressured](#indexeroutboxbackpressured)           |
+| `IndexerAnomalyCriticalIncidentOpen` | Critical (P1)   | Indexer Anomaly | 0 critical detections per rule per window  | [#indexeranomalycriticalincidentopen](#indexeranomalycriticalincidentopen) |
+| `IndexerAnomalyReplayMismatch`     | Critical (P1)     | Indexer Anomaly | 0 mismatches — replay is operator-driven   | [#indexeranomalyreplaymismatch](#indexeranomalyreplaymismatch)       |
+| `IndexerAnomalyRuleUnreliable`     | Warning (P2)      | Indexer Anomaly | < 30% false positives over a day of reviews | [#indexeranomalyruleunreliable](#indexeranomalyruleunreliable)       |
+| `IndexerAnomalySuppressionFlood`   | Warning (P2)      | Indexer Anomaly | Suppression skips ~0 evaluations/hour      | [#indexeranomalysuppressionflood](#indexeranomalysuppressionflood)   |
+| `IndexerWebhookSlaBreached`        | Warning (P2)      | Indexer Webhooks | ≤ 1% of window over `WEBHOOK_SLA_MS`      | [#indexerwebhookslabreached](#indexerwebhookslabreached)             |
+| `IndexerWebhookTenantSlaBreached`  | Warning (P2)      | Indexer Webhooks | Every tenant window under budget          | [#indexerwebhooktenantslabreached](#indexerwebhooktenantslabreached) |
+| `IndexerWebhookSlaBreachedSustained` | Critical (P1)   | Indexer Webhooks | Breach cleared inside one retry cohort    | [#indexerwebhookslabreachedsustained](#indexerwebhookslabreachedsustained) |
+| `IndexerWebhookBacklogAging`       | Warning (P2)      | Indexer Webhooks | Oldest pending delivery < 60s at steady state | [#indexerwebhookbacklogaging](#indexerwebhookbacklogaging)       |
+| `IndexerAnalyticsStalenessBreach` | Warning (P2)      | Indexer Analytics | Each view inside configured event-time SLO    | [#indexeranalyticsstalenessbreach](#indexeranalyticsstalenessbreach) |
+| `IndexerAnalyticsStalenessCritical` | Critical (P1)   | Indexer Analytics | SLO violation = 0s                           | [#indexeranalyticsstalenesscritical](#indexeranalyticsstalenesscritical) |
+| `IndexerAnalyticsDirty`            | Critical (P1)     | Indexer Analytics | Rebuild completes on next refresh tick        | [#indexeranalyticsdirty](#indexeranalyticsdirty)               |
+| `IndexerAnalyticsRefreshErrors`    | Warning (P2)      | Indexer Analytics | 0 failed refresh transactions                | [#indexeranalyticsrefresherrors](#indexeranalyticsrefresherrors)   |
+| `IndexerAnalyticsThroughputShortfall` | Warning (P2)  | Indexer Analytics | Refresh sustains 500 events/s in budget test | [#indexeranalyticsthroughputshortfall](#indexeranalyticsthroughputshortfall) |
+| `IndexerAnalyticsGatedReadFailures` | Warning (P2)    | Indexer Analytics | 0 timed-out gated reads                      | [#indexeranalyticsgatedreadfailures](#indexeranalyticsgatedreadfailures) |
 
 ## Table of Contents
 
@@ -55,6 +69,26 @@ This runbook carries an end-to-end worked example of onboarding a **50-employee 
    - [7.6 Step 5: Escalate only on confirmed risk](#76-step-5--escalate-only-on-confirmed-risk)
    - [7.7 Worked example A: false positive](#77-worked-example-a--false-positive-stream-already-extended)
    - [7.8 Worked example B: real positive](#78-worked-example-b--real-positive-counter-near-its-4095-ledger-cliff)
+8. [Anomaly Detection Alert Triage](#8-anomaly-detection-alert-triage)
+   - [8.1 First, read the detection, not the alert](#81-first-read-the-detection-not-the-alert)
+   - [`IndexerAnomalyCriticalIncidentOpen`](#indexeranomalycriticalincidentopen)
+   - [`IndexerAnomalyReplayMismatch`](#indexeranomalyreplaymismatch)
+   - [`IndexerAnomalyRuleUnreliable`](#indexeranomalyruleunreliable)
+   - [`IndexerAnomalySuppressionFlood`](#indexeranomalysuppressionflood)
+9. [Webhook Delivery SLA Alert Triage](#9-webhook-delivery-sla-alert-triage)
+   - [9.1 Fleet breach vs one tenant](#91-fleet-breach-vs-one-tenant)
+   - [`IndexerWebhookSlaBreached`](#indexerwebhookslabreached)
+   - [`IndexerWebhookTenantSlaBreached`](#indexerwebhooktenantslabreached)
+   - [`IndexerWebhookSlaBreachedSustained`](#indexerwebhookslabreachedsustained)
+   - [`IndexerWebhookBacklogAging`](#indexerwebhookbacklogaging)
+10. [Materialized Analytics Alert Triage](#10-materialized-analytics-alert-triage)
+   - [10.1 Establish whether the writer is moving](#101-establish-whether-the-writer-is-moving)
+   - [`IndexerAnalyticsStalenessBreach`](#indexeranalyticsstalenessbreach)
+   - [`IndexerAnalyticsStalenessCritical`](#indexeranalyticsstalenesscritical)
+   - [`IndexerAnalyticsDirty`](#indexeranalyticsdirty)
+   - [`IndexerAnalyticsRefreshErrors`](#indexeranalyticsrefresherrors)
+   - [`IndexerAnalyticsThroughputShortfall`](#indexeranalyticsthroughputshortfall)
+   - [`IndexerAnalyticsGatedReadFailures`](#indexeranalyticsgatedreadfailures)
 
 ---
 
@@ -735,3 +769,550 @@ extender, then extend; the send raises the cliff to the configured `extendTo`
 (500,000), and the next scan emits the matching `RESOLVED` transition.
 
 ---
+
+## 8. Anomaly Detection Alert Triage
+
+These alerts come from the heuristic detector inside the indexer
+(`indexer/src/anomaly/`, design in [docs/ANOMALY.md](./ANOMALY.md)). A
+detection is never a verdict: it is a recorded claim — "rule X, at version V,
+saw this shape over ledgers A–B" — that an operator can re-derive from the
+journal. So triage here has two halves that must not be confused:
+
+- **Is the pattern real for this account?** (fraud/operations question)
+- **Does the alert still reproduce from its own citation?** (integrity question)
+
+Every route below needs the same credential the webhook registry uses, and is
+tenant-scoped: a detection belonging to another tenant answers `404`, never
+`403`.
+
+```bash
+export KEY="x-streampay-webhook-key: $ANOMALY_WEBHOOK_KEY"
+export BASE=http://localhost:8787
+```
+
+### 8.1 First, read the detection, not the alert
+
+The alert annotation names a rule id; the detection carries the evidence.
+
+```bash
+curl -s -H "$KEY" "$BASE/api/anomaly/detections?mode=enforce&limit=20"
+curl -s -H "$KEY" "$BASE/api/anomaly/rules"
+curl -s -H "$KEY" "$BASE/api/anomaly/incidents"
+```
+
+`mode=enforce` is the set that actually paged a human — a `shadow` detection
+looks identical in the list but was recorded to be reviewed, not escalated.
+Redaction is applied at this boundary: subjects are 8-character address
+prefixes and `amount`/balance attributes are dropped, so the evidence you read
+here cites structure (counts, distinct payees, direction of flow), never
+balances. The raw values stay in the store precisely so replay can re-derive
+them.
+
+Then replay it. This is the step that decides whether the rest of the triage is
+about a customer or about the detector:
+
+```bash
+curl -s -X POST -H "$KEY" "$BASE/api/anomaly/detections/<id>/replay"
+```
+
+`verified` means the cited ledger range still produces the same numbers under
+the thresholds recorded on the detection. Anything else is the alert-specific
+path below.
+
+### `IndexerAnomalyCriticalIncidentOpen`
+
+- **Severity**: Critical (P1)
+- **Condition**: `increase(streampay_anomaly_detections_by_severity_total{severity="critical"}[10m]) > 0` for 5 minutes.
+- **User impact**: `circular_flow` is the only critical rule today — streams created in both directions between the same pair of addresses, which is the shape a layering or self-dealing payout produces. Nothing has been lost on-chain; an escrowed stream is still settling while the pattern is unresolved.
+
+#### Diagnosis
+
+1. Identify the rule and the subject from the alert labels, then read its
+   detections and the open incident (`subject` is a redacted pair key).
+2. Replay the detection (§8.1). Three outcomes split the work:
+   - `verified` — the pattern is real; continue on-chain.
+   - `not_reproduced` — the range no longer holds the claimed events. Do not
+     escalate to the customer yet: treat it as
+     [`IndexerAnomalyReplayMismatch`](#indexeranomalyreplaymismatch).
+   - `range_too_large` / `citation_incomplete` / `rule_version_unavailable` —
+     the detector cannot self-verify; the alert stands but is unconfirmed, and
+     the reason tells you which knob (`ANOMALY_REPLAY_MAX_EVENTS`, retention) is
+     responsible.
+3. Check the two accounts against the ledger truth rather than the detector's
+   opinion:
+   ```bash
+   curl -s "$BASE/streams?recipient=<address>"                     # both directions
+   stellar contract invoke --id $CONTRACT_ID -- get_stream --stream_id $ID
+   ```
+4. Confirm whether this is genuinely new traffic or a re-notification of a
+   long-open incident: `streampay_anomaly_alerts_total{type="raised"}` advancing
+   with `streampay_anomaly_incidents_open` unchanged means the same subject is
+   still firing (the flap window re-notifies; it does not duplicate the
+   incident).
+
+#### Remediation
+
+1. Real pattern: this is a funds-movement question, not a paging question.
+   Follow §5 — pause the streams (`pause_stream`), and escalate to the tenant's
+   payroll owner. A cancellation splits pro-rata; pausing does not move money, so
+   pause first.
+2. False positive: record the review, because the false-positive budget is what
+   keeps this rule from waking anyone next time.
+   ```bash
+   curl -s -X POST -H "$KEY" -d '{"label":"false_positive","note":"in and out were two currencies of one settlement"}' \
+     "$BASE/api/anomaly/detections/<id>/feedback"
+   ```
+   That call also suppresses the subject for `ANOMALY_SUPPRESSION_TTL_MS`. A
+   second, contradictory review is rejected with `409 already_reviewed` — the
+   budget must not depend on who looked last.
+3. Mis-tuned rule: raise the threshold or set it back to shadow for that tenant
+   only (`POST /api/anomaly/rules/circular_flow/override`), never by editing
+   `ANOMALY_RULES_JSON` on a running fleet.
+4. Record the verdict in the incident channel with the detection fingerprint
+   (`sha256:…`), not the alert's timestamp — the fingerprint is what replay and
+   a later audit both agree on.
+
+### `IndexerAnomalyReplayMismatch`
+
+- **Severity**: Critical (P1)
+- **Condition**: `increase(streampay_anomaly_replay_total{outcome="mismatch"}[30m]) > 0`.
+- **User impact**: none directly. This is the detector disagreeing with its own
+  past statement, which is worse than a false positive: an alert that will not
+  reproduce cannot be defended to a customer or an auditor.
+
+#### Diagnosis
+
+Replay is only ever run deliberately, so this alert fires because *you* (or a
+verifier) pressed the button and the numbers moved. Read `detail` in the replay
+response first — it distinguishes the three ways a claim can rot:
+
+1. **The evidence changed.** The journal rows for `citation.from_ledger..to_ledger`
+   were retracted or rewritten — almost always a chain reorg the reconciler
+   handled. Compare the cited range against the reconciler's divergence report
+   and `streampay_outbox_retracted_total` for the same window.
+2. **The rule changed under the detection.** `rule_version` on the detection vs
+   `version` in `GET /api/anomaly/rules`. A version bump without the old
+   thresholds still resolvable yields `rule_version_unavailable`; a mismatch
+   after a same-version edit means someone overrode a param and expected replay
+   to be unaffected.
+3. **The count came from outside the range.** Replay re-derives only the
+   subject's own observations inside the citation (scope-filtered), while the
+   live engine saw a sliding event-time window. A small `events_read` difference
+   with matching shape is this; a large one is (1).
+
+#### Remediation
+
+1. Stop trusting the rule, not the account: demote it to shadow for every tenant
+   that has it in enforce, until the mismatch is explained. Shadow detections
+   still record and still replay; they page nobody.
+   ```bash
+   curl -s -X POST -H "$KEY" -d '{"mode":"shadow"}' \
+     "$BASE/api/anomaly/rules/<rule_id>/override"
+   ```
+2. If the cause is a reorg, the alert is correct behaviour and the detection was
+   a true statement about a retractable history. Note it on the incident, keep
+   the detection (it is the record), and add the ledger range to the reconciler's
+   next audit pass.
+3. If the cause is (2) or (3), file it as a detector defect with the
+   fingerprint, both `rule_version` values and the replay `detail`. Do not
+   "fix" it by re-running the engine over the range: replay exists precisely so
+   that the answer does not depend on live state.
+4. Once fixed, replay the detection again; `verified` is the only closing
+   condition.
+
+### `IndexerAnomalyRuleUnreliable`
+
+- **Severity**: Warning (P2)
+- **Condition**: false positives exceed 30% of a rule's reviews over 1 day, sustained 6 hours.
+- **User impact**: alert fatigue for the tenant's operations team. Every
+  paged detection from this rule is currently two-thirds likely to be ordinary
+  traffic.
+
+#### Diagnosis
+
+1. Compare the alert's view with the gate the tenant actually runs under — the
+   gate is stricter and per tenant:
+   ```bash
+   curl -s -H "$KEY" "$BASE/api/anomaly/promotion"
+   ```
+   `reports[].false_positive_rate` vs `false_positive_budget`, plus `reviewed`
+   against `min_reviews`.
+2. Read the reviews that produced the rate (`GET /api/anomaly/detections/<id>`
+   carries the full feedback history with notes). The notes are the cheapest
+   tuning information in the system: they say *why* a human disagreed.
+3. Check whether the rule is firing on volume rather than shape — usually
+   `burst_creation` and `dust_spam` thresholds calibrated against a small
+   tenant's payroll and applied to a large one.
+
+#### Remediation
+
+1. Tune for that tenant only, within the declared param ranges
+   (`POST /api/anomaly/rules/<rule_id>/override`). An out-of-range number is a
+   `400`, not a silent clamp — the range you hit is the range the catalog
+   documents.
+2. If the mode is `enforce` and the rate stays over budget, demote to shadow and
+   let the review evidence re-accumulate; promotion is refused with `409
+   promotion_not_ready` and machine-readable `reasons` for exactly this case.
+3. Un-tune entirely when the tenant wants defaults back:
+   `DELETE /api/anomaly/rules/<rule_id>/override`.
+4. Suppressions from these reviews are expected and good, but watch
+   `suppressed` in `GET /api/anomaly/incidents` — that is the input to
+   [`IndexerAnomalySuppressionFlood`](#indexeranomalysuppressionflood).
+
+### `IndexerAnomalySuppressionFlood`
+
+- **Severity**: Warning (P2)
+- **Condition**: `increase(streampay_anomaly_suppressed_total[1h]) > 1000` for 1 hour.
+- **User impact**: detections are being skipped. Suppression means the
+  evaluation was not run for a subject a human marked as noise — so if the
+  suppressed subject turns out to be a real pattern, this rule is blind to it.
+
+#### Diagnosis
+
+1. Which rule, and how broad? Per-rule skip counts:
+   `streampay_anomaly_suppressed_total{rule_id="…"}`.
+2. What is suppressed, for whom:
+   ```bash
+   curl -s -H "$KEY" "$BASE/api/anomaly/incidents"   # suppressions[] with subject + expires_at_ms
+   ```
+3. Two shapes explain almost every flood: one suppression applied to a
+   high-throughput subject (a payroll provider's shared sender account), or
+   repeated reviews of the same subject that keep extending it because the
+   pattern really is persistent.
+4. Confirm the TTL is what you think it is: `ANOMALY_SUPPRESSION_TTL_MS` is the
+   deployment default and a suppression records its own expiry, so old rows are
+   not affected by a recent change.
+
+#### Remediation
+
+1. Clear what no longer applies — the list is the audit trail, so remove
+   suppressions by reviewing the underlying detection, not by deleting store
+   rows.
+2. If a genuinely broad subject must stay quiet, narrow the rule instead
+   (`scope`/params via the tenant override) rather than stacking suppressions.
+3. If the flood is one very active suppressed account, re-examine the original
+   `false_positive` review. Suppression has no "confirmed fraud" counterpart, so
+   a wrong label is the only way a real pattern gets muted.
+4. When in doubt, let it expire: suppression is a TTL, not a ban. The next
+   window after `expires_at_ms` evaluates the subject again and the incident
+   dedup will re-notify on a sustained pattern.
+
+---
+
+## 9. Webhook Delivery SLA Alert Triage
+
+These alerts cover the multi-tenant webhook registry inside the indexer
+(spec in [docs/WEBHOOKS.md §7](./WEBHOOKS.md)). They sit above the outbox
+alerts in §5: the outbox guarantees an intent exists and is durable, this layer
+guarantees the intent reached a *specific subscriber inside the latency the
+subscriber was sold* — `WEBHOOK_SLA_MS`, measured over a sliding window with at
+least `WEBHOOK_SLA_MIN_SAMPLES` attempts.
+
+The single most important distinction in this section (§9.1): **fleet breach vs
+one tenant breach.** `streampay_webhook_sla_breach_alarm` is the deployment's
+budget (`WEBHOOK_SLA_BREACH_BUDGET` of attempts over objective);
+`streampay_webhook_sla_breached_by_tenant` is one subscriber's own window. The
+first is an outage, the second is an account conversation.
+
+### 9.1 Fleet breach vs one tenant
+
+Both gauges answer the same question — what fraction of a sliding window of
+delivery attempts missed `WEBHOOK_SLA_MS` — over different populations, and
+they are deliberately not allowed to substitute for each other:
+
+| Signal                                     | Population it measures      | What it means when it is 1                       | Who owns it         |
+| ------------------------------------------ | --------------------------- | ------------------------------------------------ | ------------------- |
+| `streampay_webhook_sla_breach_alarm`       | every attempt, all tenants  | the platform is missing the number it sells      | Indexer on-call     |
+| `streampay_webhook_sla_breached_by_tenant` | one tenant's attempts       | one integrator's endpoint, or a quota discussion | That tenant's owner |
+
+A fleet alarm with no tenant series behind it is possible for exactly one
+reason, and it is worth knowing before you name a subscriber in a ticket: the
+per-tenant window must also hold `WEBHOOK_SLA_MIN_SAMPLES` attempts before it
+may engage. A dozen tenants with a handful of slow deliveries each are under
+every tenant's own sample floor but over the fleet's, so the aggregate pages
+while no individual account does. That is platform tuning, not an account
+problem — and it is why `IndexerWebhookSlaBreached` pages the fleet while
+`IndexerWebhookTenantSlaBreached` stays a ticket.
+
+```bash
+curl -s -H "$KEY" "$BASE/api/webhooks/sla"       # this caller's measured window
+curl -s -H "$KEY" "$BASE/api/webhooks/quota"     # subscriptions / events / rotations budget
+curl -s -H "$KEY" "$BASE/api/webhooks/deliveries?limit=50"
+curl -s -H "$KEY" "$BASE/api/webhooks/dlq"
+```
+
+With no `WEBHOOK_TENANT_KEYS` configured the registry is single-tenant and the
+registry-only routes (`/sla`, `/quota`) answer `503` — in that deployment these
+alerts still fire, but read them as "the one subscriber is us".
+
+### `IndexerWebhookSlaBreached`
+
+- **Severity**: Warning (P2)
+- **Condition**: `streampay_webhook_sla_breach_alarm == 1` for 5 minutes — i.e. `streampay_webhook_sla_breach_ratio` is over `WEBHOOK_SLA_BREACH_BUDGET` of the sliding window, which only starts reporting once the window holds `WEBHOOK_SLA_MIN_SAMPLES` attempts.
+- **User impact**: subscribers are receiving events outside the latency commitment in their contract. Nothing is lost — undelivered work is retried on the published schedule and lands in the DLQ only after it exhausts.
+
+#### Diagnosis
+
+1. Confirm the objective and the measurement agree:
+   `streampay_webhook_sla_objective_seconds` must equal `WEBHOOK_SLA_MS`. If it
+   does not, the deployment's env and the SLA the endpoints were registered
+   under have diverged, and every number below is against the wrong bar.
+2. Find whose deliveries are slow, not just how slow:
+   ```bash
+   curl -s -H "$KEY" "$BASE/api/webhooks/deliveries?limit=50"
+   ```
+   Latency per attempt is in `streampay_webhook_delivery_latency_seconds_bucket`;
+   the P50/P95/P99 quantiles are already graphed in the "Webhook Delivery SLA &
+   Tenancy" dashboard row.
+3. Separate the three causes by the outcome labels on
+   `streampay_webhook_dispatch_total`:
+   - `retry` rising, `delivered` still advancing → one endpoint is slow but
+     recovering. Not an outage.
+   - `dead_letter` rising → the endpoint is failing hard; see §5
+     `IndexerOutboxDeadLetterRateHigh`.
+   - `blocked_ssrf` → a subscriber repointed its URL at a private address. This
+     is a rejection, not a latency problem, and it will never self-heal.
+4. Check the dispatcher is being starved rather than the endpoint being slow:
+   `streampay_webhook_oldest_pending_seconds` climbing while per-attempt
+   latency stays low means the tick budget, not the subscriber.
+
+#### Remediation
+
+1. Slow endpoint, healthy platform: lower that subscription's event types
+   (`PATCH /api/webhooks/endpoints/:id`) or disable it so the shared budget goes
+   to everyone else, then re-enable once the subscriber fixes their handler.
+2. Starved dispatcher: raise throughput (`OUTBOX_BATCH_SIZE`, tick interval) —
+   the webhook fan-out draws from the same durable intents §5 describes.
+3. Repointed/blocked URL: ask the subscriber for a public HTTPS target. Do not
+   widen the SSRF guard for one tenant.
+4. Anything that reached the DLQ is replayable after the endpoint recovers:
+   `POST /api/webhooks/dlq/:id/retry`. Replay is idempotent by delivery id, so
+   re-driving a whole backlog is safe even if the subscriber already saw some of
+   it.
+
+### `IndexerWebhookTenantSlaBreached`
+
+- **Severity**: Warning (P2)
+- **Condition**: `streampay_webhook_sla_breached_by_tenant == 1` for 5 minutes.
+- **User impact**: exactly one integrator is outside their commitment. The fleet is fine — that is the entire reason the per-tenant series exists.
+
+#### Diagnosis
+
+1. The alert label carries `tenant_id`; that is the whole scope of the incident.
+   Ask for that tenant's own view:
+   ```bash
+   curl -s -H "$KEY" "$BASE/api/webhooks/sla"
+   ```
+   (as the tenant's credential — the route is scoped, and another tenant's key
+   cannot read it).
+2. Compare their endpoints: `GET /api/webhooks/endpoints` shows target URL,
+   subscribed event types, and enabled state. A tenant with one endpoint
+   subscribed to everything is the usual shape.
+3. Confirm it is their endpoint and not their quota: `GET /api/webhooks/quota`
+   reports subscription/event/rotation budgets, and a throttled tenant looks
+   identical to a slow one from the outside.
+
+#### Remediation
+
+1. Name the subscriber in the incident and hand them the per-attempt evidence —
+   never the signing secret. Reads carry `secret_fingerprint` for exactly this
+   reason.
+2. If their traffic simply outgrew one endpoint, they should add one per event
+   family rather than have you raise the objective.
+3. Retire dead subscriptions: `PATCH /api/webhooks/endpoints/:id` to disable
+   (keeps history) instead of `DELETE` (removes the subscription) whenever the
+   account may come back.
+
+### `IndexerWebhookSlaBreachedSustained`
+
+- **Severity**: Critical (P1)
+- **Condition**: `streampay_webhook_sla_breach_alarm == 1` for 20 minutes.
+- **User impact**: the breach has outlived the first retry cohort (attempt 3 of the ~51-minute schedule), so deliveries are now accumulating dead letters and subscriber state is drifting away from chain truth.
+
+#### Diagnosis
+
+1. Treat this as §5 `IndexerOutboxDepthDiverging`'s push-consumer twin: check
+   outbox depth and `streampay_outbox_dispatch_total` advancing first. If the
+   outbox is also diverging, the webhook layer is a symptom, not the fault.
+2. Count how much is now unrecoverable without a replay: `GET
+   /api/webhooks/dlq` and `streampay_webhook_sla_breaches_total`.
+3. Ask whether the objective moved: a `WEBHOOK_SLA_MS` lowered mid-incident
+   makes a healthy platform suddenly "breaching". The gauge is measured against
+   the objective at sample time.
+
+#### Remediation
+
+1. Contain the fan-out before the cause: disable the slowest consumer channel so
+   healthy tenants drain, exactly as in §5.
+2. If the platform was down rather than the subscriber, reconcile before
+   replaying: a subscriber that missed 20 minutes of events needs the pull feed
+   (`GET /streams/:id/events?after=`) re-synced, because replaying every queued
+   intent will not repair a hole it never had a chance to fill.
+3. Replay dead letters only after the endpoint answers 2xx on a test fire —
+   `POST /api/webhooks/endpoints/:id/test`, which emits a `stream_ping` —
+   otherwise you are re-filling the same DLQ.
+4. Post-incident: record the measured breach ratio, not the alert time, so the
+   subscriber conversation is about the number they were promised.
+
+### `IndexerWebhookBacklogAging`
+
+- **Severity**: Warning (P2)
+- **Condition**: `streampay_webhook_oldest_pending_seconds > 300` for 5 minutes.
+- **User impact**: at least one delivery is past its first retry. This is the earliest webhook signal there is — it fires while the work is still pending, before any of it becomes a dead letter.
+
+#### Diagnosis
+
+1. Decide whether one endpoint is blocking the queue or the whole platform is
+   stalled. Dispatch is a single sequential loop — up to 25 due deliveries per
+   tick, each awaited in turn — so **one slow subscriber does age everyone
+   else's backlog** (head-of-line blocking inside the tick). The tell is whose
+   attempts are missing: if only one tenant's series is over objective while the
+   dispatch counter keeps advancing at its normal rate, that tenant's handler is
+   eating the tick budget. If `streampay_webhook_dispatch_total` is flat, the
+   dispatcher itself is not running.
+2. Confirm the dispatcher loop is alive: `streampay_webhook_dispatch_total` must
+   advance between scrapes. Flat counter + rising age = stalled tick.
+3. Check for a retry stampede: after an endpoint outage ends, every queued
+   attempt becomes due at once and the oldest-pending gauge can stay high while
+   throughput is actually at its maximum.
+
+#### Remediation
+
+1. Stalled tick: restart the indexer (the outbox and webhook dispatch share its
+   loop) and verify the cursor advances; durable intents mean no event is lost.
+2. Stampede: let it drain. Raising throughput here trades a 5-minute-old
+   pending item for a subscriber receiving its whole backlog at once.
+3. One persistently slow subscriber: disable its endpoint
+   (`PATCH /api/webhooks/endpoints/:id`). Because the dispatch tick is shared,
+   leaving it active taxes every other tenant's latency budget — throttling the
+   fan-out globally would only make the whole fleet slower in the same way.
+4. If aging is chronic at healthy volume, the retry schedule is fighting the
+   dispatch budget — revisit `WEBHOOK_SLA_MIN_SAMPLES` only so the SLA gauge
+   starts reporting sooner, never to make this alert quieter.
+
+---
+
+## 10. Materialized Analytics Alert Triage
+
+These alerts cover the outbox-driven portfolio views specified in
+[docs/ANALYTICS.md](./ANALYTICS.md). A stale view is not necessarily lost data:
+the journal remains the source of truth, the watermark identifies the last
+committed fold position, and an atomic rebuild can recover it. It is, however,
+unsafe to present the view as current.
+
+### 10.1 Establish whether the writer is moving
+
+1. Read `GET /api/analytics/views` or scrape `streampay_analytics_lag_events`,
+   `streampay_analytics_staleness_seconds`, and `streampay_analytics_dirty`.
+   Separate **event lag** (unfolded journal rows) from **event-time age** (how
+   old the watermark event is). A quiet chain can age a view without lag.
+2. Read `GET /api/analytics/refresh/stats`. Check `errors`, `last_error`,
+   `watermark_seq`, `journal_seq`, `events_per_second`, and the worker's
+   `capped_ticks`. Two scrapes with an advancing watermark mean the writer is
+   healthy but behind; a flat watermark with rising lag means it is stalled.
+3. Check the shared indexer ingestion and SQLite health. Analytics uses the same
+   process/database as ingestion and the outbox. Do not restart repeatedly while
+   a transaction is still committing.
+4. Preserve freshness gates. Never answer `stale_view` with ungated rows just to
+   clear a dashboard alarm; that hides the consistency failure from clients.
+5. If startup refuses a pre-existing database with a complete-history error,
+   stop ingestion, set `START_LEDGER` before the contract's first event, and
+   reindex into a fresh database. Older outbox rows lack newly subscribed events;
+   do not set the marker by hand or append a historical backfill at the journal
+   tail.
+
+### `IndexerAnalyticsStalenessBreach`
+
+- **Severity**: Warning (P2)
+- **Condition**: any `streampay_analytics_slo_breach{view}` is `1` for 5 minutes.
+- **User impact**: a view is older than `ANALYTICS_SLO_MS` or more than one
+  `ANALYTICS_BATCH_SIZE` behind. Clients requesting freshness can time out.
+
+#### Diagnosis and remediation
+
+1. If lag is rising, compare `events_per_second` with
+   `streampay_analytics_budget_events_per_second` and sustained ingestion. Follow
+   the throughput-shortfall procedure below.
+2. If lag is zero but age is rising, check the ledger timestamp of the journal
+   head and the configured SLO. On a halted chain this is expected aging, not a
+   fold bug; do not trigger endless rebuilds.
+3. If a bucket-width change preceded the incident, run one manual rebuild and
+   verify parity. Bucket configuration is not a live semantic switch.
+4. If only one view is dirty, treat it as reorg recovery and follow the dirty
+   procedure. All four views normally share one fold watermark.
+
+### `IndexerAnalyticsStalenessCritical`
+
+- **Severity**: Critical (P1)
+- **Condition**: `streampay_analytics_slo_violation_seconds > 60` for 5 minutes.
+- **User impact**: sustained, material loss of freshness beyond the promised SLO.
+
+Stop serving the affected dashboard as current, preserve the journal, and fix
+the writer bottleneck before rebuilding. After watermarks catch up, compare
+`GET /api/analytics/assets` with a naive scan over the same journal range and
+record both the lag and the duration of the breach. Raising the SLO is not a
+remediation unless the product commitment is deliberately being changed.
+
+### `IndexerAnalyticsDirty`
+
+- **Severity**: Critical (P1)
+- **Condition**: `streampay_analytics_dirty == 1` for 2 minutes.
+- **User impact**: a retraction made previously applied events untrue; gated
+  reads are blocked until a rebuild publishes the surviving journal.
+
+1. Confirm the reorg through the outbox retraction record and reconciler. Do not
+   clear the marker or edit view rows by hand.
+2. Inspect `last_error`. A failed rebuild leaves the views at their previous
+   complete fold position; restore database/storage health first.
+3. The next worker tick normally rebuilds automatically. If the journal is
+   stable and storage is healthy, call `POST /api/analytics/rebuild` with an
+   incident reason and verify `dirty` becomes `0`.
+4. Confirm the watermark does not pass retracted rows and spot-check funded,
+   claimed, settled, and refunded totals before reopening gated reads.
+
+### `IndexerAnalyticsRefreshErrors`
+
+- **Severity**: Warning (P2)
+- **Condition**: `increase(streampay_analytics_errors_total[5m]) > 0`.
+- **User impact**: one or more folds rolled back. The previous watermark is
+  still truthful, but the backlog or dirty state may now violate the SLO.
+
+Use `last_error` to distinguish SQLite/storage failure from an invalid fold
+input. Refresh writes measures, dimensions, and watermark in one transaction,
+so a crash does not leave a partially applied batch. Retrying is safe: either
+the original transaction committed and its watermark advanced, or it rolled
+back and the same rows are eligible again. Repeated failures with a flat
+watermark require storage diagnosis, not a rebuild loop.
+
+### `IndexerAnalyticsThroughputShortfall`
+
+- **Severity**: Warning (P2)
+- **Condition**: journal lag is nonzero while the latest batch sustains less
+  than 80% of `ANALYTICS_THROUGHPUT_BUDGET_EPS` for 10 minutes.
+- **User impact**: catch-up is slower than the configured capacity promise and
+  will eventually breach freshness.
+
+1. Rule out an idle or tiny batch before changing capacity; the alert already
+   requires outstanding rows, but the last-batch rate is still a coarse gauge.
+2. Check `capped_ticks`. Frequent caps with an advancing watermark mean the
+   budget is protecting ingestion as intended; size the budget for sustained
+   ingest plus recovery headroom.
+3. Check SQLite lock duration and disk latency. Increase `ANALYTICS_BATCH_SIZE`
+   only if larger transactions do not starve ingestion; increasing it does not
+   raise the events/second budget by itself.
+4. After changing capacity, verify `lag_events` trends down and gated-read
+   failures clear. Do not disable the worker to relieve write contention.
+
+### `IndexerAnalyticsGatedReadFailures`
+
+- **Severity**: Warning (P2)
+- **Condition**: more than 5% of gated reads time out over ten minutes.
+- **User impact**: callers cannot obtain a portfolio at their requested ledger
+  or event lag.
+
+Correlate the failures with SLO and throughput alerts. If all views are behind,
+fix the writer. If one caller alone requests an impossible `min_ledger`, correct
+the caller rather than relaxing the fleet's gates. `wait_ms` is capped by
+`ANALYTICS_MAX_WAIT_MS`; increasing either only masks a slow writer and consumes
+request capacity. Once healthy, verify a request at the current ledger succeeds
+and reports `waited_ms` consistent with actual catch-up.

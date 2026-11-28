@@ -95,7 +95,7 @@ test("ReconciliationEngine flags within-lag-window inconsistencies as non-diverg
   });
 
   const recentLedger = 100000;
-  
+
   const horizonState = createStreamState("1", {
     deposit: "1000",
     withdrawn: "200",

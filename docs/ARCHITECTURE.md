@@ -106,9 +106,10 @@ paginated on read
 one counter write and groups token pulls by token; stream records and address
 indexes remain per stream. The indexes are *advisory*: never authorize against
 them; the `Stream` entry is the source of truth. A single-stream call emits
-`StreamCreated`; a batch emits one `StreamsCreated` event listing its ids.
-Fee-enabled batches retain one `FeeCharged` event per charged stream, keeping
-the fee ledger independently auditable.
+`StreamCreated`; atomic `create_streams` emits one `StreamCreated` per stream
+plus a `StreamsCreated` summary listing its ids. Fee-enabled batches retain one
+`FeeCharged` event per charged stream, keeping the fee ledger independently
+auditable.
 
 ### Storage layout decision & read/write profiling
 

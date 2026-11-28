@@ -4,19 +4,19 @@ use soroban_sdk::{
     contractclient,
     testutils::{Address as _, Events as _, Ledger as _},
     token::StellarAssetClient,
-    Address, Env, Event as _, IntoVal, String as SdkString,
+    Address, Env, Event as _, String as SdkString,
 };
 use streampay_contract::{
-    test_client::StreamingPaymentsClient as CoreClient, StreamError, StreamStatus,
-    StreamingPayments,
+    test_client::StreamingPaymentsClient as CoreClient, StreamStatus, StreamingPayments,
 };
 
-use crate::{Allowance, NftBurned, NftError, NftMinted, NftTransferred, StreamNft};
+use crate::{NftError, NftMinted, NftTransferred, StreamNft};
 
 const DAY: u64 = 24 * 60 * 60;
 const DEPOSIT: i128 = 10_000_000_000;
 
 #[contractclient(name = "StreamNftClient")]
+#[allow(dead_code)]
 pub trait StreamNftApi {
     fn initialize(
         env: Env,
@@ -151,7 +151,7 @@ impl TestFixture {
 fn test_initialization_and_metadata() {
     let f = TestFixture::setup();
     let stream_id = f.create_stream(10 * DAY, true);
-    let (nft_addr, nft) = f.deploy_nft(stream_id);
+    let (_nft_addr, nft) = f.deploy_nft(stream_id);
 
     assert_eq!(nft.stream_id(), stream_id);
     assert_eq!(nft.core_contract(), f.core_address);

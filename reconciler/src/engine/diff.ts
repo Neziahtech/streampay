@@ -1,51 +1,37 @@
 //! Core reconciliation engine that compares Horizon and Soroban stream states
 //! and detects divergences outside the consistency lag window.
+//!
+//! The merkleized audit (`src/audit/`) is the authoritative continuous
+//! checker; this engine remains the per-stream dual read that explains *which*
+//! field of a record a root divergence came from.
 
 import type {
+  AlertingConfig,
   StreamState,
   DivergenceRecord,
   DivergenceClassification,
   ReconciliationResult,
 } from "../types.js";
-import { AlertingService } from "../alerting.js";
+
+/** The part of the alerting service this engine depends on. */
+export interface AlertTransport {
+  log(level: AlertingConfig["logLevel"], message: string, details?: Record<string, unknown>): void;
+  dispatchWebhook(divergence: DivergenceRecord): Promise<unknown>;
+  beginPass?(): void;
+  endPass?(): string[];
+  recordRounding?(divergence: DivergenceRecord): void;
+}
 
 /**
  * Accrual Floor Tolerance Derivation:
  *
- * References:
- * - docs/ARCHITECTURE.md §3 ("Accrual math"):
- *     "streamed(t) = deposit * elapsed / duration, floored"
- *     "Rounding never benefits the sender. Floor division means a partial
- *     second is never counted as streamed... The floor dust accumulates to the
- *     recipient, not the sender — verified by the property test (partial withdrawals ≤ full-window accrual)."
- * - docs/adr/0004-floor-per-second-accrual.md ("ADR 0004: Floor-Per-Second Accrual Math"):
- *     "Option 1: Floored integer division (deposit * elapsed / duration, rounded down)...
- *     ensures that a partial second is never counted as streamed. The recipient can only withdraw
- *     tokens that have fully matured."
- * - docs/I18N.md §3 ("The Stellar trap: 7 decimals and floating point"):
- *     Stellar Asset Contracts (SAC) standard defaults to 7 decimals (1 token = 10^7 stroops).
- *
- * Mathematical Justification:
- * In Soroban's `streamed_at` pure function, linear accrual is computed using integer floor division:
- *     streamed = floor((deposit * elapsed) / duration)
- * The truncation remainder r = (deposit * elapsed) % duration strictly satisfies 0 <= r < duration.
- * Therefore, the maximum unaccumulated floor dust at any instant is strictly less than
- * 1 smallest indivisible base unit:
- *     epsilon_base = 1 base unit (stroop)
- *
- * In decimal token representation (where amount is in human-readable token units with `decimals` d):
- *     1 token unit = 10^d base units => epsilon_decimal = 10^(-d)
- *
- * Sub-ledger rounding differences between Horizon indexed effects (which may reflect off-chain
- * continuous calculations or slight rounding differences across bridge effects) and Soroban's
- * on-chain contract state cannot exceed this single-unit floor threshold for a standard single rate segment.
- *
- * When maxDiff <= epsilon, the divergence is classified as "rounding_within_epsilon" (benign floor dust),
- * preventing unnecessary operator paging while recording the event in observability metrics.
- * Any difference > epsilon represents a genuine conservation violation ("value_mismatch") and triggers
- * a critical alert and webhook dispatch.
+ * Soroban's `streamed_at` uses integer floor division. The truncation
+ * remainder is strictly less than one base unit, so a single rate segment can
+ * accumulate less than one stroop of floor dust. Differences at or below the
+ * configured epsilon are recorded as rounding rather than paged as conservation
+ * violations. Decimal token values are converted to base units before the
+ * comparison.
  */
-
 export function parseAmountToBaseUnits(amountStr: string, decimals: number = 7): bigint {
   const trimmed = String(amountStr).trim();
   if (trimmed.includes(".")) {
@@ -83,137 +69,147 @@ export function calculateAccrualFloorEpsilon(
 }
 
 export interface ReconciliationEngineConfig {
-  consistencyWindowMs: number; // Acceptable lag between data sources
-  alertOnLagThreshold?: number; // Alert when lag exceeds this (default: 2 * window)
-  alertingService: AlertingService;
-  defaultDecimals?: number; // Asset decimals, defaults to 7 (Stellar SAC standard)
-  toleranceMultiplier?: number; // Multiplier on accrual floor epsilon, defaults to 1
+  consistencyWindowMs: number;
+  alertOnLagThreshold?: number;
+  alertingService: AlertTransport;
+  defaultDecimals?: number;
+  toleranceMultiplier?: number;
+  /**
+   * Optional de-duplication gate for divergence alerts. Given the keys
+   * diverging this cycle it returns the ones worth paging on; omit it to
+   * dispatch every critical divergence, as before.
+   */
+  alertGate?: (faultingKeys: string[], atMs: number) => string[];
+}
+
+interface ReaderLike {
+  pollStreams(ids: string[]): Promise<StreamState[]>;
+  healthCheck(): Promise<{ healthy: boolean; error?: string }>;
 }
 
 export class ReconciliationEngine {
-  private config: ReconciliationEngineConfig;
-  private alerting: AlertingService;
+  private readonly config: ReconciliationEngineConfig;
+  private readonly alerting: AlertTransport;
 
   constructor(config: ReconciliationEngineConfig) {
     this.config = config;
     this.alerting = config.alertingService;
   }
 
-  /**
-   * Reconcile two sets of stream states and detect divergences.
-   * 
-   * @param horizonStates - Stream states from Horizon (classic-bridge effects)
-   * @param sorobanStates - Stream states from Soroban RPC (contract state)
-   * @returns ReconciliationResult with detected divergences
-   */
+  /** Reconciles two sets of stream states and detects divergences. */
   async reconcile(
     horizonStates: StreamState[],
-    sorobanStates: StreamState[]
+    sorobanStates: StreamState[],
+    atMs: number = Date.now()
   ): Promise<ReconciliationResult> {
-    const startTime = Date.now();
-    
-    // Create maps for efficient lookup
-    const horizonMap = new Map(horizonStates.map(s => [s.streamId, s]));
-    const sorobanMap = new Map(sorobanStates.map(s => [s.streamId, s]));
-    
-    // Get all unique stream IDs from both sources
+    const startedAt = Date.now();
+
+    const horizonMap = new Map(horizonStates.map((state) => [state.streamId, state]));
+    const sorobanMap = new Map(sorobanStates.map((state) => [state.streamId, state]));
     const allStreamIds = new Set([
-      ...horizonStates.map(s => s.streamId),
-      ...sorobanStates.map(s => s.streamId),
+      ...horizonStates.map((state) => state.streamId),
+      ...sorobanStates.map((state) => state.streamId),
     ]);
-    
+
     const divergences: DivergenceRecord[] = [];
     let inSyncCount = 0;
     let withinLagCount = 0;
     let roundingCount = 0;
     let realDivergenceCount = 0;
-    
+
     for (const streamId of allStreamIds) {
       const horizonState = horizonMap.get(streamId);
       const sorobanState = sorobanMap.get(streamId);
-      
-      // Case 1: Stream exists in both sources
-      if (horizonState && sorobanState) {
-        const result = await this.compareStates(horizonState, sorobanState);
+
+      if (horizonState !== undefined && sorobanState !== undefined) {
+        const result = this.compareStates(horizonState, sorobanState);
         if (result === null) {
-          inSyncCount++;
+          inSyncCount += 1;
         } else if (result === "lag") {
-          withinLagCount++;
+          withinLagCount += 1;
         } else {
           if (result.classification === "rounding_within_epsilon") {
-            roundingCount++;
+            roundingCount += 1;
           } else {
-            realDivergenceCount++;
+            realDivergenceCount += 1;
           }
           divergences.push(result);
         }
-      } 
-      // Case 2: Stream exists only in Horizon (missing from Soroban)
-      else if (horizonState && !sorobanState) {
-        realDivergenceCount++;
-        divergences.push(this.createDivergenceRecord(
-          streamId,
-          "missing_record",
-          "critical",
-          "missing_record",
-          { streamId: horizonState.streamId, ledger: horizonState.ledger },
-          { streamId: sorobanState ? (sorobanState as StreamState).streamId : "N/A", ledger: sorobanState ? (sorobanState as StreamState).ledger : 0 },
-          horizonState.ledger,
-          0 // Soroban lag is infinite, but we'll use 0 as placeholder
-        ));
-      } 
-      // Case 3: Stream exists only in Soroban (missing from Horizon)
-      else if (!horizonState && sorobanState) {
-        realDivergenceCount++;
-        divergences.push(this.createDivergenceRecord(
-          streamId,
-          "missing_record",
-          "warning", // Less critical - might be indexing delay
-          "missing_record",
-          { streamId: horizonState ? (horizonState as StreamState).streamId : "N/A", ledger: horizonState ? (horizonState as StreamState).ledger : 0 },
-          { streamId: sorobanState.streamId, ledger: sorobanState.ledger },
-          0, // Horizon lag is infinite
-          sorobanState.ledger
-        ));
+      } else if (horizonState !== undefined) {
+        realDivergenceCount += 1;
+        divergences.push(
+          this.createDivergenceRecord(
+            streamId,
+            "missing_record",
+            "critical",
+            "missing_record",
+            { streamId: horizonState.streamId, ledger: horizonState.ledger },
+            { streamId: "N/A", ledger: 0 },
+            horizonState.ledger,
+            0
+          )
+        );
+      } else if (sorobanState !== undefined) {
+        realDivergenceCount += 1;
+        divergences.push(
+          this.createDivergenceRecord(
+            streamId,
+            "missing_record",
+            "warning",
+            "missing_record",
+            { streamId: "N/A", ledger: 0 },
+            { streamId: sorobanState.streamId, ledger: sorobanState.ledger },
+            0,
+            sorobanState.ledger
+          )
+        );
       }
     }
-    
+
     const ledgerGap = this.calculateLedgerGap(horizonStates, sorobanStates);
-    
-    // Dispatch webhooks ONLY for critical real divergences (never for rounding within epsilon).
-    // One reconciliation pass is one de-duplication pass: a divergence pages once
-    // it has persisted across the configured confirmation windows, and keys that
-    // are absent this pass age towards resolution.
-    (this.alerting as any).beginPass?.();
+    const critical = divergences.filter(
+      (divergence) =>
+        divergence.severity === "critical" &&
+        divergence.classification !== "rounding_within_epsilon"
+    );
+    const dispatchable =
+      this.config.alertGate === undefined
+        ? critical
+        : (() => {
+            const allowed = new Set(
+              this.config.alertGate?.(critical.map((divergence) => divergence.streamId), atMs) ?? []
+            );
+            return critical.filter((divergence) => allowed.has(divergence.streamId));
+          })();
+
+    // One reconciliation pass is one de-duplication pass. Keys absent this pass
+    // age towards resolution, while rounding is recorded without paging.
+    this.alerting.beginPass?.();
     try {
+      for (const divergence of dispatchable) {
+        await this.alerting.dispatchWebhook(divergence);
+      }
       for (const divergence of divergences) {
-        if (
-          divergence.severity === "critical" &&
-          divergence.classification !== "rounding_within_epsilon"
-        ) {
-          await this.alerting.dispatchWebhook(divergence);
-        } else if (divergence.classification === "rounding_within_epsilon") {
-          if (typeof (this.alerting as any).recordRounding === "function") {
-            (this.alerting as any).recordRounding(divergence);
-          }
+        if (divergence.classification === "rounding_within_epsilon") {
+          this.alerting.recordRounding?.(divergence);
         }
       }
     } finally {
-      (this.alerting as any).endPass?.();
+      this.alerting.endPass?.();
     }
-    
-    // Log reconciliation summary
-    this.alerting.log("INFO", `Reconciliation complete`, {
+
+    this.alerting.log("INFO", "Reconciliation complete", {
       totalChecked: allStreamIds.size,
       inSync: inSyncCount,
       withinLagWindow: withinLagCount,
       divergences: divergences.length,
+      dispatched: dispatchable.length,
       roundingWithinTolerance: roundingCount,
       realDivergences: realDivergenceCount,
       ledgerGap,
-      durationMs: Date.now() - startTime,
+      durationMs: Date.now() - startedAt,
     });
-    
+
     return {
       totalChecked: allStreamIds.size,
       inSync: inSyncCount,
@@ -221,7 +217,7 @@ export class ReconciliationEngine {
       roundingWithinTolerance: roundingCount,
       realDivergences: realDivergenceCount,
       divergences,
-      timestamp: new Date().toISOString(),
+      timestamp: new Date(atMs).toISOString(),
       ledgerGap,
       metrics: {
         roundingCount,
@@ -230,30 +226,19 @@ export class ReconciliationEngine {
     };
   }
 
-  /**
-   * Compare two stream states and determine if they match, are within lag window, or diverge.
-   * 
-   * @returns null if in sync, "lag" if within acceptable lag window, or DivergenceRecord if diverged
-   */
-  private async compareStates(
-    h: StreamState,
-    s: StreamState
-  ): Promise<null | "lag" | DivergenceRecord> {
-    // Check if the essential stream data matches
+  /** `null` when in sync, `"lag"` inside the consistency window, else the record. */
+  private compareStates(h: StreamState, s: StreamState): null | "lag" | DivergenceRecord {
     const depositMatch = h.data.deposit === s.data.deposit;
     const withdrawnMatch = h.data.withdrawn === s.data.withdrawn;
     const statusMatch = h.data.status === s.data.status;
-    
-    if (depositMatch && withdrawnMatch && statusMatch) {
-      return null; // Perfect match
-    }
-    
-    // Calculate ledger lag between sources
-    const timeDiffMs = Math.abs(new Date(h.timestamp).getTime() - new Date(s.timestamp).getTime());
-    
-    // If the disagreement is due to reasonable propagation delay, treat as lag
+
+    if (depositMatch && withdrawnMatch && statusMatch) return null;
+
+    const timeDiffMs = Math.abs(
+      new Date(h.timestamp).getTime() - new Date(s.timestamp).getTime()
+    );
+
     if (timeDiffMs <= this.config.consistencyWindowMs) {
-      // Log as warning for monitoring but don't treat as actionable divergence
       this.alerting.log("WARN", `Stream ${h.streamId} shows lag-induced divergence`, {
         horizonLedger: h.ledger,
         sorobanLedger: s.ledger,
@@ -264,45 +249,25 @@ export class ReconciliationEngine {
       });
       return "lag";
     }
-    
-    // Determine which field(s) caused the mismatch
-    const mismatchedFields: Record<string, boolean> = {
-      deposit: !depositMatch,
-      withdrawn: !withdrawnMatch,
-      status: !statusMatch,
-    };
 
-    // If only status mismatched:
-    if (mismatchedFields.status && !mismatchedFields.deposit && !mismatchedFields.withdrawn) {
+    if (!statusMatch && depositMatch && withdrawnMatch) {
       return this.createDivergenceRecord(
         h.streamId,
         "stream_status",
         "warning",
         "status_mismatch",
-        {
-          streamId: h.streamId,
-          ledger: h.ledger,
-          timestamp: h.timestamp,
-          data: h.data,
-        },
-        {
-          streamId: s.streamId,
-          ledger: s.ledger,
-          timestamp: s.timestamp,
-          data: s.data,
-        },
+        { streamId: h.streamId, ledger: h.ledger, timestamp: h.timestamp, data: h.data },
+        { streamId: s.streamId, ledger: s.ledger, timestamp: s.timestamp, data: s.data },
         h.ledger,
         s.ledger
       );
     }
 
-    // Balance mismatch: evaluate whether difference is within accrual floor rounding epsilon
     const decimals =
       (s.data as { decimals?: number }).decimals ??
       (h.data as { decimals?: number }).decimals ??
       this.config.defaultDecimals ??
       7;
-
     const multiplier = this.config.toleranceMultiplier ?? 1;
     const epsilon = calculateAccrualFloorEpsilon(decimals, multiplier);
 
@@ -312,7 +277,6 @@ export class ReconciliationEngine {
       const withdrawnDiff = computeAmountDiff(h.data.withdrawn, s.data.withdrawn, decimals);
       maxDiff = depositDiff > withdrawnDiff ? depositDiff : withdrawnDiff;
     } catch {
-      // If parsing failed (e.g. malformed strings), treat as a value mismatch
       maxDiff = epsilon + 1n;
     }
 
@@ -327,18 +291,8 @@ export class ReconciliationEngine {
       "stream_balance",
       severity,
       classification,
-      {
-        streamId: h.streamId,
-        ledger: h.ledger,
-        timestamp: h.timestamp,
-        data: h.data,
-      },
-      {
-        streamId: s.streamId,
-        ledger: s.ledger,
-        timestamp: s.timestamp,
-        data: s.data,
-      },
+      { streamId: h.streamId, ledger: h.ledger, timestamp: h.timestamp, data: h.data },
+      { streamId: s.streamId, ledger: s.ledger, timestamp: s.timestamp, data: s.data },
       h.ledger,
       s.ledger,
       maxDiff.toString(),
@@ -346,9 +300,6 @@ export class ReconciliationEngine {
     );
   }
 
-  /**
-   * Create a divergence record for logging and alerting.
-   */
   private createDivergenceRecord(
     streamId: string,
     checkType: DivergenceRecord["checkType"],
@@ -361,6 +312,7 @@ export class ReconciliationEngine {
     delta?: string,
     toleranceEpsilon?: string
   ): DivergenceRecord {
+    const now = Date.now();
     return {
       streamId,
       checkType,
@@ -368,103 +320,86 @@ export class ReconciliationEngine {
       classification,
       indexedValue,
       onChainValue,
-      horizonLagMs: horizonLedger > 0 ? Date.now() - horizonLedger * 1000 : undefined,
-      sorobanLagMs: sorobanLedger > 0 ? Date.now() - sorobanLedger * 1000 : undefined,
-      detectedAt: new Date().toISOString(),
+      horizonLagMs: horizonLedger > 0 ? now - horizonLedger * 1000 : undefined,
+      sorobanLagMs: sorobanLedger > 0 ? now - sorobanLedger * 1000 : undefined,
+      detectedAt: new Date(now).toISOString(),
       delta,
       toleranceEpsilon,
     };
   }
 
-  /**
-   * Calculate the ledger gap between Horizon and Soroban sources.
-   */
-  private calculateLedgerGap(
-    horizonStates: StreamState[],
-    sorobanStates: StreamState[]
-  ): number {
-    const getLatestLedger = (states: StreamState[]): number => {
-      if (states.length === 0) return 0;
-      return Math.max(...states.map(s => s.ledger));
-    };
-    
-    const horizonLatest = getLatestLedger(horizonStates);
-    const sorobanLatest = getLatestLedger(sorobanStates);
-    
-    return Math.abs(horizonLatest - sorobanLatest);
+  private calculateLedgerGap(horizonStates: StreamState[], sorobanStates: StreamState[]): number {
+    const latest = (states: StreamState[]): number =>
+      states.length === 0 ? 0 : Math.max(...states.map((state) => state.ledger));
+    return Math.abs(latest(horizonStates) - latest(sorobanStates));
   }
 
   /**
-   * Start continuous reconciliation polling.
+   * Runs reconciliation until `stop()` is called. Prefer `ContinuousAuditor`
+   * for the merkleized path; this loop is retained for the per-stream read.
    */
   async startContinuousReconciliation(
-    horizonReader: { pollStreams: (ids: string[]) => Promise<StreamState[]>; healthCheck: () => Promise<{ healthy: boolean; error?: string }> },
-    sorobanReader: { pollStreams: (ids: string[]) => Promise<StreamState[]>; healthCheck: () => Promise<{ healthy: boolean; error?: string }> },
+    horizonReader: ReaderLike,
+    sorobanReader: ReaderLike,
     streamIds: string[],
-    options: { 
-      initialDelayMs?: number; 
+    options: {
+      initialDelayMs?: number;
       healthCheckIntervalMs?: number;
       onError?: (error: unknown) => void;
+      maxCycles?: number;
+      shouldStop?: () => boolean;
     } = {}
   ): Promise<void> {
     const {
       initialDelayMs = 0,
       healthCheckIntervalMs = 30_000,
-      onError = (err) => console.error("Reconciliation error:", err),
+      onError = (error) => console.error("Reconciliation error:", error),
+      maxCycles,
+      shouldStop = () => false,
     } = options;
-    
-    // Initial delay
-    if (initialDelayMs > 0) {
-      await new Promise(resolve => setTimeout(resolve, initialDelayMs));
-    }
-    
-    // Start health check interval
-    const healthCheckLoop = setInterval(async () => {
-      try {
-        const [hHealth, sHealth] = await Promise.all([
-          horizonReader.healthCheck(),
-          sorobanReader.healthCheck(),
-        ]);
-        
-        if (!hHealth.healthy || !sHealth.healthy) {
-          this.alerting.log("WARN", "One or more readers unhealthy", {
-            horizonHealthy: hHealth.healthy,
-            sorobanHealthy: sHealth.healthy,
-            horizonError: hHealth.error,
-            sorobanError: sHealth.error,
+
+    if (initialDelayMs > 0) await sleep(initialDelayMs);
+
+    let cycles = 0;
+    const healthCheckLoop = setInterval(() => {
+      void (async () => {
+        try {
+          const [horizonHealth, sorobanHealth] = await Promise.all([
+            horizonReader.healthCheck(),
+            sorobanReader.healthCheck(),
+          ]);
+          if (!horizonHealth.healthy || !sorobanHealth.healthy) {
+            this.alerting.log("WARN", "One or more readers unhealthy", {
+              horizonHealthy: horizonHealth.healthy,
+              sorobanHealthy: sorobanHealth.healthy,
+              horizonError: horizonHealth.error,
+              sorobanError: sorobanHealth.error,
+            });
+          }
+        } catch (error) {
+          this.alerting.log("ERROR", "Health check failed", {
+            error: error instanceof Error ? error.message : String(error),
           });
         }
-      } catch (err: unknown) {
-        this.alerting.log("ERROR", "Health check failed", {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
+      })();
     }, healthCheckIntervalMs);
-    
+
     try {
-      while (true) {
-        const loopStart = Date.now();
-        
+      while (!shouldStop() && (maxCycles === undefined || cycles < maxCycles)) {
+        const loopStartedAt = Date.now();
         try {
-          // Poll both sources
           const [horizonStates, sorobanStates] = await Promise.all([
             horizonReader.pollStreams(streamIds),
             sorobanReader.pollStreams(streamIds),
           ]);
-          
-          // Perform reconciliation
           await this.reconcile(horizonStates, sorobanStates);
-          
-          // Calculate sleep time to maintain poll interval
-          const elapsed = Date.now() - loopStart;
-          const sleepTime = Math.max(0, this.config.consistencyWindowMs - elapsed);
-          
-          await new Promise(resolve => setTimeout(resolve, sleepTime));
-        } catch (err: unknown) {
-          onError(err);
-          // Continue looping despite errors
-          await new Promise(resolve => setTimeout(resolve, 1000));
+        } catch (error) {
+          onError(error);
+          await sleep(1_000);
         }
+        cycles += 1;
+        const remaining = Math.max(0, this.config.consistencyWindowMs - (Date.now() - loopStartedAt));
+        if (remaining > 0 && !shouldStop()) await sleep(remaining);
       }
     } finally {
       clearInterval(healthCheckLoop);
@@ -472,5 +407,8 @@ export class ReconciliationEngine {
   }
 }
 
-// Re-export types for consumers
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export type { StreamState, DivergenceRecord, ReconciliationResult } from "../types.js";

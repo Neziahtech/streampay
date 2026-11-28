@@ -483,6 +483,871 @@
       "title": "Tail-Sampled Traces Retained (100% of Errors)",
       "type": "timeseries",
       "description": "Tail-sampling metrics from OpenTelemetry Collector: 100% error traces guaranteed retained."
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 35 },
+      "id": 300,
+      "title": "Webhook Delivery SLA & Tenancy",
+      "type": "row"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 36 },
+      "id": 301,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "expr": "max(streampay_webhook_sla_breach_alarm)",
+          "refId": "A"
+        }
+      ],
+      "title": "Webhook SLA Breach Alarm",
+      "type": "stat",
+      "description": "Must be 0. 1 means more than WEBHOOK_SLA_BREACH_BUDGET of the delivery attempts in the sliding window missed WEBHOOK_SLA_MS."
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Seconds",
+            "axisPlacement": "auto",
+            "fillOpacity": 15,
+            "lineWidth": 2,
+            "showPoints": "auto"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 6, "w": 10, "x": 6, "y": 36 },
+      "id": 302,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "expr": "streampay_webhook_delivery_latency_quantile_seconds",
+          "legendFormat": "p{{quantile}}",
+          "refId": "A"
+        },
+        {
+          "expr": "streampay_webhook_sla_objective_seconds",
+          "legendFormat": "SLA objective",
+          "refId": "B"
+        }
+      ],
+      "title": "Webhook Delivery Latency Quantiles vs SLA",
+      "type": "timeseries",
+      "description": "Per-attempt latency quantiles from the indexer's sliding window, with the configured commitment overlaid."
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Attempts/sec",
+            "axisPlacement": "auto",
+            "fillOpacity": 20,
+            "lineWidth": 2,
+            "showPoints": "auto"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 36 },
+      "id": 303,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "expr": "sum by (outcome) (rate(streampay_webhook_dispatch_total[5m]))",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Webhook Attempts by Outcome",
+      "type": "timeseries",
+      "description": "delivered / retry / dead_letter / blocked_ssrf / inactive. A retry line that never returns to delivered is a subscriber in trouble."
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 42 },
+      "id": 304,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "name"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "expr": "streampay_webhook_sla_breached_by_tenant",
+          "legendFormat": "{{tenant_id}}",
+          "refId": "A"
+        }
+      ],
+      "title": "SLA Breach State per Tenant",
+      "type": "stat",
+      "description": "One tenant out of budget is an account conversation, not an outage. Names are tenant ids; no secret material is ever exposed."
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "fillOpacity": 15,
+            "lineWidth": 2,
+            "showPoints": "auto"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 300 },
+              { "color": "red", "value": 900 }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 42 },
+      "id": 305,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "expr": "streampay_webhook_oldest_pending_seconds",
+          "legendFormat": "Oldest pending delivery",
+          "refId": "A"
+        },
+        {
+          "expr": "streampay_webhook_subscriptions",
+          "legendFormat": "Subscriptions {{status}}",
+          "refId": "B"
+        }
+      ],
+      "title": "Webhook Backlog Age & Subscription Count",
+      "type": "timeseries",
+      "description": "Backlog age in seconds against the retry schedule, with the subscription population alongside."
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 49
+      },
+      "id": 400,
+      "title": "Heuristic Anomaly Detection & Alert Routing",
+      "type": "row"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 50
+      },
+      "id": 401,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "name"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "expr": "sum by (rule_id) (streampay_anomaly_incidents_open)",
+          "legendFormat": "{{rule_id}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Open Anomaly Incidents by Rule",
+      "type": "stat",
+      "description": "A sustained pattern holds one incident open, so a non-zero line here is one subject still misbehaving — not one page per ledger close. Names are rule ids; subjects are only ever shown redacted."
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Detections/sec",
+            "axisPlacement": "auto",
+            "fillOpacity": 20,
+            "lineWidth": 2,
+            "showPoints": "auto"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (rule_id, mode) (rate(streampay_anomaly_detections_total[5m]))",
+          "legendFormat": "{{rule_id}}/{{mode}}",
+          "refId": "A"
+        }
+      ],
+      "type": "timeseries",
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 8,
+        "y": 50
+      },
+      "id": 402,
+      "title": "Detections by Rule and Mode",
+      "description": "Shadow detections are recorded for review and page nobody; an enforce line is a rule you have promoted. A shadow rule with no line has never fired, which is why its promotion is refused."
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "color": "orange",
+                  "index": 0,
+                  "text": "not ready"
+                },
+                "1": {
+                  "color": "green",
+                  "index": 1,
+                  "text": "ready"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "orange",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 50
+      },
+      "id": 403,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "expr": "streampay_anomaly_promotion_ready",
+          "legendFormat": "{{rule_id}}/{{tenant_id}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Shadow Promotion Readiness",
+      "type": "stat",
+      "description": "1 means the rule's reviews cleared its false-positive budget and min_reviews for that tenant. It is the only license POST /api/anomaly/rules/:ruleId/promote accepts."
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Replays/hour",
+            "axisPlacement": "auto",
+            "fillOpacity": 20,
+            "lineWidth": 2,
+            "showPoints": "auto"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (outcome) (increase(streampay_anomaly_replay_total[1h]))",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ],
+      "type": "timeseries",
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 57
+      },
+      "id": 404,
+      "title": "Replay Verifications by Outcome",
+      "description": "Replay only runs when an operator presses it, so any volume here is deliberate work. `mismatch` must stay at zero: it means a detection's own cited ledger range no longer reproduces its claim."
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Alerts/sec",
+            "axisPlacement": "auto",
+            "fillOpacity": 20,
+            "lineWidth": 2,
+            "showPoints": "auto"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (rule_id) (rate(streampay_anomaly_alerts_total[10m]))",
+          "legendFormat": "{{rule_id}} routed",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (rule_id) (rate(streampay_anomaly_suppressed_total[10m]))",
+          "legendFormat": "{{rule_id}} suppressed",
+          "refId": "B"
+        }
+      ],
+      "type": "timeseries",
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 8,
+        "y": 57
+      },
+      "id": 405,
+      "title": "Routed Alerts vs Suppressed Evaluations",
+      "description": "Routed counts both halves of a page (raised and resolved); suppressed counts evaluations skipped because a subject was reviewed as a false positive. Suppression above routed means the rule is being fed noise, not evidence."
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "max": 1,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.2
+              },
+              {
+                "color": "red",
+                "value": 0.3
+              }
+            ]
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 57
+      },
+      "id": 406,
+      "options": {
+        "displayMode": "gradient",
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "expr": "increase(streampay_anomaly_feedback_total{label=\"false_positive\"}[24h]) / clamp_min(increase(streampay_anomaly_feedback_total[24h]), 1)",
+          "legendFormat": "{{rule_id}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Measured False-Positive Rate (24h)",
+      "type": "gauge",
+      "description": "The deployment-wide warning line is 30%; each tenant's own budget is usually tighter and is what GET /api/anomaly/promotion reports. Over the line means tune the rule or drop it back to shadow."
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 64 },
+      "id": 500,
+      "title": "Materialized Analytics — Freshness, Recovery & Throughput",
+      "type": "row"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 65 },
+      "id": 501,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "expr": "streampay_analytics_slo_breach",
+          "legendFormat": "{{view}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Views Outside Freshness SLO",
+      "type": "stat",
+      "description": "Must be 0 for every view. Age is measured from the watermark's chain event time; a quiet chain can age a view without adding journal lag."
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Journal events",
+            "axisPlacement": "auto",
+            "fillOpacity": 20,
+            "lineWidth": 2,
+            "showPoints": "auto"
+          },
+          "mappings": [],
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 65 },
+      "id": 502,
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "expr": "streampay_analytics_lag_events",
+          "legendFormat": "{{view}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Consistency Lag (Unfolded Events)",
+      "type": "timeseries",
+      "description": "The journal head minus each view's durable fold position. Persistent growth means refresh capacity is below ingestion."
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Seconds",
+            "axisPlacement": "auto",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "showPoints": "auto"
+          },
+          "mappings": [],
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 65 },
+      "id": 503,
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "expr": "streampay_analytics_staleness_seconds",
+          "legendFormat": "{{view}}",
+          "refId": "A"
+        },
+        {
+          "expr": "streampay_analytics_slo_seconds",
+          "legendFormat": "SLO",
+          "refId": "B"
+        }
+      ],
+      "title": "Watermark Event-Time Age vs SLO",
+      "type": "timeseries",
+      "description": "The SLO is a horizontal reference. If lag is zero while age grows, inspect chain event timestamps before treating it as a writer fault."
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Events/s",
+            "axisPlacement": "auto",
+            "fillOpacity": 15,
+            "lineWidth": 2,
+            "showPoints": "auto"
+          },
+          "mappings": [],
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 73 },
+      "id": 504,
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "expr": "streampay_analytics_refresh_events_per_second",
+          "legendFormat": "Latest batch",
+          "refId": "A"
+        },
+        {
+          "expr": "streampay_analytics_budget_events_per_second",
+          "legendFormat": "Budget",
+          "refId": "B"
+        }
+      ],
+      "title": "Refresh Throughput vs Budget",
+      "type": "timeseries",
+      "description": "Latest-batch throughput is a coarse gauge; correlate it with nonzero lag and capped ticks before changing capacity."
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 73 },
+      "id": 505,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "expr": "streampay_analytics_dirty",
+          "legendFormat": "Rebuild pending",
+          "refId": "A"
+        }
+      ],
+      "title": "Reorg Invalidation / Dirty Views",
+      "type": "stat",
+      "description": "Must return to 0 after one atomic rebuild. Dirty views are not served through freshness gates."
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Reads/s or errors",
+            "axisPlacement": "auto",
+            "fillOpacity": 15,
+            "lineWidth": 2,
+            "showPoints": "auto"
+          },
+          "mappings": [],
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 73 },
+      "id": 506,
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "expr": "sum by (result) (rate(streampay_analytics_read_gated_total[10m]))",
+          "legendFormat": "Gated {{result}}",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(streampay_analytics_errors_total[10m])",
+          "legendFormat": "Refresh errors",
+          "refId": "B"
+        }
+      ],
+      "title": "Gated Read Outcomes & Refresh Errors",
+      "type": "timeseries",
+      "description": "Waited-out reads are user-visible consistency failures. Errors roll back the whole refresh transaction and leave the last committed watermark intact."
     }
   ],
   "refresh": "5s",

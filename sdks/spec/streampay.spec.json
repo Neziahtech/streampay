@@ -372,7 +372,7 @@
     },
     {
       "name": "create_streams",
-      "doc": "Creates multiple streams atomically, authorizing the sender once and\ngrouping deposits into one token pull per token. Every item uses the\nsame validation and fee rules as `create_stream`; if any item is\ninvalid, the entire transaction (including transfers and state writes)\nis rolled back. An empty input returns an empty vector without auth.\n\nEmits one `StreamsCreated` event containing all ids; individual\n`FeeCharged` events are still emitted when fees apply.",
+      "doc": "Creates multiple streams atomically, authorizing the sender once and\ngrouping deposits into one token pull per token. Every item uses the\nsame validation and fee rules as `create_stream`; if any item is\ninvalid, the entire transaction (including transfers and state writes)\nis rolled back. An empty input returns an empty vector without auth.\n\nEmits one `StreamCreated` event per stream followed by a\n`StreamsCreated` summary; individual `FeeCharged` events are still\nemitted when fees apply.",
       "args": [
         {
           "name": "sender",

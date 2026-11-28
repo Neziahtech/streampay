@@ -437,9 +437,26 @@ fn create_streams_creates_multiple_streams_and_pulls_funds_once() {
         sender: f.sender.clone(),
         stream_ids: ids.clone(),
     };
+    let created_event = |index: u32| {
+        let input = inputs.get(index).unwrap();
+        crate::StreamCreated {
+            stream_id: ids.get(index).unwrap(),
+            sender: f.sender.clone(),
+            recipient: input.recipient.clone(),
+            token: input.token.clone(),
+            deposit: input.deposit_amount,
+            start_time: input.start_time,
+            end_time: input.end_time,
+            cancelable: input.cancelable,
+        }
+    };
     assert_eq!(
         f.env.events().all().filter_by_contract(&f.client.address),
-        [batch_event.to_xdr(&f.env, &f.client.address)]
+        [
+            created_event(0).to_xdr(&f.env, &f.client.address),
+            created_event(1).to_xdr(&f.env, &f.client.address),
+            batch_event.to_xdr(&f.env, &f.client.address),
+        ]
     );
     assert_eq!(ids.get(0), Some(1));
     assert_eq!(ids.get(1), Some(2));

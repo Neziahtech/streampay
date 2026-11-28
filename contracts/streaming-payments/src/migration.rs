@@ -186,19 +186,31 @@ pub struct MigrationGlobals {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MigrationRecord {
-    /// Page zero's record; written by `migration_begin_export` itself.
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Page zero's record; written by `migration_begin_export` itself."
+    )]
     Globals(MigrationGlobals),
     Stream(Stream),
     Intent(ScheduledIntent),
     Dispute(Dispute),
-    /// Per-stream fee record: stream id and its stored fee record.
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Per-stream fee record: stream id and its stored fee record."
+    )]
     Fee(u64, StreamFeeRecord),
-    /// Per-token treasury accounting.
+    #[cfg_attr(not(target_family = "wasm"), doc = " Per-token treasury accounting.")]
     Treasury(Address, Treasury),
-    /// A sponsor's budget configuration, keyed by the sponsor address.
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " A sponsor's budget configuration, keyed by the sponsor address."
+    )]
     Sponsor(Address, SponsorConfig),
-    /// A stream policy: `None` is the global default, `Some(token)` the
-    /// per-asset policy for that token.
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " A stream policy: `None` is the global default, `Some(token)` the"
+    )]
+    #[cfg_attr(not(target_family = "wasm"), doc = " per-asset policy for that token.")]
     Policy(Option<Address>, StreamPolicy),
 }
 
@@ -206,9 +218,12 @@ pub enum MigrationRecord {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExportPhase {
-    /// Pages are still being appended.
+    #[cfg_attr(not(target_family = "wasm"), doc = " Pages are still being appended.")]
     Exporting,
-    /// The root is computed and published; the export is immutable.
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The root is computed and published; the export is immutable."
+    )]
     Exported,
 }
 
@@ -227,14 +242,23 @@ pub enum ExportPhase {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExportSession {
-    /// Monotonic export counter on the source; replayed roots pair with it.
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Monotonic export counter on the source; replayed roots pair with it."
+    )]
     pub nonce: u64,
     pub phase: ExportPhase,
-    /// The published Merkle root; `None` until finalization.
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The published Merkle root; `None` until finalization."
+    )]
     pub root: Option<BytesN<32>>,
     pub pages: u32,
     pub records: u64,
-    /// Total outstanding escrow value across all exported records.
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Total outstanding escrow value across all exported records."
+    )]
     pub total_value: i128,
     pub started_by: Address,
     pub started_at: u64,
@@ -244,9 +268,12 @@ pub struct ExportSession {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ImportPhase {
-    /// Pages are still being imported.
+    #[cfg_attr(not(target_family = "wasm"), doc = " Pages are still being imported.")]
     Importing,
-    /// Conservation asserted; the migration is complete and irreversible.
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Conservation asserted; the migration is complete and irreversible."
+    )]
     Imported,
 }
 

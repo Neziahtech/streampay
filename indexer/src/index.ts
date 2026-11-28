@@ -8,12 +8,43 @@ import type { EndpointHealth, RateBudgetSnapshot } from "./rpc-manager.js";
 import { IngestPipeline, type EventsPage, type TickReport } from "./ingest/pipeline.js";
 import type { SequencerMetrics } from "./ingest/sequencer.js";
 import { WebhookDispatcher } from "./webhooks/dispatcher.js";
+import type { WebhookEndpoint } from "./webhooks/types.js";
 import { validateWebhookUrl } from "./webhooks/ssrf.js";
+import { WebhookSubscriptionRegistry, SubscriptionError } from "./webhooks/registry.js";
+import { TenantDirectory, directoryFromEnv, type Principal } from "./webhooks/tenants.js";
+import { WebhookMetrics } from "./webhooks/metrics.js";
+import { SecretCipher } from "./webhooks/secrets.js";
+import { sanitizeAttributes, sanitizeError } from "./privacy.js";
 import { OutboxDispatcher } from "./outbox/dispatcher.js";
 import { OutboxMetrics } from "./outbox/metrics.js";
 import { httpPushTransport } from "./outbox/http-transport.js";
 import { traceCorrelationRegistry } from "./telemetry.js";
 import { createGracefulShutdown, installShutdownHandlers } from "./shutdown.js";
+import { AnomalyEngine } from "./anomaly/engine.js";
+import type { AnomalyAlertSink } from "./anomaly/alerts.js";
+import { FanOutAlertSink, LogAlertSink, WebhookAlertSink, redactEvidence, redactSubject } from "./anomaly/alerts.js";
+import {
+  DEFAULT_SUPPRESSION_TTL_MS,
+  HYDRATE_LEDGERS_ENV,
+  REPLAY_MAX_EVENTS_ENV,
+  SUPPRESSION_TTL_ENV,
+  TenantRuleSource,
+  defaultModeFromEnv,
+  promotionReport,
+  ruleOverridesFromEnv,
+  type PromotionReport,
+} from "./anomaly/config.js";
+import { AnomalyMetrics } from "./anomaly/metrics.js";
+import type { AnomalyStore } from "./anomaly/store.js";
+import { parseIncidentKey } from "./anomaly/dedup.js";
+import { RULE_IDS, RuleConfigError, effectiveRule, type EffectiveRule } from "./anomaly/rules.js";
+import { DEFAULT_REPLAY_MAX_EVENTS, replayDetection } from "./anomaly/replay.js";
+import { toObservation } from "./anomaly/observations.js";
+import { FEEDBACK_LABELS, type Detection, type FeedbackLabel, type Observation, type RuleMode, type TenantRuleOverride } from "./anomaly/types.js";
+import { AnalyticsMetrics } from "./analytics/metrics.js";
+import { AnalyticsRefresher } from "./analytics/refresh.js";
+import { registerAnalyticsRoutes, type AnalyticsApiConfig } from "./analytics/api.js";
+import { ANALYTICS_ENV, DEFAULT_ANALYTICS_CONFIG } from "./analytics/types.js";
 import { GrpcIndexerServer } from "./grpc/server.js";
 import { loadRotationConfig, rpcAuthHeaders } from "./secrets/config.js";
 import { WebhookKeyRotation } from "./secrets/rotation.js";
@@ -22,6 +53,29 @@ import { TimeTravelError, TimeTravelService, type TimeTravelPolicy } from "./his
 import { WasmPluginHost } from "./wasm/host.js";
 import { PluginDispatcher } from "./wasm/dispatcher.js";
 import type { DecodedEvent, EventValue, Stream } from "./types.js";
+
+/** Express types a path parameter as `string | string[]`; routes take one id. */
+function routeId(req: express.Request, name = "id"): string {
+  return String(req.params[name] ?? "");
+}
+
+/**
+ * Keep the legacy single-tenant webhook routes on their upstream wire contract.
+ * The tenant registry exposes its richer subscription DTOs separately; the
+ * store's encryption/tenancy metadata must not leak into these responses.
+ */
+function legacyWebhookEndpoint(endpoint: WebhookEndpoint) {
+  return {
+    id: endpoint.id,
+    url: endpoint.url,
+    secret: endpoint.secret,
+    previous_secret: endpoint.previous_secret,
+    events: endpoint.events,
+    status: endpoint.status,
+    created_at: endpoint.created_at,
+    updated_at: endpoint.updated_at,
+  };
+}
 
 function parseCursor(raw: unknown): number {
   const value = Number(raw ?? 0);
@@ -47,6 +101,15 @@ function envNonNegativeInt(name: string, def: number): number {
   if (raw === undefined) return def;
   const value = Number(raw);
   if (!Number.isInteger(value) || value < 0) throw new Error(`${name} must be a non-negative integer`);
+  return value;
+}
+
+/** A fraction in [0, 1], the shape every SLA breach budget takes. */
+function envRatio(name: string, def: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return def;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0 || value > 1) throw new Error(`${name} must be a fraction between 0 and 1`);
   return value;
 }
 
@@ -78,6 +141,114 @@ export interface ProofConfig {
 }
 
 /**
+ * Tenant isolation for the webhook management API (issue #585). Supplied by
+ * `run()`; left out of `createApp` calls from tests, which then keep the
+ * historical single-tenant behaviour against the raw store.
+ */
+export interface WebhookApiConfig {
+  directory: TenantDirectory;
+  registry: WebhookSubscriptionRegistry;
+  metrics?: WebhookMetrics;
+  /** Tenant used when the deployment provisions no keys, i.e. trusts its transport. */
+  defaultTenantId?: string;
+}
+
+/**
+ * The heuristic anomaly detector's management surface (issue #582): which
+ * rules a tenant runs with, what they fired on, whether a detection replays,
+ * and whether a shadow rule has earned the right to page anyone.
+ */
+export interface AnomalyApiConfig {
+  engine: AnomalyEngine;
+  store: AnomalyStore;
+  rules: TenantRuleSource;
+  directory: TenantDirectory;
+  metrics: AnomalyMetrics;
+  /** Tenant used when the deployment provisions no keys, i.e. trusts its transport. */
+  defaultTenantId?: string;
+  /** How long a false-positive review suppresses its subject, absent a request override. */
+  suppressionTtlMs?: number;
+  /** Cap on the events one replay may read. */
+  replayMaxEvents?: number;
+}
+
+function ruleView(rule: EffectiveRule): Record<string, unknown> {
+  return {
+    id: rule.id,
+    version: rule.version,
+    summary: rule.summary,
+    scope: rule.scope,
+    severity: rule.config.severity,
+    mode: rule.config.mode,
+    false_positive_budget: rule.config.falsePositiveBudget,
+    min_reviews: rule.config.minReviews,
+    params: Object.entries(rule.config.params).map(([name, value]) => ({
+      name,
+      value,
+      default: rule.params[name]?.default,
+      min: rule.params[name]?.min,
+      max: rule.params[name]?.max,
+      description: rule.params[name]?.description,
+    })),
+  };
+}
+
+/** Redacted for the wire: identifiers keep their prefix, amounts never appear. */
+function detectionView(detection: Detection): Record<string, unknown> {
+  return {
+    id: detection.id,
+    rule_id: detection.ruleId,
+    rule_version: detection.ruleVersion,
+    severity: detection.severity,
+    mode: detection.mode,
+    subject: redactSubject(detection.subjectKey),
+    citation: {
+      from_ledger: detection.citation.fromLedger,
+      to_ledger: detection.citation.toLedger,
+      first_event_id: detection.citation.firstEventId,
+      last_event_id: detection.citation.lastEventId,
+      start_ms: detection.citation.startMs,
+      end_ms: detection.citation.endMs,
+    },
+    fingerprint: detection.fingerprint,
+    evidence: { ...redactEvidence(detection.evidence), cited_event_ids: detection.evidence.citedEventIds },
+    params: detection.params,
+    created_at_ms: detection.createdAtMs,
+  };
+}
+
+function bearerToken(header: string | string[] | undefined): string | undefined {
+  const raw = Array.isArray(header) ? header[0] : header;
+  if (!raw) return undefined;
+  const match = /^Bearer\s+(.+)$/i.exec(raw.trim());
+  return match ? match[1] : undefined;
+}
+
+/** The part of an API config needed to identify a caller. */
+interface PrincipalConfig {
+  directory: TenantDirectory;
+  defaultTenantId?: string;
+}
+
+/**
+ * Identify the caller of a management API request.
+ *
+ * With credentials provisioned, the tenant key is presented in
+ * `x-streampay-webhook-key` (or a bearer token) and the tenant comes from the
+ * directory — never from the request body, which is what makes the isolation
+ * unforgeable. With none provisioned the deployment is declaring itself
+ * single-tenant, so every request is that one tenant.
+ */
+function webhookPrincipal(config: PrincipalConfig, req: express.Request): Principal | null {
+  if (!config.directory.enforcesAuthentication) {
+    return config.directory.principalFor(config.defaultTenantId ?? "default");
+  }
+  const header = req.headers["x-streampay-webhook-key"];
+  const presented = typeof header === "string" && header !== "" ? header : bearerToken(req.headers.authorization);
+  return config.directory.resolveKey(presented);
+}
+
+/**
  * WASM plugin dispatch for the HTTP API (issue #580). When absent, no
  * `/api/wasm/*` routes exist and SSE behaves exactly as before.
  */
@@ -95,6 +266,25 @@ export interface HistoryOptions {
   redactAddresses?: boolean;
 }
 
+type FeatureApiConfig = WebhookApiConfig | AnomalyApiConfig | AnalyticsApiConfig;
+type OptionalApiConfig = GraphQLHandlerOptions | WasmOptions | HistoryOptions | FeatureApiConfig;
+
+function isWebhookApiConfig(value: OptionalApiConfig | undefined): value is WebhookApiConfig {
+  return value !== undefined && "registry" in value;
+}
+
+function isAnomalyApiConfig(value: OptionalApiConfig | undefined): value is AnomalyApiConfig {
+  return value !== undefined && "engine" in value;
+}
+
+function isAnalyticsApiConfig(value: OptionalApiConfig | undefined): value is AnalyticsApiConfig {
+  return value !== undefined && "refresher" in value;
+}
+
+function isFeatureApiConfig(value: OptionalApiConfig | undefined): value is FeatureApiConfig {
+  return isWebhookApiConfig(value) || isAnomalyApiConfig(value) || isAnalyticsApiConfig(value);
+}
+
 export function createApp(
   store: StreamStore,
   dispatcher?: WebhookDispatcher,
@@ -103,11 +293,27 @@ export function createApp(
   rpcHealth?: () => EndpointHealth[],
   ingestStats?: () => IngestStats,
   proofConfig?: ProofConfig,
-  graphqlOptions?: GraphQLHandlerOptions,
-  wasmOptions?: WasmOptions,
-  historyOptions?: HistoryOptions,
+  graphqlOptions?: GraphQLHandlerOptions | FeatureApiConfig,
+  wasmOptions?: WasmOptions | FeatureApiConfig,
+  historyOptions?: HistoryOptions | FeatureApiConfig,
+  webhookApi?: WebhookApiConfig,
+  anomalyApi?: AnomalyApiConfig,
+  analyticsApi?: AnalyticsApiConfig
 ): express.Express {
+  // Before the upstream transports were added, slots 8–10 held the webhook,
+  // anomaly and analytics configs. Recognise those shapes while retaining the
+  // upstream GraphQL/WASM/history positions and the appended feature slots.
+  for (const option of [graphqlOptions, wasmOptions, historyOptions]) {
+    if (isWebhookApiConfig(option)) webhookApi ??= option;
+    else if (isAnomalyApiConfig(option)) anomalyApi ??= option;
+    else if (isAnalyticsApiConfig(option)) analyticsApi ??= option;
+  }
+  if (isFeatureApiConfig(graphqlOptions)) graphqlOptions = undefined;
+  if (isFeatureApiConfig(wasmOptions)) wasmOptions = undefined;
+  if (isFeatureApiConfig(historyOptions)) historyOptions = undefined;
+
   const app = express();
+  app.set("trust proxy", analyticsApi?.trustProxyHops ?? 0);
   app.use(express.json());
 
   // GraphQL read API over the same projections (#576). REST routes below
@@ -352,7 +558,7 @@ export function createApp(
 
   // GET /streams/:id/history
   app.get("/streams/:id/history", (req, res) => {
-    const streamId = req.params.id;
+    const streamId = routeId(req);
     if (!streamId) {
       return res.json([]);
     }
@@ -362,8 +568,8 @@ export function createApp(
 
   // GET /streams/:id
   app.get("/streams/:id", (req, res) => {
-    if (!/^\d+$/.test(req.params.id)) return res.status(400).json({ error: "stream id must be an unsigned integer" });
-    const stream = store.getStream(req.params.id);
+    if (!/^\d+$/.test(routeId(req))) return res.status(400).json({ error: "stream id must be an unsigned integer" });
+    const stream = store.getStream(routeId(req));
     return stream ? res.json(stream) : res.status(404).json({ error: "stream not found" });
   });
 
@@ -374,9 +580,9 @@ export function createApp(
   // the canonical ledger-entry XDR, so the leaf the client re-hashes is the leaf
   // the chain would have produced.
   app.get("/streams/:id/proof", (req, res) => {
-    if (!/^\d+$/.test(req.params.id)) return res.status(400).json({ error: "stream id must be an unsigned integer" });
+    if (!/^\d+$/.test(routeId(req))) return res.status(400).json({ error: "stream id must be an unsigned integer" });
     if (!proofConfig) return res.status(503).json({ error: "proof endpoint is not configured: set CHECKPOINT_SIGNER_SECRET" });
-    const stream = store.getStream(req.params.id);
+    const stream = store.getStream(routeId(req));
     if (!stream) return res.status(404).json({ error: "stream not found" });
     const ledger = Number(store.getState("lastLedger") ?? stream.lastLedger);
     const ledgerCloseTime = Math.floor(new Date(stream.updatedAt).getTime() / 1000) || Math.floor(Date.now() / 1000);
@@ -386,7 +592,7 @@ export function createApp(
       ledger,
       ledgerCloseTime,
       streams: store.listAllStreams(),
-      targetStreamId: req.params.id,
+      targetStreamId: routeId(req),
       signer: proofConfig.signer,
     });
     return res.json(proof);
@@ -450,11 +656,11 @@ export function createApp(
   // Consumers replay from their last durable cursor; duplicates (at-least-once
   // transport) are detectable via the per-row idempotency_key and seq ordering.
   app.get("/streams/:id/events", (req, res) => {
-    if (!/^\d+$/.test(req.params.id)) return res.status(400).json({ error: "stream id must be an unsigned integer" });
+    if (!/^\d+$/.test(routeId(req))) return res.status(400).json({ error: "stream id must be an unsigned integer" });
     const after = parseCursor(req.query.after);
     if (after < 0) return res.status(400).json({ error: "after must be a non-negative integer cursor" });
     const limit = parseLimit(req.query.limit, 100, 1000);
-    return res.json(store.outbox.replayEvents(req.params.id, after, limit));
+    return res.json(store.outbox.replayEvents(routeId(req), after, limit));
   });
 
   // ---------- outbox management API ----------
@@ -485,19 +691,19 @@ export function createApp(
   });
 
   app.get("/api/outbox/consumers/:id", (req, res) => {
-    const consumer = store.outbox.getConsumer(req.params.id);
+    const consumer = store.outbox.getConsumer(routeId(req));
     return consumer ? res.json(consumer) : res.status(404).json({ error: "consumer not found" });
   });
 
   app.post("/api/outbox/consumers/:id/status", (req, res) => {
     const status = req.body?.status;
     if (status !== "active" && status !== "disabled") return res.status(400).json({ error: "status must be active or disabled" });
-    const ok = store.outbox.setConsumerStatus(req.params.id, status);
+    const ok = store.outbox.setConsumerStatus(routeId(req), status);
     return ok ? res.json({ ok: true }) : res.status(404).json({ error: "consumer not found" });
   });
 
   app.delete("/api/outbox/consumers/:id", (req, res) => {
-    const deleted = store.outbox.deleteConsumer(req.params.id);
+    const deleted = store.outbox.deleteConsumer(routeId(req));
     return deleted ? res.json({ ok: true }) : res.status(404).json({ error: "consumer not found" });
   });
 
@@ -515,7 +721,7 @@ export function createApp(
   });
 
   app.post("/api/outbox/intents/:id/replay", (req, res) => {
-    const id = Number(req.params.id);
+    const id = Number(routeId(req));
     if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: "intent id must be a positive integer" });
     const replayed = store.outbox.replayIntent(id);
     return replayed ? res.json({ ok: true }) : res.status(404).json({ error: "dead-letter intent not found" });
@@ -534,6 +740,8 @@ export function createApp(
 
   app.get("/api/outbox/stats", (_req, res) => res.json(store.outbox.stats()));
 
+  if (analyticsApi) registerAnalyticsRoutes(app, store.analytics, analyticsApi);
+
   app.post("/api/outbox/flush", async (_req, res) => {
     if (!outboxDispatcher) return res.status(503).json({ error: "outbox dispatcher not configured" });
     return res.json(await outboxDispatcher.tick());
@@ -541,11 +749,16 @@ export function createApp(
 
   // Prometheus text exposition on the indexer's own surface.
   app.get("/metrics", (_req, res) => {
-    const body = outboxMetrics
-      ? outboxMetrics.render(store.outbox.stats())
-      : "# no outbox metrics configured\n";
+    const sections: string[] = [];
+    if (outboxMetrics) sections.push(outboxMetrics.render(store.outbox.stats()).trimEnd());
+    if (webhookApi?.metrics) {
+      sections.push(webhookApi.metrics.render(store.webhooks.deliveryStats()).trimEnd());
+    }
+    if (anomalyApi) sections.push(anomalyApi.metrics.render().trimEnd());
+    if (analyticsApi && analyticsApi.enabled !== false) sections.push(analyticsApi.metrics.render(store.analytics.snapshot()).trimEnd());
+    if (sections.length === 0) sections.push("# no metrics configured");
     res.setHeader("Content-Type", "text/plain; version=0.0.4");
-    return res.send(body);
+    return res.send(`${sections.join("\n")}\n`);
   });
 
   // GET /address/:addr/streams
@@ -556,72 +769,468 @@ export function createApp(
     return res.json({ address, count: streams.length, streams });
   });
 
-  // Webhook management API
-  app.get("/api/webhooks/endpoints", (_req, res) => {
-    res.json(store.webhooks.listEndpoints());
-  });
+  // ── Webhook management API ─────────────────────────────────────────────────
+  // With a registry configured every route is tenant-scoped: the tenant comes
+  // from the presented credential, another tenant's id reads as 404, and no
+  // response but the one that mints a secret ever carries secret material.
+  // Without one, the routes behave as they always did for a single-tenant
+  // deployment.
+  const tenantRoute =
+    (handler: (principal: Principal, req: express.Request, res: express.Response) => unknown | Promise<unknown>) =>
+    async (req: express.Request, res: express.Response): Promise<void> => {
+      let principal: Principal = { tenantId: "", keyId: "legacy", authenticated: false };
+      if (webhookApi) {
+        try {
+          principal = webhookPrincipal(webhookApi, req) ?? principal;
+          if (principal.keyId === "legacy") {
+            res.status(401).json({
+              error: "a tenant webhook key is required in x-streampay-webhook-key",
+              code: "unauthenticated",
+            });
+            return;
+          }
+        } catch (err: unknown) {
+          res.status(503).json({ error: sanitizeError(err), code: "tenant_unprovisioned" });
+          return;
+        }
+      }
+      try {
+        const result = await handler(principal, req, res);
+        if (result !== undefined && !res.headersSent) res.json(result);
+      } catch (err: unknown) {
+        if (err instanceof SubscriptionError) {
+          res.status(err.status).json(err.toJSON());
+          return;
+        }
+        res.status(500).json({ error: sanitizeError(err), code: "internal_error" });
+      }
+    };
 
-  app.post("/api/webhooks/endpoints", async (req, res) => {
-    const { url, events, secret } = req.body || {};
-    if (!url || typeof url !== "string") {
-      return res.status(400).json({ error: "URL is required" });
-    }
-    const ssrf = await validateWebhookUrl(url);
-    if (!ssrf.safe) {
-      return res.status(400).json({ error: `SSRF validation failed: ${ssrf.reason}` });
-    }
-    const endpoint = store.webhooks.createEndpoint({
-      url,
-      events: Array.isArray(events) ? events : ["*"],
-      secret: typeof secret === "string" ? secret : undefined,
-    });
-    return res.status(201).json(endpoint);
-  });
+  /** Registry-only routes answer 503 for a deployment that runs the legacy single-tenant store. */
+  const registryOnly = (res: express.Response): boolean => {
+    if (webhookApi) return true;
+    res.status(503).json({ error: "webhook registry not configured", code: "registry_unavailable" });
+    return false;
+  };
 
-  app.get("/api/webhooks/endpoints/:id", (req, res) => {
-    const ep = store.webhooks.getEndpoint(req.params.id);
-    if (!ep) return res.status(404).json({ error: "Endpoint not found" });
-    return res.json(ep);
-  });
+  app.get(
+    "/api/webhooks/endpoints",
+    tenantRoute((principal) => {
+      if (!webhookApi) return store.webhooks.listEndpoints().map(legacyWebhookEndpoint);
+      return webhookApi.registry.list(principal).subscriptions;
+    })
+  );
 
-  app.post("/api/webhooks/endpoints/:id/rotate-secret", (req, res) => {
-    try {
-      const result = store.webhooks.rotateEndpointSecret(req.params.id);
-      return res.json(result);
-    } catch (err: unknown) {
-      return res.status(404).json({ error: err instanceof Error ? err.message : String(err) });
-    }
-  });
+  app.post(
+    "/api/webhooks/endpoints",
+    tenantRoute(async (principal, req, res) => {
+      if (!webhookApi) {
+        const { url, events, secret } = req.body || {};
+        if (!url || typeof url !== "string") {
+          res.status(400).json({ error: "URL is required" });
+          return;
+        }
+        const ssrf = await validateWebhookUrl(url);
+        if (!ssrf.safe) {
+          res.status(400).json({ error: `SSRF validation failed: ${ssrf.reason}` });
+          return;
+        }
+        return legacyWebhookEndpoint(store.webhooks.createEndpoint({
+          url,
+          events: Array.isArray(events) ? events : ["*"],
+          secret: typeof secret === "string" ? secret : undefined,
+        }));
+      }
+      const { url, events, secret } = req.body || {};
+      const created = await webhookApi.registry.create(principal, {
+        url,
+        events: Array.isArray(events) ? events : undefined,
+        secret: typeof secret === "string" ? secret : undefined,
+      });
+      // The signing secret is disclosed here and never again.
+      res.status(201);
+      return { ...created.subscription, secret: created.secret_once };
+    })
+  );
 
-  app.delete("/api/webhooks/endpoints/:id", (req, res) => {
-    const deleted = store.webhooks.deleteEndpoint(req.params.id);
-    if (!deleted) return res.status(404).json({ error: "Endpoint not found" });
-    return res.json({ ok: true });
-  });
+  app.get(
+    "/api/webhooks/endpoints/:id",
+    tenantRoute((principal, req, res) => {
+      if (!webhookApi) {
+        const ep = store.webhooks.getEndpoint(routeId(req));
+        if (!ep) {
+          res.status(404).json({ error: "Endpoint not found" });
+          return;
+        }
+        return legacyWebhookEndpoint(ep);
+      }
+      return webhookApi.registry.get(principal, routeId(req));
+    })
+  );
 
-  app.post("/api/webhooks/endpoints/:id/test", async (req, res) => {
-    if (!dispatcher) {
-      return res.status(500).json({ error: "Webhook dispatcher not configured" });
-    }
-    const result = await dispatcher.testFireEndpoint(req.params.id);
-    return res.json(result);
-  });
+  app.patch(
+    "/api/webhooks/endpoints/:id",
+    tenantRoute(async (principal, req, res) => {
+      if (!registryOnly(res)) return;
+      const { url, events, status } = req.body || {};
+      return webhookApi!.registry.update(principal, routeId(req), {
+        url,
+        events: Array.isArray(events) ? events : undefined,
+        status: status === "active" || status === "disabled" ? status : undefined,
+      });
+    })
+  );
 
-  app.get("/api/webhooks/deliveries", (req, res) => {
-    const limit = Math.min(100, Math.max(1, Number(req.query.limit || 50)));
-    return res.json(store.webhooks.listDeliveries(limit));
-  });
+  app.post(
+    "/api/webhooks/endpoints/:id/rotate-secret",
+    tenantRoute((principal, req, res) => {
+      if (!webhookApi) {
+        try {
+          return store.webhooks.rotateEndpointSecret(routeId(req));
+        } catch (err: unknown) {
+          res.status(404).json({ error: sanitizeError(err) });
+          return;
+        }
+      }
+      const rotated = webhookApi.registry.rotateSecret(principal, routeId(req));
+      return {
+        secret: rotated.secret_once,
+        previous_secret: null,
+        fingerprint: rotated.fingerprint,
+        previous_fingerprint: rotated.previous_fingerprint,
+        expires_at: rotated.expires_at,
+      };
+    })
+  );
 
-  app.get("/api/webhooks/dlq", (req, res) => {
-    const limit = Math.min(100, Math.max(1, Number(req.query.limit || 50)));
-    return res.json(store.webhooks.listDLQ(limit));
-  });
+  app.get(
+    "/api/webhooks/endpoints/:id/rotations",
+    tenantRoute((principal, req, res) => {
+      if (!registryOnly(res)) return;
+      return webhookApi!.registry.rotationHistory(principal, routeId(req), parseLimit(req.query.limit, 20, 100));
+    })
+  );
 
-  app.post("/api/webhooks/dlq/:id/retry", (req, res) => {
-    const success = store.webhooks.replayDLQItem(req.params.id);
-    if (!success) return res.status(404).json({ error: "DLQ item not found" });
-    return res.json({ ok: true, replayed: true });
-  });
+  app.get(
+    "/api/webhooks/quota",
+    tenantRoute((principal, _req, res) => {
+      if (!registryOnly(res)) return;
+      return webhookApi!.registry.list(principal).quota;
+    })
+  );
+
+  app.delete(
+    "/api/webhooks/endpoints/:id",
+    tenantRoute((principal, req, res) => {
+      if (!webhookApi) {
+        const deleted = store.webhooks.deleteEndpoint(routeId(req));
+        if (!deleted) {
+          res.status(404).json({ error: "Endpoint not found" });
+          return;
+        }
+        return { ok: true };
+      }
+      return webhookApi.registry.remove(principal, routeId(req));
+    })
+  );
+
+  app.post(
+    "/api/webhooks/endpoints/:id/test",
+    tenantRoute(async (principal, req, res) => {
+      if (!dispatcher) {
+        res.status(503).json({ error: "Webhook dispatcher not configured", code: "dispatcher_unavailable" });
+        return;
+      }
+      // Ownership is checked before the dispatcher, which is tenant-blind.
+      if (webhookApi) webhookApi.registry.get(principal, routeId(req));
+      return await dispatcher.testFireEndpoint(routeId(req));
+    })
+  );
+
+  app.get(
+    "/api/webhooks/deliveries",
+    tenantRoute((principal, req) => {
+      const limit = Math.min(100, Math.max(1, Number(req.query.limit || 50)));
+      if (!webhookApi) return store.webhooks.listDeliveries(limit);
+      return webhookApi.registry.deliveries(principal, limit);
+    })
+  );
+
+  app.get(
+    "/api/webhooks/dlq",
+    tenantRoute((principal, req) => {
+      const limit = Math.min(100, Math.max(1, Number(req.query.limit || 50)));
+      if (!webhookApi) return store.webhooks.listDLQ(limit);
+      return webhookApi.registry.dlq(principal, limit);
+    })
+  );
+
+  app.post(
+    "/api/webhooks/dlq/:id/retry",
+    tenantRoute((principal, req, res) => {
+      if (!webhookApi) {
+        const success = store.webhooks.replayDLQItem(routeId(req));
+        if (!success) {
+          res.status(404).json({ error: "DLQ item not found" });
+          return;
+        }
+        return { ok: true, replayed: true };
+      }
+      return webhookApi.registry.replayDlq(principal, routeId(req));
+    })
+  );
+
+  app.get(
+    "/api/webhooks/sla",
+    tenantRoute((principal, _req, res) => {
+      if (!registryOnly(res)) return;
+      return webhookApi!.registry.sla(principal);
+    })
+  );
+
+  app.post(
+    "/api/webhooks/rotations/expire",
+    tenantRoute((_principal, _req, res) => {
+      if (!registryOnly(res)) return;
+      return webhookApi!.registry.retireExpiredRotations();
+    })
+  );
+
+  // ── Anomaly detection API (issue #582) ─────────────────────────────────────
+  // Rules are configuration, detections are evidence, and a detection is only
+  // as good as the ledger range it cites: every read here is tenant-scoped and
+  // every identifier leaving here is redacted.
+  if (anomalyApi) {
+    const api = anomalyApi;
+
+    const anomalyRoute =
+      (handler: (tenantId: string, req: express.Request, res: express.Response) => unknown | Promise<unknown>) =>
+      async (req: express.Request, res: express.Response): Promise<void> => {
+        let tenantId = api.defaultTenantId ?? "default";
+        if (api.directory.enforcesAuthentication) {
+          const principal = webhookPrincipal(api, req);
+          if (principal === null) {
+            res.status(401).json({
+              error: "a tenant key is required in x-streampay-webhook-key",
+              code: "unauthenticated",
+            });
+            return;
+          }
+          tenantId = principal.tenantId;
+        }
+        try {
+          const result = await handler(tenantId, req, res);
+          if (result !== undefined && !res.headersSent) res.json(result);
+        } catch (err: unknown) {
+          if (err instanceof RuleConfigError) {
+            res.status(err.code === "unknown_rule" ? 404 : 400).json({ error: err.message, code: err.code, details: err.details });
+            return;
+          }
+          res.status(500).json({ error: sanitizeError(err), code: "internal_error" });
+        }
+      };
+
+    /** Owned by the caller tenant, or invisible: a foreign id must not confirm existence. */
+    const ownedDetection = (tenantId: string, id: string, res: express.Response): Detection | undefined => {
+      const detection = api.store.getDetection(id);
+      if (detection === undefined || detection.tenantId !== tenantId) {
+        res.status(404).json({ error: "detection not found", code: "not_found" });
+        return undefined;
+      }
+      return detection;
+    };
+
+    app.get(
+      "/api/anomaly/rules",
+      anomalyRoute((tenantId) => ({ tenant_id: tenantId, rules: api.rules.rulesFor(tenantId).map(ruleView) }))
+    );
+
+    app.post(
+      "/api/anomaly/rules/:ruleId/override",
+      anomalyRoute((tenantId, req) => {
+        const ruleId = routeId(req, "ruleId");
+        const body = (req.body ?? {}) as Record<string, unknown>;
+        const override: TenantRuleOverride = {};
+        if (typeof body["mode"] === "string") override.mode = body["mode"] as RuleMode;
+        if (typeof body["severity"] === "string") override.severity = body["severity"] as Detection["severity"];
+        if (body["params"] !== undefined && typeof body["params"] === "object") {
+          override.params = body["params"] as Record<string, number>;
+        }
+        if (typeof body["false_positive_budget"] === "number") override.false_positive_budget = body["false_positive_budget"];
+        if (typeof body["min_reviews"] === "number") override.min_reviews = body["min_reviews"];
+
+        // A POST replaces the tenant's override for that rule; an unknown rule
+        // or param is a validation error, never a silent default.
+        const rule = effectiveRule(ruleId, override);
+        api.store.setOverride(tenantId, ruleId, override, Date.now());
+        api.rules.invalidate(tenantId);
+        return { rule: ruleView(rule) };
+      })
+    );
+
+    app.delete(
+      "/api/anomaly/rules/:ruleId/override",
+      anomalyRoute((tenantId, req) => {
+        const ruleId = routeId(req, "ruleId");
+        if (!RULE_IDS.includes(ruleId)) {
+          throw new RuleConfigError("unknown_rule", `unknown rule '${ruleId}'`, { rule: ruleId, known: RULE_IDS });
+        }
+        api.store.setOverride(tenantId, ruleId, null, Date.now());
+        api.rules.invalidate(tenantId);
+        return { rule: ruleView(effectiveRule(ruleId)) };
+      })
+    );
+
+    app.get(
+      "/api/anomaly/detections",
+      anomalyRoute((tenantId, req) => {
+        const limit = parseLimit(req.query.limit, 50, 200);
+        const mode = typeof req.query.mode === "string" ? (req.query.mode as RuleMode) : undefined;
+        if (mode !== undefined && mode !== "shadow" && mode !== "enforce") {
+          return { error: "mode must be 'shadow' or 'enforce'", code: "invalid_mode" };
+        }
+        const ruleId = typeof req.query.rule === "string" ? req.query.rule : undefined;
+        return {
+          tenant_id: tenantId,
+          detections: api.store
+            .listDetections({ tenantId, ruleId, mode, limit })
+            .map(detectionView),
+        };
+      })
+    );
+
+    app.get(
+      "/api/anomaly/detections/:id",
+      anomalyRoute((tenantId, req, res) => {
+        const detection = ownedDetection(tenantId, routeId(req), res);
+        if (detection === undefined) return undefined;
+        return { detection: detectionView(detection), feedback: api.store.listFeedback(detection.id) };
+      })
+    );
+
+    app.post(
+      "/api/anomaly/detections/:id/replay",
+      anomalyRoute((tenantId, req, res) => {
+        const detection = ownedDetection(tenantId, routeId(req), res);
+        if (detection === undefined) return undefined;
+        const outcome = replayDetection(store, detection, { maxEvents: api.replayMaxEvents });
+        api.metrics.recordReplay(
+          outcome.verified ? "verified" : outcome.reason === "not_reproduced" ? "mismatch" : "unavailable"
+        );
+        return outcome;
+      })
+    );
+
+    app.post(
+      "/api/anomaly/detections/:id/feedback",
+      anomalyRoute((tenantId, req, res) => {
+        const detection = ownedDetection(tenantId, routeId(req), res);
+        if (detection === undefined) return undefined;
+        const body = (req.body ?? {}) as Record<string, unknown>;
+        const label = body["label"];
+        if (typeof label !== "string" || !(FEEDBACK_LABELS as readonly string[]).includes(label)) {
+          res.status(400).json({ error: `label must be one of ${FEEDBACK_LABELS.join(", ")}`, code: "invalid_label" });
+          return undefined;
+        }
+        const typedLabel = label as FeedbackLabel;
+        const existing = api.store.listFeedback(detection.id);
+        if (existing.length > 0 && !api.store.hasFeedback(detection.id, typedLabel)) {
+          // Two contradictory reviews of one detection make the budget a
+          // function of who looked last, so the first verdict stands.
+          res.status(409).json({ error: "detection already reviewed", code: "already_reviewed", label: existing[0]?.label });
+          return undefined;
+        }
+
+        let suppressedUntilMs: number | null = null;
+        if (typedLabel === "false_positive" && existing.length === 0) {
+          const requested = typeof body["suppress_ms"] === "number" ? body["suppress_ms"] : (api.suppressionTtlMs ?? DEFAULT_SUPPRESSION_TTL_MS);
+          const ttl = Math.min(30 * 24 * 60 * 60 * 1000, Math.max(0, Math.floor(requested)));
+          suppressedUntilMs = Date.now() + ttl;
+          api.store.suppress({
+            tenantId,
+            ruleId: detection.ruleId,
+            subjectKey: detection.subjectKey,
+            expiresAtMs: suppressedUntilMs,
+            reason: "operator_false_positive",
+          });
+        }
+
+        if (existing.length === 0) {
+          api.store.recordFeedback({
+            id: `fbr_${detection.id}`,
+            detectionId: detection.id,
+            tenantId,
+            label: typedLabel,
+            note: typeof body["note"] === "string" ? body["note"].slice(0, 500) : null,
+            createdAtMs: Date.now(),
+          });
+          api.metrics.recordFeedback(detection.ruleId, typedLabel);
+        }
+        return { detection_id: detection.id, label: typedLabel, suppressed_until_ms: suppressedUntilMs };
+      })
+    );
+
+    app.get(
+      "/api/anomaly/promotion",
+      anomalyRoute((tenantId) => {
+        const reports: PromotionReport[] = [];
+        for (const ruleId of RULE_IDS) {
+          const report = promotionReport(api.store, api.rules, tenantId, ruleId, Date.now());
+          api.metrics.recordPromotionReady(ruleId, tenantId, report.ready);
+          reports.push(report);
+        }
+        return { tenant_id: tenantId, reports };
+      })
+    );
+
+    app.post(
+      "/api/anomaly/rules/:ruleId/promote",
+      anomalyRoute((tenantId, req, res) => {
+        const ruleId = routeId(req, "ruleId");
+        const report = promotionReport(api.store, api.rules, tenantId, ruleId, Date.now());
+        api.metrics.recordPromotionReady(ruleId, tenantId, report.ready);
+        if (!report.ready) {
+          res.status(409).json({
+            error: "the rule has not been validated well enough to page on",
+            code: "promotion_not_ready",
+            reasons: report.reasons,
+            report,
+          });
+          return undefined;
+        }
+        const override: TenantRuleOverride = { ...api.store.getOverride(tenantId, ruleId), mode: "enforce" };
+        const rule = effectiveRule(ruleId, override);
+        api.store.setOverride(tenantId, ruleId, override, Date.now());
+        api.rules.invalidate(tenantId);
+        return { rule: ruleView(rule), report };
+      })
+    );
+
+    app.get(
+      "/api/anomaly/incidents",
+      anomalyRoute((tenantId) => {
+        const now = Date.now();
+        return {
+          tenant_id: tenantId,
+          incidents: api.engine
+            .openIncidentKeys()
+            .map((key) => parseIncidentKey(key))
+            .filter((parsed) => parsed.tenantId === tenantId)
+            .map((parsed) => ({ rule_id: parsed.ruleId, subject: redactSubject(parsed.subjectKey) })),
+          tracked_subjects: {
+            sender: api.engine.trackedSubjects("sender").length,
+            pair: api.engine.trackedSubjects("pair").length,
+          },
+          suppressions: api.store.listSuppressions(tenantId, now).map((record) => ({
+            rule_id: record.ruleId,
+            subject: redactSubject(record.subjectKey),
+            expires_at_ms: record.expiresAtMs,
+            reason: record.reason,
+          })),
+        };
+      })
+    );
+  }
 
   // ---------- WASM plugin management API (#580) ----------
   // Only present when a dispatcher was configured. Plugins are registered
@@ -711,7 +1320,121 @@ export async function run(): Promise<void> {
   if (!contractId) throw new Error("CONTRACT_ID is required");
   if (!Number.isFinite(pollInterval) || pollInterval < 250) throw new Error("POLL_INTERVAL_MS must be at least 250");
 
-  const store = new StreamStore(dbPath);
+  const webhookCipher = SecretCipher.fromEnv();
+  if (webhookCipher === null) {
+    console.warn(
+      "[indexer] WEBHOOK_SECRET_ENCRYPTION_KEY is unset: webhook signing secrets are stored in the clear. " +
+        "Set it to a 32-byte hex key before serving more than one tenant."
+    );
+  }
+  const analyticsEnabled = process.env[ANALYTICS_ENV.enabled] !== "0";
+  const initialLedger = configuredStartLedger();
+  if (analyticsEnabled && initialLedger === undefined) {
+    throw new Error("START_LEDGER must name a ledger before the contract's first event when analytics is enabled");
+  }
+  const analyticsConfig = {
+    bucketMs: envInt(ANALYTICS_ENV.bucketMs, DEFAULT_ANALYTICS_CONFIG.bucketMs),
+    refreshIntervalMs: envInt(ANALYTICS_ENV.refreshMs, DEFAULT_ANALYTICS_CONFIG.refreshIntervalMs),
+    batchSize: envInt(ANALYTICS_ENV.batchSize, DEFAULT_ANALYTICS_CONFIG.batchSize),
+    sloMs: envInt(ANALYTICS_ENV.sloMs, DEFAULT_ANALYTICS_CONFIG.sloMs),
+    maxWaitMs: envNonNegativeInt(ANALYTICS_ENV.maxWaitMs, DEFAULT_ANALYTICS_CONFIG.maxWaitMs),
+    waitPollMs: envInt(ANALYTICS_ENV.waitPollMs, DEFAULT_ANALYTICS_CONFIG.waitPollMs),
+    throughputBudgetPerSecond: envInt(ANALYTICS_ENV.budgetEps, DEFAULT_ANALYTICS_CONFIG.throughputBudgetPerSecond),
+  };
+  const store = new StreamStore(dbPath, {
+    webhookCipher,
+    analytics: { config: analyticsConfig, historyStartLedger: initialLedger, certifyHistory: analyticsEnabled },
+  });
+  const analyticsMetrics = new AnalyticsMetrics();
+  const analyticsRefresher = new AnalyticsRefresher(store.analytics, analyticsMetrics);
+  if (analyticsEnabled) analyticsRefresher.start();
+
+  const { directory, defaultTenantId } = directoryFromEnv();
+  const webhookMetrics = new WebhookMetrics({
+    slaMs: envInt("WEBHOOK_SLA_MS", 5_000),
+    breachBudget: envRatio("WEBHOOK_SLA_BREACH_BUDGET", 0.01),
+    minSamples: envInt("WEBHOOK_SLA_MIN_SAMPLES", 20),
+  });
+  const webhookRegistry = new WebhookSubscriptionRegistry({
+    store: store.webhooks,
+    directory,
+    metrics: webhookMetrics,
+    rotationOverlapMs: envInt("WEBHOOK_SECRET_ROTATION_OVERLAP_MS", 24 * 60 * 60 * 1000),
+    requireEncryption: process.env.WEBHOOK_REQUIRE_ENCRYPTION === "1",
+    // One JSON line per registry action, with the URL masked and the secret
+    // represented only by its fingerprint.
+    onAudit: (event) =>
+      console.log(
+        JSON.stringify({
+          service: "streampay-indexer",
+          component: "webhooks",
+          ...sanitizeAttributes({ ...event, fingerprint: undefined, secret_fingerprint: event.fingerprint }),
+        })
+      ),
+  });
+
+  // ── Heuristic anomaly detection (issue #582) ───────────────────────────────
+  // Rules run on ledger-close time, so a restart has to rebuild the windows
+  // from the journal before a wide-window rule can be trusted again.
+  const anomalyMetrics = new AnomalyMetrics();
+  const anomalyRules = new TenantRuleSource({
+    store: store.anomaly,
+    directory,
+    base: ruleOverridesFromEnv(),
+    defaultMode: defaultModeFromEnv(),
+    defaultTenantId,
+  });
+  const anomalySinks: AnomalyAlertSink[] = [new LogAlertSink()];
+  if (process.env.ANOMALY_WEBHOOK_ALERTS !== "0") anomalySinks.push(new WebhookAlertSink(store.webhooks));
+  const anomalyEngine = new AnomalyEngine({
+    rules: anomalyRules,
+    store: store.anomaly,
+    sinks: [new FanOutAlertSink(anomalySinks)],
+    metrics: anomalyMetrics,
+    dedupOptions: {
+      flapWindowMs: envInt("ANOMALY_FLAP_WINDOW_MS", 120_000),
+      renotifyAfterMs: envNonNegativeInt("ANOMALY_RENOTIFY_AFTER_MS", 0),
+    },
+  });
+
+  const hydrateLedgers = envNonNegativeInt(HYDRATE_LEDGERS_ENV, 2_880);
+  const lastLedgerRaw = store.getState("lastLedger");
+  if (lastLedgerRaw !== undefined && hydrateLedgers > 0) {
+    const to = Number(lastLedgerRaw);
+    const page = store.eventsForAnomaly(Math.max(0, to - hydrateLedgers), to, envInt("ANOMALY_HYDRATE_MAX_EVENTS", 50_000));
+    if (page.truncated) {
+      console.warn(
+        `[indexer] anomaly windows hydrated from a truncated range; wide-window rules under-report until the pattern advances past it`
+      );
+    }
+    // Hydrate, do not re-observe: sweeping is muted while the historical range
+    // is replayed, because the restored incidents are not in the engine's live
+    // window set yet and an intermediate cycle would read a half-restored
+    // process as "everything resolved" and page a second time.
+    anomalyEngine.hydrate(
+      page.events
+        .map(toObservation)
+        .filter((observation): observation is Observation => observation !== null)
+    );
+  }
+
+  store.on("event", (event: DecodedEvent) => {
+    try {
+      anomalyEngine.observe(
+        toObservation({
+          id: event.id,
+          name: event.name,
+          ledger: event.ledger,
+          ledgerClosedAt: event.ledgerClosedAt,
+          streamId: event.streamId,
+          data: event.data as Record<string, unknown>,
+        })
+      );
+    } catch (error) {
+      // A detector failure must never take ingestion down with it.
+      console.error("[indexer] anomaly evaluation failed:", error);
+    }
+  });
 
   // ── Checkpoint signer for `/streams/:id/proof` (#182) ──────────────────────
   // An ephemeral `Keypair.random()` keeps a throwaway indexer running, but its
@@ -743,7 +1466,7 @@ export async function run(): Promise<void> {
     timeoutMs: 20_000,
   });
 
-  const dispatcher = new WebhookDispatcher(store.webhooks);
+  const dispatcher = new WebhookDispatcher(store.webhooks, 2000, { metrics: webhookMetrics });
   dispatcher.start();
 
   // ── Webhook signing-key rotation (issue #615): the sweep retires a previous
@@ -799,8 +1522,12 @@ export async function run(): Promise<void> {
     "stream_topped_up",
     "stream_paused",
     "stream_resumed",
+    "rate_change_accepted",
+    "ownership_accepted",
+    "sender_transferred",
     "stream_refund_target_changed",
     "batch_withdraw_summary",
+    "streams_created",
   ];
   const topicFilters = eventNames.map((name) => [nativeToScVal(name, { type: "symbol" }).toXDR("base64")]);
 
@@ -819,7 +1546,7 @@ export async function run(): Promise<void> {
     sink: store,
     decode: (event) => decodeEvent(event, { contractId }),
     filters: [{ type: "contract", contractIds: [contractId], topics: topicFilters }],
-    initialLedger: configuredStartLedger(),
+    initialLedger,
     pageLimit: envInt("INGEST_PAGE_LIMIT", 1000),
     windowLedgers: envInt("INGEST_WINDOW_LEDGERS", 20),
     maxWindowLedgers: envInt("INGEST_MAX_WINDOW_LEDGERS", 5_000),
@@ -845,6 +1572,26 @@ export async function run(): Promise<void> {
     { networkPassphrase, contractId, signer: checkpointSigner },
     undefined,
     { dispatcher: wasmDispatcher },
+    undefined,
+    { directory, registry: webhookRegistry, metrics: webhookMetrics, defaultTenantId },
+    {
+      engine: anomalyEngine,
+      store: store.anomaly,
+      rules: anomalyRules,
+      directory,
+      metrics: anomalyMetrics,
+      defaultTenantId,
+      suppressionTtlMs: envInt(SUPPRESSION_TTL_ENV, DEFAULT_SUPPRESSION_TTL_MS),
+      replayMaxEvents: envInt(REPLAY_MAX_EVENTS_ENV, DEFAULT_REPLAY_MAX_EVENTS),
+    },
+    {
+      refresher: analyticsRefresher,
+      metrics: analyticsMetrics,
+      enabled: analyticsEnabled,
+      apiToken: process.env[ANALYTICS_ENV.apiToken]?.trim() || undefined,
+      mutationRateLimitPerSecond: Math.max(1, envInt(ANALYTICS_ENV.mutationRate, 5)),
+      trustProxyHops: envNonNegativeInt("TRUST_PROXY_HOPS", 0),
+    }
   );
 
   async function poll(): Promise<void> {
@@ -900,6 +1647,7 @@ export async function run(): Promise<void> {
     stopAccepting: () => {
       shuttingDown = true;
       clearInterval(pollTimer);
+      analyticsRefresher.stop();
       server.close();
       // SSE streams never end on their own; without this `close()` would wait forever.
       server.closeAllConnections();

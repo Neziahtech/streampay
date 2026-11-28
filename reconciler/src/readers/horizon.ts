@@ -1,28 +1,33 @@
 //! Horizon API reader that polls for effects related to StreamPay streams.
 
-import { createHttpAgent } from "../http.js";
-import type { StreamState, HorizonStreamEffect } from "../types.js";
-import { HttpError, type HttpAgent } from "../http.js";
+import { createHttpAgent, HttpError, type HttpAgent, type HttpResponse } from "../http.js";
+import type { StreamState, StreamStatus } from "../types.js";
 
 export interface HorizonReaderConfig {
   url: string;
   token?: string;
   pollIntervalMs: number;
-  contractAccount?: string; // StreamPay contract account on Horizon
+  contractAccount?: string;
   httpAgent?: HttpAgent;
   maxAttempts?: number;
   retryDelayMs?: number;
 }
 
+export interface HorizonHealth {
+  healthy: boolean;
+  lastLedger?: number;
+  error?: string;
+}
+
 export class HorizonReader {
-  private config: HorizonReaderConfig;
-  private http: HttpAgent;
+  private readonly config: HorizonReaderConfig;
+  private readonly http: HttpAgent;
   private lastLedger = 0;
   private healthy = false;
 
-  constructor(config: HorizonReaderConfig) {
+  constructor(config: HorizonReaderConfig, http: HttpAgent = config.httpAgent ?? createHttpAgent()) {
     this.config = config;
-    this.http = config.httpAgent ?? createHttpAgent();
+    this.http = http;
   }
 
   /**
@@ -66,8 +71,8 @@ export class HorizonReader {
     limit: number,
     cursor: string,
     maxAttempts: number,
-    retryDelayMs: number,
-  ) {
+    retryDelayMs: number
+  ): Promise<HttpResponse> {
     let lastError: unknown;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -75,7 +80,7 @@ export class HorizonReader {
         const url = this.buildPageUrl(endpoint, limit, cursor);
         const response = await this.http.get(
           url,
-          this.config.token ? { Authorization: `Bearer ${this.config.token}` } : undefined,
+          this.config.token ? { Authorization: `Bearer ${this.config.token}` } : undefined
         );
 
         if (this.isRetryableStatus(response.status)) {
@@ -93,7 +98,7 @@ export class HorizonReader {
       }
 
       if (attempt < maxAttempts) {
-        await new Promise(resolve => setTimeout(resolve, retryDelayMs * 2 ** (attempt - 1)));
+        await new Promise((resolve) => setTimeout(resolve, retryDelayMs * 2 ** (attempt - 1)));
       }
     }
 
@@ -115,7 +120,7 @@ export class HorizonReader {
 
   private nextCursor(
     page: { _links?: { next?: { href?: string } } },
-    pageRecords: unknown[],
+    pageRecords: unknown[]
   ): string | null {
     const nextHref = page._links?.next?.href;
     if (nextHref) {
@@ -136,104 +141,69 @@ export class HorizonReader {
     return null;
   }
 
-  /**
-   * Check if Horizon is healthy and reachable.
-   */
-  async healthCheck(): Promise<{ healthy: boolean; lastLedger?: number; error?: string }> {
+  async healthCheck(): Promise<HorizonHealth> {
     try {
       const response = await this.http.get(`${this.config.url}/`);
       this.healthy = response.status === 200;
-      // Try to extract latest ledger from response headers or body
-      return {
-        healthy: this.healthy,
-        lastLedger: this.lastLedger,
-      };
-    } catch (err: unknown) {
+      return { healthy: this.healthy, lastLedger: this.lastLedger };
+    } catch (error) {
       this.healthy = false;
       return {
         healthy: false,
-        error: err instanceof Error ? err.message : String(err),
+        error: error instanceof Error ? error.message : String(error),
       };
     }
   }
 
   /**
-   * Poll for effects that indicate stream state changes since lastLedger.
-   * Returns array of StreamState objects representing current known state.
+   * Current known state for each stream id. The Horizon effect projection is
+   * still a placeholder: it reports zeros rather than replaying effects, so a
+   * dual read against live contract state will disagree. That is exactly why
+   * the merkleized audit treats this side as a projection, not as truth.
    */
   async pollStreams(streamIds: string[]): Promise<StreamState[]> {
+    if (streamIds.length === 0) return [];
     try {
-      if (streamIds.length === 0) return [];
-
       if (this.config.contractAccount) {
         await this.readRecords(`/accounts/${encodeURIComponent(this.config.contractAccount)}/effects`);
       }
 
-      return streamIds.map(id => ({
+      return streamIds.map((id) => ({
         streamId: id,
         ledger: this.lastLedger,
         timestamp: new Date().toISOString(),
-        data: {
-          deposit: "0",
-          withdrawn: "0",
-          status: "Active" as const, // Placeholder
-        },
+        data: { deposit: "0", withdrawn: "0", status: "Active" satisfies StreamStatus },
       }));
-    } catch (err: unknown) {
+    } catch (error) {
       this.healthy = false;
-      console.warn(`Horizon reader error: ${err}`);
-      return []; // Return empty on error to allow Soroban data to dominate
+      console.warn(`Horizon reader error: ${String(error)}`);
+      return [];
     }
   }
 
-  /**
-   * Get historical effects for a specific stream from a ledger onwards.
-   */
+  /** Historical effects for one stream from a ledger onwards. */
   async getHistoricalData(_streamId: string, _fromLedger: number): Promise<StreamState[]> {
-    // TODO: Implement historical data fetching
     return [];
   }
 
-  /**
-   * Update internal state based on latest known ledger.
-   */
-  async updateLastLedger(): Promise<void> {
+  async updateLastLedger(): Promise<number> {
     try {
       const response = await this.http.get(`${this.config.url}/ledgers?limit=1&order=desc`);
-      if (
-        response.status === 200 &&
-        typeof response.data === "object" &&
-        response.data !== null &&
-        "_embedded" in response.data
-      ) {
-        const embedded = (response.data as { _embedded: unknown })._embedded;
-        if (
-          typeof embedded === "object" &&
-          embedded !== null &&
-          "records" in embedded &&
-          Array.isArray((embedded as { records: unknown }).records)
-        ) {
-          const records = (embedded as { records: unknown[] }).records;
-          const firstRecord = records[0];
-          if (
-            typeof firstRecord === "object" &&
-            firstRecord !== null &&
-            "sequence" in firstRecord
-          ) {
-            const ledger = (firstRecord as { sequence: unknown }).sequence;
-            if (typeof ledger === "number") {
-              this.lastLedger = ledger;
-              this.healthy = true;
-            }
-          }
-        }
+      const data = response.data as { _embedded?: { records?: Array<{ sequence?: number }> } };
+      const sequence = data?._embedded?.records?.[0]?.sequence;
+      if (response.status === 200 && typeof sequence === "number") {
+        this.lastLedger = sequence;
+        this.healthy = true;
       }
     } catch {
       this.healthy = false;
-      // Don't throw - ledger update is best-effort
     }
+    return this.lastLedger;
+  }
+
+  get latestKnownLedger(): number {
+    return this.lastLedger;
   }
 }
 
-// Re-export types for consumers
 export type { StreamState, HorizonStreamEffect } from "../types.js";

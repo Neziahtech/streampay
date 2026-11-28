@@ -1,10 +1,34 @@
 export interface WebhookEndpoint {
   id: string;
+  /** Owning tenant. `""` is the unscoped tenant a single-tenant deployment uses. */
+  tenant_id: string;
   url: string;
   secret: string;
   previous_secret?: string | null;
   events: string[];
   status: "active" | "disabled";
+  created_at: string;
+  updated_at: string;
+  /** Non-reversible handle for the current secret, safe to log and display. */
+  secret_fingerprint?: string;
+  previous_secret_fingerprint?: string | null;
+  /**
+   * Wall-clock ms after which `previous_secret` stops being offered as a
+   * verification key. Rotation is only zero-downtime while both keys sign; the
+   * expiry is what bounds that overlap instead of leaving it forever.
+   */
+  previous_secret_expires_at?: number | null;
+}
+
+/** A subscription as the registry hands it to a tenant: no secret material. */
+export interface WebhookSubscriptionView {
+  id: string;
+  tenant_id: string;
+  url: string;
+  events: string[];
+  status: "active" | "disabled";
+  secret_fingerprint: string;
+  rotation_expires_at: number | null;
   created_at: string;
   updated_at: string;
 }

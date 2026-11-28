@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { DecodedEvent } from "../types.js";
+import { ANALYTICS_DIRTY_LEDGER_KEY, ANALYTICS_DIRTY_REASON_KEY } from "../analytics/types.js";
 import type {
   OutboxConsumer,
   OutboxConsumerKind,
@@ -9,6 +10,7 @@ import type {
   OutboxReplayPage,
   OutboxStats,
   OutboxState,
+  JournalRow,
   RetractResult,
 } from "./types.js";
 
@@ -356,6 +358,13 @@ export class OutboxStore {
              AND event_seq IN (SELECT seq FROM outbox_events WHERE retracted_at IS NOT NULL)`
         )
         .run();
+      if (events.changes > 0) {
+        const markDirty = this.db.prepare(
+          "INSERT INTO analytics_counters(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+        );
+        markDirty.run(ANALYTICS_DIRTY_LEDGER_KEY, String(ledger));
+        markDirty.run(ANALYTICS_DIRTY_REASON_KEY, reason);
+      }
       return { events_retracted: events.changes, intents_retracted: intents.changes };
     })();
   }
@@ -407,6 +416,42 @@ export class OutboxStore {
       retracted_at: (row.retracted_at as string) ?? null,
       retract_reason: (row.retract_reason as string) ?? null,
     };
+  }
+
+  /**
+   * The whole journal, oldest first, retracted rows excluded — the feed a
+   * materialized consumer folds from its own cursor. `ledger_closed_at` comes
+   * from the event journal rather than `ingested_at`, because a projection that
+   * buckets by chain time must not drift with indexer wall clock.
+   */
+  journalAfterSeq(afterSeq: number, limit: number): JournalRow[] {
+    const rows = this.db
+      .prepare(
+        `SELECT o.seq, o.event_id, o.stream_id, o.name, o.ledger, o.ledger_cursor, o.payload,
+                COALESCE(e.ledger_closed_at, o.ingested_at) AS ledger_closed_at
+         FROM outbox_events o LEFT JOIN events e ON e.id = o.event_id
+         WHERE o.seq > ? AND o.retracted_at IS NULL
+         ORDER BY o.seq ASC LIMIT ?`
+      )
+      .all(afterSeq, limit) as Array<Record<string, unknown>>;
+    return rows.map((row) => ({
+      seq: Number(row.seq),
+      event_id: String(row.event_id),
+      stream_id: row.stream_id === null || row.stream_id === undefined ? null : String(row.stream_id),
+      name: String(row.name),
+      ledger: Number(row.ledger),
+      ledger_cursor: String(row.ledger_cursor),
+      ledger_closed_at: String(row.ledger_closed_at),
+      payload: this.parsePayload(row.payload),
+    }));
+  }
+
+  /** Highest journal row that has not been retracted. */
+  journalTip(): { seq: number; ledger: number } {
+    const row = this.db
+      .prepare("SELECT MAX(seq) AS seq, MAX(ledger) AS ledger FROM outbox_events WHERE retracted_at IS NULL")
+      .get() as { seq: number | null; ledger: number | null };
+    return { seq: row.seq ?? 0, ledger: row.ledger ?? 0 };
   }
 
   getIntent(id: number): OutboxIntent | undefined {

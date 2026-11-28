@@ -59,6 +59,8 @@
         "Dependency audit",
         "Tests",
         "Soak tests",
+        "Public verifier reproduces the committed publication",
+        "Reconciler dependency audit",
         "Check performance budgets (3-run median & bounds)",
         "Seeded regression defense test",
         "Lint runbook command freshness",

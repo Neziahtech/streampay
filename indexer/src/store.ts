@@ -5,8 +5,11 @@ import { EventEmitter } from "node:events";
 import type { DecodedEvent, Stream } from "./types.js";
 import { EVENT_KEYS } from "./generated/events.js";
 import { WebhookStore } from "./webhooks/store.js";
+import type { SecretCipher } from "./webhooks/secrets.js";
 import { OutboxStore, newOutboxEventFromDecoded } from "./outbox/store.js";
 import { WasmPluginRegistry } from "./wasm/registry.js";
+import { AnomalyStore } from "./anomaly/store.js";
+import { AnalyticsStore, type AnalyticsOptions } from "./analytics/store.js";
 import { globalIndexerTracer, traceCorrelationRegistry } from "./telemetry.js";
 
 export interface IngestSummary {
@@ -20,14 +23,27 @@ export interface IngestSummary {
   projectionSkips: number;
 }
 
+export interface StreamStoreOptions {
+  /**
+   * Seals webhook signing secrets at rest. Unset keeps the historical
+   * plaintext columns, so a deployment that has not provisioned
+   * `WEBHOOK_SECRET_ENCRYPTION_KEY` still opens its existing database.
+   */
+  webhookCipher?: SecretCipher | null;
+  /** Materialized analytics tuning; the views exist either way. */
+  analytics?: AnalyticsOptions;
+}
+
 export class StreamStore extends EventEmitter {
   readonly db: Database.Database;
   readonly webhooks: WebhookStore;
   readonly outbox: OutboxStore;
   /** WASM plugin registry (#580): content-addressed plugins + per-tenant approvals. */
   readonly wasm: WasmPluginRegistry;
+  readonly anomaly: AnomalyStore;
+  readonly analytics: AnalyticsStore;
 
-  constructor(path: string) {
+  constructor(path: string, options: StreamStoreOptions = {}) {
     super();
     if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
     this.db = new Database(path);
@@ -67,9 +83,11 @@ export class StreamStore extends EventEmitter {
     try {
       this.db.exec("ALTER TABLE streams ADD COLUMN refund_target TEXT;");
     } catch {}
-    this.webhooks = new WebhookStore(this.db);
+    this.webhooks = new WebhookStore(this.db, { cipher: options.webhookCipher ?? null });
     this.outbox = new OutboxStore(this.db);
     this.wasm = new WasmPluginRegistry(this.db);
+    this.anomaly = new AnomalyStore(this.db);
+    this.analytics = new AnalyticsStore(this.db, this.outbox, options.analytics ?? {});
     this.allowNullStreamId();
   }
 
@@ -534,6 +552,53 @@ export class StreamStore extends EventEmitter {
     }
 
     return results;
+  }
+
+  /**
+   * The event journal inside a ledger range, oldest first, in the shape the
+   * anomaly rules read. Replay and hydration both go through here, so a cited
+   * range is verified against the same rows that produced the alert — including
+   * the `rowid` tiebreak, which makes the order total even when several events
+   * share a ledger.
+   */
+  eventsForAnomaly(
+    fromLedger: number,
+    toLedger: number,
+    limit: number
+  ): { events: Array<{ id: string; name: string; ledger: number; ledgerClosedAt: string; streamId: string | null; data: Record<string, unknown> }>; truncated: boolean } {
+    const rows = this.db
+      .prepare(
+        `SELECT id, name, ledger, ledger_closed_at, stream_id, payload FROM events
+         WHERE ledger >= ? AND ledger <= ? ORDER BY ledger ASC, rowid ASC LIMIT ?`
+      )
+      .all(fromLedger, toLedger, limit) as Array<{
+      id: string;
+      name: string;
+      ledger: number;
+      ledger_closed_at: string;
+      stream_id: string | null;
+      payload: string;
+    }>;
+
+    const truncated = rows.length === limit;
+    return {
+      events: rows.slice(0, truncated ? limit - 1 : limit).map((row) => {
+        let data: Record<string, unknown> = {};
+        try {
+          const parsed = JSON.parse(row.payload);
+          if (parsed !== null && typeof parsed === "object") data = parsed as Record<string, unknown>;
+        } catch {}
+        return {
+          id: row.id,
+          name: row.name,
+          ledger: Number(row.ledger),
+          ledgerClosedAt: row.ledger_closed_at,
+          streamId: row.stream_id,
+          data,
+        };
+      }),
+      truncated,
+    };
   }
 
   private toStream(row: Record<string, unknown>): Stream {

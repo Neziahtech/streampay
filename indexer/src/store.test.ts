@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import Database from "better-sqlite3";
+import { ANALYTICS_HISTORY_KEY, ANALYTICS_HISTORY_START_LEDGER_KEY, ANALYTICS_HISTORY_VERSION } from "./analytics/types.js";
 import { StreamStore } from "./store.js";
 import type { DecodedEvent } from "./types.js";
 
@@ -113,6 +114,7 @@ test("a database built with the old NOT NULL stream_id is migrated in place", ()
         attempts_count INTEGER NOT NULL, last_error TEXT NOT NULL, last_status_code INTEGER,
         created_at TEXT NOT NULL, replayed_at TEXT);
       CREATE INDEX idx_dlq_endpoint ON webhook_dead_letter(endpoint_id);
+      CREATE TABLE analytics_counters (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     `);
     legacy
       .prepare("INSERT INTO events (id, stream_id, name, ledger, ledger_closed_at, payload) VALUES (?,?,?,?,?,?)")
@@ -126,6 +128,9 @@ test("a database built with the old NOT NULL stream_id is migrated in place", ()
     legacy
       .prepare("INSERT INTO webhook_dead_letter (id, delivery_id, endpoint_id, event_id, stream_id, event_type, payload, attempts_count, last_error, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
       .run("dlq-old", "del-old", "wh_1", "old-1", "7", "withdrawn", "{}", 6, "endpoint down", "2026-01-01T00:00:00Z");
+    // This fixture tests constraint migration, not incomplete-history refusal.
+    legacy.prepare("INSERT INTO analytics_counters(key,value) VALUES(?,?)").run(ANALYTICS_HISTORY_KEY, ANALYTICS_HISTORY_VERSION);
+    legacy.prepare("INSERT INTO analytics_counters(key,value) VALUES(?,?)").run(ANALYTICS_HISTORY_START_LEDGER_KEY, "1");
     legacy.close();
 
     store = new StreamStore(path);

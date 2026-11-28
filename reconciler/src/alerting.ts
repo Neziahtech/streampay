@@ -1,27 +1,23 @@
-//! Structured logging and webhook dispatch for the dual-read reconciliation service.
+//! Structured logging and webhook dispatch for the dual-read reconciliation
+//! service.
 
-import { createHttpAgent } from "./http.js";
-import type { DivergenceRecord, WebhookPayload } from "./types.js";
+import { createHttpAgent, type HttpAgent } from "./http.js";
+import type { AlertingConfig, DivergenceRecord, WebhookPayload } from "./types.js";
+
+export type { AlertingConfig };
 
 /**
  * Alert de-duplication and flap suppression knobs.
  *
  * A divergence is only paged once it has been observed in `confirmPasses`
- * consecutive reconciliation passes, so a value that oscillates around the
- * tolerance boundary (present, clean, present, clean...) never reaches the
- * threshold and never alerts. Once open, it alerts once and then only repeats
- * on the `reminderCadenceMs` cadence. It resolves — and its state is dropped —
- * after `resolvePasses` consecutive clean passes, so a divergence that comes
- * back afterwards is a fresh alert rather than a suppressed duplicate.
+ * consecutive reconciliation passes. Once open, it alerts once and then only
+ * repeats on the `reminderCadenceMs` cadence. It resolves after `resolvePasses`
+ * consecutive clean passes.
  */
 export interface AlertDedupeConfig {
-  /** Consecutive passes a divergence must be seen in before the first alert. */
   confirmPasses: number;
-  /** Consecutive clean passes before an open divergence resolves. */
   resolvePasses: number;
-  /** How often an open divergence re-alerts. 0 disables reminders. */
   reminderCadenceMs: number;
-  /** Clock override for tests. */
   now: () => number;
 }
 
@@ -57,10 +53,7 @@ export const DEFAULT_ALERT_DEDUPE: Omit<AlertDedupeConfig, "now"> = {
   reminderCadenceMs: 30 * 60_000,
 };
 
-/**
- * Identity of one open divergence: a stream and the check that diverged. A
- * classification change is a different divergence, so it opens its own alert.
- */
+/** Identity of one open divergence: a stream, check and classification. */
 export function divergenceAlertKey(
   d: Pick<DivergenceRecord, "streamId" | "checkType" | "classification">
 ): string {
@@ -86,13 +79,7 @@ function positiveInt(value: number | undefined, fallback: number): number {
   return Math.max(1, Math.floor(value));
 }
 
-/**
- * Per-key alert state machine driven by explicit reconciliation passes.
- *
- * Call `beginPass()` once per cycle, `observe()` for every divergence found in
- * that cycle (webhook dispatch does it), and `endPass()` when the cycle ends so
- * keys that were not observed count as clean passes.
- */
+/** Per-key alert state machine driven by explicit reconciliation passes. */
 export class DivergenceAlertDedupe {
   private confirmPasses: number;
   private resolvePasses: number;
@@ -112,7 +99,7 @@ export class DivergenceAlertDedupe {
     this.now = options.now ?? (() => Date.now());
   }
 
-  /** Open a new reconciliation pass. A pass left open is closed first. */
+  /** Open a reconciliation pass. A pass left open is closed first. */
   beginPass(): number {
     if (this.passOpen) this.endPass();
     this.passOpen = true;
@@ -120,10 +107,7 @@ export class DivergenceAlertDedupe {
     return this.pass;
   }
 
-  /**
-   * Close the current pass and age every key that was not observed in it.
-   * Returns the keys that resolved on this pass.
-   */
+  /** Close the current pass and age every key that was not observed in it. */
   endPass(): string[] {
     const resolved: string[] = [];
     for (const [key, entry] of this.entries) {
@@ -156,7 +140,6 @@ export class DivergenceAlertDedupe {
         cleanStreak: 0,
         open: false,
         openSince: null,
-        // A new entry has not been observed yet in this pass.
         lastSeenPass: this.pass - 1,
         lastAlertAt: null,
         alerts: 0,
@@ -164,8 +147,6 @@ export class DivergenceAlertDedupe {
       this.entries.set(key, entry);
     }
 
-    // One observation per key per pass: a duplicate inside one cycle must not
-    // count as the second consecutive pass.
     if (entry.lastSeenPass !== this.pass) {
       entry.lastSeenPass = this.pass;
       entry.presentStreak += 1;
@@ -231,7 +212,6 @@ export class DivergenceAlertDedupe {
     };
   }
 
-  /** Currently open divergences, in insertion order. */
   openDivergences(): OpenDivergenceState[] {
     const open: OpenDivergenceState[] = [];
     for (const entry of this.entries.values()) {
@@ -249,7 +229,6 @@ export class DivergenceAlertDedupe {
     return open;
   }
 
-  /** All tracked keys, open or still awaiting confirmation. */
   size(): number {
     return this.entries.size;
   }
@@ -259,16 +238,6 @@ export class DivergenceAlertDedupe {
     this.pass = 0;
     this.passOpen = false;
   }
-}
-
-export interface AlertingConfig {
-  webhookUrl?: string;
-  consistencyWindowMs: number;
-  logLevel: "DEBUG" | "INFO" | "WARN" | "ERROR";
-  serviceName: string;
-  environment: string;
-  reconcilerId: string;
-  dedupe?: Partial<AlertDedupeConfig>;
 }
 
 export interface WebhookDispatchResult {
@@ -289,11 +258,18 @@ export interface ReconcilerAlertingMetrics {
   alertsSuppressedPendingCount: number;
 }
 
+const LEVEL_ORDER: Record<AlertingConfig["logLevel"], number> = {
+  DEBUG: 0,
+  INFO: 1,
+  WARN: 2,
+  ERROR: 3,
+};
+
 export class AlertingService {
-  private config: AlertingConfig;
-  private webhookUrl?: string;
-  private httpAgent = createHttpAgent();
-  private dedupe: DivergenceAlertDedupe;
+  private readonly config: AlertingConfig;
+  private readonly webhookUrl?: string;
+  private readonly http: HttpAgent;
+  private readonly dedupe: DivergenceAlertDedupe;
   private metrics: ReconcilerAlertingMetrics = {
     roundingWithinToleranceCount: 0,
     realDivergenceCount: 0,
@@ -305,33 +281,26 @@ export class AlertingService {
     alertsSuppressedPendingCount: 0,
   };
 
-  constructor(config: AlertingConfig) {
+  constructor(config: AlertingConfig, http: HttpAgent = createHttpAgent()) {
     this.config = config;
     this.webhookUrl = config.webhookUrl;
+    this.http = http;
     this.dedupe = new DivergenceAlertDedupe(config.dedupe);
   }
 
-  /**
-   * Open a reconciliation pass. Every cycle must call this before dispatching
-   * the divergences it found, then `endPass()` once the cycle is done.
-   */
   beginPass(): void {
     this.dedupe.beginPass();
   }
 
-  /** Close the pass; keys unseen this cycle age towards resolution. */
   endPass(): string[] {
     return this.dedupe.endPass();
   }
 
-  /** Open divergences currently tracked by the de-duplicator. */
   getOpenDivergences(): OpenDivergenceState[] {
     return this.dedupe.openDivergences();
   }
 
-  /**
-   * Record a rounding within epsilon event in metrics without paging/webhook dispatch.
-   */
+  /** Record rounding within epsilon in metrics without paging. */
   recordRounding(d: DivergenceRecord): void {
     this.metrics.roundingWithinToleranceCount++;
     this.log("INFO", `Rounding tolerance within epsilon detected for stream ${d.streamId}`, {
@@ -343,16 +312,10 @@ export class AlertingService {
     });
   }
 
-  /**
-   * Get current metrics snapshot.
-   */
   getMetrics(): ReconcilerAlertingMetrics {
     return { ...this.metrics };
   }
 
-  /**
-   * Reset metrics counters (useful between test runs or audit cycles).
-   */
   resetMetrics(): void {
     this.metrics = {
       roundingWithinToleranceCount: 0,
@@ -366,10 +329,8 @@ export class AlertingService {
     };
   }
 
-  /**
-   * Emit a structured JSON log entry.
-   */
-  log(level: "DEBUG" | "INFO" | "WARN" | "ERROR", message: string, details: Record<string, unknown> = {}): void {
+  /** Emit a structured JSON log entry to stderr for log collection. */
+  log(level: AlertingConfig["logLevel"], message: string, details: Record<string, unknown> = {}): void {
     if (!this.shouldLog(level)) return;
 
     const entry = {
@@ -379,21 +340,13 @@ export class AlertingService {
       message,
       details,
     };
-
-    // Write to stderr for log collection (e.g., docker logs)
-    process.stderr.write(JSON.stringify(entry) + "\n");
+    process.stderr.write(`${JSON.stringify(entry)}\n`);
   }
 
-  /**
-   * Dispatch a divergence alert to the webhook target.
-   * Only pages on real divergences (suppresses webhooks for rounding within epsilon),
-   * once per open divergence, after it has persisted across the configured
-   * confirmation passes, and re-pages only on the reminder cadence.
-   */
+  /** Dispatch a real divergence, subject to confirmation and reminder policy. */
   async dispatchWebhook(d: DivergenceRecord): Promise<WebhookDispatchResult> {
     const start = Date.now();
 
-    // Guard: Suppress paging/webhook dispatch for rounding within tolerance epsilon
     if (d.classification === "rounding_within_epsilon") {
       this.recordRounding(d);
       return {
@@ -457,11 +410,9 @@ export class AlertingService {
     }
 
     try {
-      const response = await this.httpAgent.post(this.webhookUrl, payloadStr, {
-        "Content-Type": "application/json",
+      const response = await this.http.post(this.webhookUrl, payload, {
         "User-Agent": `streampay-reconciler/${this.config.reconcilerId}`,
       });
-
       const success = response.status >= 200 && response.status < 300;
       if (success) {
         this.metrics.webhooksDispatchedCount++;
@@ -476,11 +427,11 @@ export class AlertingService {
       });
 
       let responseMessage: string | undefined;
-      if (typeof response.data === "object" && response.data !== null && "message" in response.data) {
+      if (typeof response.data === "string") {
+        responseMessage = response.data;
+      } else if (typeof response.data === "object" && response.data !== null && "message" in response.data) {
         const msg = (response.data as { message: unknown }).message;
-        if (typeof msg === "string") {
-          responseMessage = msg;
-        }
+        if (typeof msg === "string") responseMessage = msg;
       }
 
       return {
@@ -497,14 +448,11 @@ export class AlertingService {
         streamId: d.streamId,
         error: message,
       });
-
       return { success: false, message, durationMs: Date.now() - start };
     }
   }
 
-  /**
-   * Dispatch a three-way diagnosis with its layer attribution and evidence.
-   */
+  /** Dispatch a three-way diagnosis with layer attribution and evidence. */
   async dispatchDiagnosis(
     diagnosis: {
       recordId?: string;
@@ -555,8 +503,7 @@ export class AlertingService {
     }
 
     try {
-      const response = await this.httpAgent.post(this.webhookUrl, JSON.stringify(payload), {
-        "Content-Type": "application/json",
+      const response = await this.http.post(this.webhookUrl, payload, {
         "User-Agent": `streampay-reconciler/${this.config.reconcilerId}`,
       });
       const success = response.status >= 200 && response.status < 300;
@@ -574,22 +521,19 @@ export class AlertingService {
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       this.log("WARN", `Diagnosis webhook failed: ${message}`, {
-        recordId: diagnosis.recordId,
         durationMs: Date.now() - start,
+        recordId: diagnosis.recordId,
+        suspectedLayer: diagnosis.suspectedLayer,
       });
       return { success: false, message, durationMs: Date.now() - start };
     }
   }
 
-  /**
-   * Build a structured webhook payload for the indexer dashboard.
-   * The alert envelope is frozen: consumers only depend on `alert.*` and
-   * `metadata.*`, so de-duplication never changes the payload shape.
-   */
-  private buildWebhookPayload(d: DivergenceRecord): WebhookPayload {
+  /** Build the stable webhook envelope, including audit provenance when present. */
+  buildWebhookPayload(d: DivergenceRecord): WebhookPayload {
     return {
       alert: {
-        type: "stream_divergence",
+        type: d.auditKind === undefined ? "stream_divergence" : "state_root_divergence",
         severity: d.severity,
         timestamp: d.detectedAt,
         source: "reconciler",
@@ -603,6 +547,7 @@ export class AlertingService {
           sorobanState: d.onChainValue,
           lagMs: d.horizonLagMs ?? d.sorobanLagMs ?? 0,
           consequence: d.checkType === "missing_record" ? "index_corruption" : "balance_mismatch",
+          ...(d.auditKind === undefined ? {} : { audit_kind: d.auditKind, audit_key: d.auditKey }),
         },
       },
       metadata: {
@@ -613,8 +558,7 @@ export class AlertingService {
     };
   }
 
-  private shouldLog(level: "DEBUG" | "INFO" | "WARN" | "ERROR"): boolean {
-    const order: Record<string, number> = { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 };
-    return order[level] >= order[this.config.logLevel];
+  private shouldLog(level: AlertingConfig["logLevel"]): boolean {
+    return LEVEL_ORDER[level] >= LEVEL_ORDER[this.config.logLevel];
   }
 }

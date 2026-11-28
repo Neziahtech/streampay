@@ -39,6 +39,13 @@ always present, so a consumer can branch on it without guessing.
 - `stream_cancelled`: Stream closed with pro-rata split between recipient and sender.
 - `stream_paused` / `stream_resumed`: Stream state toggled.
 - `stream_ping`: Test fire ping emitted from dashboard.
+- `anomaly_alert`: Heuristic fraud detection raised or resolved for *your*
+  tenant ([#582](https://github.com/Neziahtech/streampay/issues/582),
+  [docs/ANOMALY.md](ANOMALY.md)). Reserved name with no schema entry, because
+  the indexer originates it rather than the contract; its `data` is the redacted
+  alert view (8-character address prefixes, no amounts) and it is queued only to
+  the tenant the detection belongs to — a `*` subscription belonging to someone
+  else never hears about it.
 
 ---
 
@@ -80,6 +87,13 @@ When a secret is rotated in the dashboard or API, StreamPay provides an overlap 
 Streampay-Signature: t=1729180800,v1=new_signature_hex,v1=previous_signature_hex
 ```
 The receiving service can verify against either its old or new secret, allowing seamless rollover with zero dropped events.
+
+The overlap is bounded: `previous_secret` is kept on the row with an expiry
+(`WEBHOOK_SECRET_ROTATION_OVERLAP_MS`, default 24h), the dispatcher offers both
+signatures only while that expiry is in the future, and the dispatch loop retires
+expired overlaps on every tick (`POST /api/webhooks/rotations/expire` runs the same
+sweep on demand). Rotation history is stored by fingerprint only, so an operator can
+see *that* a key changed and *when* without the trail carrying key material.
 
 ---
 
@@ -269,6 +283,15 @@ Disallowed IP ranges and hostnames are immediately dropped:
 - **Link-Local & Cloud Metadata**: `169.254.0.0/16`, `169.254.169.254`, `metadata.google.internal`, `fe80::/10`
 - **Carrier NAT & Reserved**: `100.64.0.0/10`, `224.0.0.0/4`, `240.0.0.0/4`, `0.0.0.0/8`
 
+The check runs twice. **At subscribe time** a rejected destination never becomes a
+row: `POST /api/webhooks/endpoints` and `PATCH /api/webhooks/endpoints/:id` answer
+`400` with `code: "ssrf_rejected"` and the store keeps nothing. **At delivery time**
+the guard re-runs on every redirect hop, so a public endpoint that 302s to
+`169.254.169.254` is still blocked. Encoding variants (decimal/octal/hex integers,
+class-shorthand IPv4, IPv4-mapped and 6to4 IPv6, multi-record DNS rebinding) are
+covered by the fixture catalog in `indexer/src/webhooks/ssrf-fixtures.ts`, which the
+subscription tests replay vector by vector.
+
 ---
 
 ## 5. Retry Policy & Jitter
@@ -295,3 +318,69 @@ After attempt 5 fails, the delivery transitions to `dead_letter` and an entry is
 ### Observability API
 - `GET /api/webhooks/dlq`: Returns dead-letter items including failure error and status codes.
 - `POST /api/webhooks/dlq/:id/retry`: Replays the event, creating a fresh delivery with attempt 1.
+
+---
+
+## 7. Shared Subscriptions, Tenant Isolation and Delivery SLA
+
+One indexer fronts many integrators. The subscription registry
+(`indexer/src/webhooks/registry.ts`) sits over the existing store, dispatcher, HMAC,
+SSRF guard, retry schedule and DLQ — it does not replace them — and adds an identity,
+a quota and a measured commitment to each.
+
+### 7.1 Credentials
+`WEBHOOK_TENANT_KEYS` is a comma-separated list of `tenantId:keyId:secret` triples,
+e.g. `acme:k1:stdp_whk_1a2b…,globex:k2:stdp_whk_9f8e…`. A request presents its key in
+`x-streampay-webhook-key` (or `Authorization: Bearer …`). The directory keeps only the
+SHA-256 digest of each key, so a copied database or a heap dump cannot hand back a
+usable credential. A deployment that configures no keys keeps the historical
+single-tenant behaviour and trusts the transport; a deployment that configures keys
+answers `401 {"code":"unauthenticated"}` for every missing or unknown key.
+`WEBHOOK_DEFAULT_TENANT_ID` names the tenant used when no directory is configured.
+
+### 7.2 Isolation
+The tenant is taken from the credential, never from the request body. Every route is
+scoped: `list`, `get`, `update`, `delete`, `rotate-secret`, `rotations`, `deliveries`,
+`dlq` and `dlq/:id/retry` operate on the caller's own rows. A foreign subscription id
+answers `404 not_found` rather than `403` — confirming existence would turn the API
+into an enumeration oracle. Cross-tenant dead-letter replay is refused the same way.
+
+### 7.3 Quotas
+Per tenant, with deployment-wide defaults that a tenant may not raise itself:
+
+| Env var | Default | Means |
+|---|---|---|
+| `WEBHOOK_TENANT_QUOTA_SUBSCRIPTIONS` | 20 | subscriptions a tenant may hold |
+| `WEBHOOK_TENANT_QUOTA_EVENTS` | 24 | event names one subscription may select |
+| `WEBHOOK_TENANT_QUOTA_ROTATIONS` | 6 | secret rotations per rolling hour, per subscription |
+
+Over quota answers `403 quota_subscriptions` / `403 quota_events`, and
+`429 quota_rotations` with `details.retry_after_ms`. `GET /api/webhooks/quota` reports
+`{ maxSubscriptions, used }`.
+
+### 7.4 Secrets at rest
+Signing secrets are sealed with AES-256-GCM under `WEBHOOK_SECRET_ENCRYPTION_KEY`
+(64 hex characters, or any passphrase run through SHA-256) and stored as
+`spwsec:v1:<iv>.<tag>.<ciphertext>`. The additional authenticated data binds the
+envelope to its own `tenant=<id>;endpoint=<id>` pair, so copying another subscriber's
+ciphertext into a row fails the tag check instead of disclosing their secret.
+Rows written before encryption was enabled are plaintext and still read back — turning
+the key on is zero-downtime and rewrites nothing until a subscription rotates. Set
+`WEBHOOK_REQUIRE_ENCRYPTION=1` to refuse plaintext storage outright: creations answer
+`503 encryption_required` until the key is configured.
+
+### 7.5 What leaves the process
+Nothing that can be replayed. The signing secret appears exactly once, in the `201`
+body of the create call and in a rotation response. Every other read carries
+`secret_fingerprint` (`sha256:<16 hex>`) instead. Audit lines run through
+`sanitizeWebhookUrl`, so a destination is recorded as `https://hooks.example.com/***`
+with its path and query gone; error payloads are `sanitizeError`-cleaned.
+
+### 7.6 Delivery SLA
+Each attempt is measured against `WEBHOOK_SLA_MS` (default 5000) and kept in a sliding
+window. A tenant is in breach when its window is at least `WEBHOOK_SLA_MIN_SAMPLES`
+deep and more than `WEBHOOK_SLA_BREACH_BUDGET` (default 0.01) of attempts missed the
+objective — one slow delivery is an incident, a sustained rate is an alarm. The numbers
+are exposed as `streampay_webhook_*` series on `/metrics` and per tenant through
+`GET /api/webhooks/sla`; `infra/observability/prometheus/rules/alerts.yml` alerts on
+`streampay_webhook_sla_breach_alarm` and the per-tenant gauge.

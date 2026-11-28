@@ -137,31 +137,79 @@ pub const DECAY_WINDOW_SECONDS: u64 = 180 * 24 * 60 * 60;
 /// qualifying completions in the overwhelming majority of histories.
 pub const MAX_DERIVATION_SCAN: u32 = 256;
 
-/// Accumulated reputation counters for one address.
-///
-/// Field order and names are the storage wire format for the *stored*
-/// record; only append fields. What [`get_record`] returns is a merge: the
-/// stored record carries the dispute counters plus the completion
-/// contributions archived by `sweep_stream`, and the completion counters
-/// of streams that still exist are derived live and added in (see the
-/// module's Cost section). Counters are aggregates, never a history list.
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " Accumulated reputation counters for one address."
+)]
+#[cfg_attr(not(target_family = "wasm"), doc = "")]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " Field order and names are the storage wire format for the *stored*"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " record; only append fields. What [`get_record`] returns is a merge: the"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " stored record carries the dispute counters plus the completion"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " contributions archived by `sweep_stream`, and the completion counters"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " of streams that still exist are derived live and added in (see the"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " module's Cost section). Counters are aggregates, never a history list."
+)]
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReputationRecord {
-    /// Streams that ran to full settlement with this address as a party.
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Streams that ran to full settlement with this address as a party."
+    )]
     pub completed_streams: u32,
-    /// Completed streams this address funded that had been topped up at
-    /// least once before settling (sender-side refill reliability).
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Completed streams this address funded that had been topped up at"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " least once before settling (sender-side refill reliability)."
+    )]
     pub refilled_completions: u32,
-    /// Disputes resolved in this address's favour.
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Disputes resolved in this address's favour."
+    )]
     pub disputes_won: u32,
-    /// Disputes resolved against this address.
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Disputes resolved against this address."
+    )]
     pub disputes_lost: u32,
-    /// Total value settled across this address's completed streams.
-    /// Informational (auditing/integrator display); never scored directly,
-    /// so inflating stream sizes cannot inflate the score.
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Total value settled across this address's completed streams."
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Informational (auditing/integrator display); never scored directly,"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " so inflating stream sizes cannot inflate the score."
+    )]
     pub settled_total: i128,
-    /// Ledger timestamp of the last scored outcome. Drives decay.
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Ledger timestamp of the last scored outcome. Drives decay."
+    )]
     pub last_activity: u64,
 }
 
@@ -178,30 +226,63 @@ impl ReputationRecord {
     }
 }
 
-/// What the integrator-facing read returns: the merged counters plus the
-/// score as of the current ledger time (raw and decayed).
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " What the integrator-facing read returns: the merged counters plus the"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " score as of the current ledger time (raw and decayed)."
+)]
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReputationView {
     pub record: ReputationRecord,
-    /// Score before inactivity decay.
+    #[cfg_attr(not(target_family = "wasm"), doc = " Score before inactivity decay.")]
     pub raw_score: u32,
-    /// Score after inactivity decay at the current ledger timestamp. This
-    /// is the value access gates should use.
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Score after inactivity decay at the current ledger timestamp. This"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " is the value access gates should use."
+    )]
     pub score: u32,
 }
 
-/// Storage keys for reputation state, kept separate from the stream keys
-/// so existing stream serialization never changes.
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " Storage keys for reputation state, kept separate from the stream keys"
+)]
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = " so existing stream serialization never changes."
+)]
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReputationDataKey {
-    /// The stored reputation record of the given address (persistent):
-    /// dispute counters plus sweep-archived completion contributions.
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " The stored reputation record of the given address (persistent):"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " dispute counters plus sweep-archived completion contributions."
+    )]
     Record(Address),
-    /// Marker that a stream has been topped up at least once (instance
-    /// storage). Unscored on its own; consulted by completion derivation
-    /// and archival, and removed when the stream is swept.
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " Marker that a stream has been topped up at least once (instance"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " storage). Unscored on its own; consulted by completion derivation"
+    )]
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        doc = " and archival, and removed when the stream is swept."
+    )]
     StreamRefills(u64),
 }
 

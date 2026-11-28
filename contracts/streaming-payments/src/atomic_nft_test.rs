@@ -9,8 +9,7 @@
 #![cfg(test)]
 
 use soroban_sdk::{
-    contract, contractclient, contracterror, contractimpl, contracttype,
-    testutils::{Address as _, Events as _},
+    contract, contractclient, contracterror, contractimpl, contracttype, testutils::Events as _,
     Address, Env, Event as _, IntoVal, InvokeError, Symbol, Val, Vec as SdkVec,
 };
 
@@ -132,6 +131,7 @@ impl MockNft {
 }
 
 #[contractclient(name = "MockNftTestClient")]
+#[allow(dead_code)]
 pub trait MockNftApi {
     fn stream_id(env: Env) -> u64;
     fn mint_linked(env: Env, recipient: Address, stream_id: u64) -> Result<(), MockNftError>;

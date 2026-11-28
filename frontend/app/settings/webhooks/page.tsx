@@ -8,11 +8,16 @@ import { useToast } from "@/components/toast";
 interface WebhookEndpoint {
   id: string;
   url: string;
-  secret: string;
+  /** Only ever present on the response that mints or rotates it. */
+  secret?: string;
+  /** What every other read carries instead of the secret. */
+  secret_fingerprint?: string;
   previous_secret?: string | null;
+  tenant_id?: string;
   events: string[];
   status: "active" | "disabled";
   created_at: string;
+  updated_at?: string;
 }
 
 interface WebhookDelivery {

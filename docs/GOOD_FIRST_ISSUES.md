@@ -110,10 +110,10 @@ negative deposits and zero duration — the function must return `Ok(0)` or
 
 `create_streams(sender, inputs: Vec<StreamInput>)` creates a complete batch
 atomically. It uses the same per-stream validation and fee rules as
-`create_stream`, groups token pulls and reserves ids in batches, and emits a
-single `StreamsCreated` event with the ids. A failure in any row rolls back
-the full transaction. The frontend payroll CSV form currently uses one token
-for all rows.
+`create_stream`, groups token pulls and reserves ids in batches, and emits one
+`StreamCreated` fact per stream plus a `StreamsCreated` summary with the ids.
+A failure in any row rolls back the full transaction. The frontend payroll CSV
+form currently uses one token for all rows.
 
 ---
 

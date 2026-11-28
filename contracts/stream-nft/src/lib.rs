@@ -348,7 +348,7 @@ impl StreamNft {
         if from != owner {
             return Err(NftError::NotAuthorized);
         }
-        if amount < 0 || amount > 1 {
+        if !(0..=1).contains(&amount) {
             return Err(NftError::InvalidAmount);
         }
 

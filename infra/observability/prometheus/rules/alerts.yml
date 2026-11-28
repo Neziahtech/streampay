@@ -211,3 +211,191 @@ groups:
           description: "{{ $value | printf \"%.0f\" }} deliveries to '{{ $labels.destination }}' dead-lettered in the last 15m. That endpoint exhausted its retry budget; replay from the DLQ via POST /api/webhooks/dlq/:id/retry."
           runbook_url: "docs/WEBHOOKS.md#dead-letter-queue"
           soak_justification: "Load/soak runs dead-letter zero intents for live endpoints; a sustained nonzero DLQ rate per destination is always a real consumer failure."
+
+  - name: streampay_webhook_alerts
+    rules:
+      - alert: IndexerWebhookSlaBreached
+        expr: streampay_webhook_sla_breach_alarm == 1
+        for: 5m
+        labels:
+          severity: warning
+          service: indexer
+          component: webhooks
+        annotations:
+          summary: "Webhook delivery attempts are missing the latency SLA"
+          description: "More than the configured breach budget of the sliding window of delivery attempts exceeded WEBHOOK_SLA_MS. Per-tenant state is on GET /api/webhooks/sla; the objective itself is streampay_webhook_sla_objective_seconds."
+          runbook_url: "docs/RUNBOOK.md#indexerwebhookslabreached"
+          soak_justification: "The gauge only engages once the window holds WEBHOOK_SLA_MIN_SAMPLES attempts, so a single slow consumer cannot page anyone; five minutes of it means a subscriber is durably outside the commitment it was sold."
+
+      - alert: IndexerWebhookTenantSlaBreached
+        expr: streampay_webhook_sla_breached_by_tenant == 1
+        for: 5m
+        labels:
+          severity: warning
+          service: indexer
+          component: webhooks
+        annotations:
+          summary: "Tenant {{ $labels.tenant_id }} is outside its webhook SLA budget"
+          description: "One tenant's delivery window, not the fleet's, is over budget. Name the subscriber in the incident, check their endpoint's p95 against WEBHOOK_SLA_MS, and replay anything that reached the DLQ via POST /api/webhooks/dlq/:id/retry."
+          runbook_url: "docs/RUNBOOK.md#indexerwebhooktenantslabreached"
+          soak_justification: "Per-tenant series exist because one degraded subscriber is an account problem, not an outage; alerting on the whole fleet for it buries the operator in noise."
+
+      - alert: IndexerWebhookSlaBreachedSustained
+        expr: streampay_webhook_sla_breach_alarm == 1
+        for: 20m
+        labels:
+          severity: critical
+          service: indexer
+          component: webhooks
+        annotations:
+          summary: "Webhook SLA breach has persisted for 20 minutes"
+          description: "The breach budget has been exceeded for 20 minutes, so retries are accruing against endpoints that are not recovering in their retry budget. Expect dead letters and stale subscriber state."
+          runbook_url: "docs/RUNBOOK.md#indexerwebhookslabreachedsustained"
+          soak_justification: "The retry schedule spans ~51 minutes, so a 20-minute breach is long enough that the first attempt cohort has failed all the way to attempt 3 — beyond a blip and inside an operator's response window."
+
+      - alert: IndexerWebhookBacklogAging
+        expr: streampay_webhook_oldest_pending_seconds > 300
+        for: 5m
+        labels:
+          severity: warning
+          service: indexer
+          component: webhooks
+        annotations:
+          summary: "The oldest pending webhook delivery is older than 5 minutes"
+          description: "A pending delivery has waited {{ $value | printf \"%.0f\" }}s, past its first retry. Either the dispatcher is starved or a subscriber is answering slowly enough to throttle the queue."
+          runbook_url: "docs/RUNBOOK.md#indexerwebhookbacklogaging"
+          soak_justification: "A healthy dispatch tick drains due deliveries in one pass, and the first retry is scheduled a minute out; five minutes of age means at least two attempts have already slipped."
+
+  - name: streampay_anomaly_alerts
+    rules:
+      - alert: IndexerAnomalyCriticalIncidentOpen
+        expr: increase(streampay_anomaly_detections_by_severity_total{severity="critical"}[10m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+          service: indexer
+          component: anomaly
+        annotations:
+          summary: "A critical anomaly rule detected a pattern on tenant {{ $labels.rule_id }}"
+          description: "A detection with severity critical was recorded in the last 10 minutes. Only `circular_flow` is critical today: streams created in both directions between the same pair of addresses. Read the citation, replay it with POST /api/anomaly/detections/:id/replay, and check the two accounts' streams before anything is escalated."
+          runbook_url: "docs/RUNBOOK.md#indexeranomalycriticalincidentopen"
+          soak_justification: "Critical rules are the ones that cannot be explained by ordinary volume, and a detection is written only once per subject per window, so a single sustained pattern contributes one increment rather than one per ledger close."
+
+      - alert: IndexerAnomalyReplayMismatch
+        expr: increase(streampay_anomaly_replay_total{outcome="mismatch"}[30m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          service: indexer
+          component: anomaly
+        annotations:
+          summary: "An anomaly alert no longer reproduces from its own citation"
+          description: "Someone replayed a detection and the cited ledger range produced different numbers than the alert claimed. That is an integrity problem, not a fraud problem: either the journal was rewritten, the rule evaluation changed without a version bump, or the metrics were computed from state the range does not hold. Stop paging on that rule until it is explained."
+          runbook_url: "docs/RUNBOOK.md#indexeranomalyreplaymismatch"
+          soak_justification: "Replay is only ever run deliberately, by an operator or a verifier checking a specific alert, so any mismatch is already a confirmed disagreement about a claim on record — there is no noise to soak out."
+
+      - alert: IndexerAnomalyRuleUnreliable
+        expr: increase(streampay_anomaly_feedback_total{label="false_positive"}[1d]) / clamp_min(increase(streampay_anomaly_feedback_total[1d]), 1) > 0.3
+        for: 6h
+        labels:
+          severity: warning
+          service: indexer
+          component: anomaly
+        annotations:
+          summary: "Rule {{ $labels.rule_id }} is being reviewed as wrong more than 30% of the time"
+          description: "Operators called nearly a third of this rule's reviews false positives over the last day. The per-tenant gate is stricter than this alert: GET /api/anomaly/promotion reports the measured rate against each rule's budget. Loosen the thresholds, scope the rule, or demote it back to shadow."
+          runbook_url: "docs/RUNBOOK.md#indexeranomalyruleunreliable"
+          soak_justification: "The ratio is measured over a day of reviews and must hold for six hours, so a single annoyed operator cannot turn it on; a rule that is genuinely mis-tuned will stay over the line."
+
+      - alert: IndexerAnomalySuppressionFlood
+        expr: increase(streampay_anomaly_suppressed_total[1h]) > 1000
+        for: 1h
+        labels:
+          severity: warning
+          service: indexer
+          component: anomaly
+        annotations:
+          summary: "Anomaly suppression is skipping {{ $value | printf \"%.0f\" }} evaluations an hour"
+          description: "A suppressed subject is still generating that much traffic, or a suppression was applied far too broadly. Suppression skips the evaluation, so a flood here means the rule is being fed noise rather than evidence — review GET /api/anomaly/incidents and clear what no longer applies."
+          runbook_url: "docs/RUNBOOK.md#indexeranomalysuppressionflood"
+          soak_justification: "One suppression per false-positive review is normal and small; a thousand skipped evaluations an hour means the suppressed set is doing real work, which only happens when the tuning or the suppression itself is wrong."
+
+  - name: streampay_analytics_alerts
+    rules:
+      - alert: IndexerAnalyticsStalenessBreach
+        expr: max by (view) (streampay_analytics_slo_breach) == 1
+        for: 5m
+        labels:
+          severity: warning
+          service: indexer
+          component: analytics
+        annotations:
+          summary: "Materialized analytics view {{ $labels.view }} is outside its freshness SLO"
+          description: "The view has exceeded ANALYTICS_SLO_MS or fallen more than one refresh batch behind the journal for five minutes. Gated clients may already be receiving 503 stale_view. Check journal lag, event-time age, refresh errors, and the configured throughput budget."
+          runbook_url: "docs/RUNBOOK.md#indexeranalyticsstalenessbreach"
+          soak_justification: "The SLO is a configured correctness boundary, not a traffic baseline. Requiring five minutes of continuous breach avoids paging on a single backfill batch or a quiet-chain timestamp artifact."
+
+      - alert: IndexerAnalyticsStalenessCritical
+        expr: streampay_analytics_slo_violation_seconds > 60
+        for: 5m
+        labels:
+          severity: critical
+          service: indexer
+          component: analytics
+        annotations:
+          summary: "Materialized analytics are more than 60 seconds beyond the freshness SLO"
+          description: "The worst view has missed its configured SLO by over one minute for five minutes. Portfolio reads are not safe to serve as current; inspect refresh failures and restore the writer before rebuilding."
+          runbook_url: "docs/RUNBOOK.md#indexeranalyticsstalenesscritical"
+          soak_justification: "A full minute beyond an already explicit SLO is sustained loss of consistency, not ordinary catch-up. The additional five-minute hold prevents a short reorg rebuild from becoming a page."
+
+      - alert: IndexerAnalyticsDirty
+        expr: streampay_analytics_dirty == 1
+        for: 2m
+        labels:
+          severity: critical
+          service: indexer
+          component: analytics
+        annotations:
+          summary: "Analytics remain dirty after a journal retraction"
+          description: "A reorg invalidated the materialized views and the automatic whole-journal rebuild has not completed for two minutes. Gated reads are blocked. Check ANALYTICS errors and the surviving journal, then trigger a rebuild once storage is healthy."
+          runbook_url: "docs/RUNBOOK.md#indexeranalyticsdirty"
+          soak_justification: "Normal recovery is one atomic rebuild on the next refresh tick. Two minutes means recovery is stuck, and continuing to serve the invalidated rows would be a correctness failure."
+
+      - alert: IndexerAnalyticsRefreshErrors
+        expr: increase(streampay_analytics_errors_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          service: indexer
+          component: analytics
+        annotations:
+          summary: "Analytics refresh recorded {{ $value | printf \"%.0f\" }} errors in five minutes"
+          description: "A refresh or rebuild failed. The last committed watermark remains valid for its fold position, but dirty views and unmet freshness gates must not be bypassed. Inspect GET /api/analytics/refresh/stats and the indexer log."
+          runbook_url: "docs/RUNBOOK.md#indexeranalyticsrefresherrors"
+          soak_justification: "Refresh transactions either commit completely or roll back; an error is actionable immediately and cannot be averaged away by healthy ticks."
+
+      - alert: IndexerAnalyticsThroughputShortfall
+        expr: streampay_analytics_lag_events > 0 and streampay_analytics_refresh_events_per_second < streampay_analytics_budget_events_per_second * 0.8
+        for: 10m
+        labels:
+          severity: warning
+          service: indexer
+          component: analytics
+        annotations:
+          summary: "Analytics refresh is not sustaining its configured throughput budget"
+          description: "The journal has outstanding rows while the latest batch sustained less than 80% of ANALYTICS_THROUGHPUT_BUDGET_EPS for ten minutes. Check SQLite write contention, batch size, and ingestion volume; persistent shortfall makes the SLO mathematically unreachable."
+          runbook_url: "docs/RUNBOOK.md#indexeranalyticsthroughputshortfall"
+          soak_justification: "The lag predicate excludes idle views. A ten-minute hold and 20% headroom distinguish sustained capacity shortfall from batch-size quantization and timer jitter."
+
+      - alert: IndexerAnalyticsGatedReadFailures
+        expr: sum(rate(streampay_analytics_read_gated_total{result="waited_out"}[10m])) / clamp_min(sum(rate(streampay_analytics_read_gated_total[10m])), 0.001) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          service: indexer
+          component: analytics
+        annotations:
+          summary: "More than 5% of freshness-gated analytics reads are timing out"
+          description: "Clients are failing to obtain a view at their requested ledger or lag within wait_ms. Correlate with SLO breach and refresh throughput; do not increase client waits or relax min_ledger without understanding the writer bottleneck."
+          runbook_url: "docs/RUNBOOK.md#indexeranalyticsgatedreadfailures"
+          soak_justification: "This measures user-visible consistency failures only, excludes ungated reads, and must persist for ten minutes so a single caller with an impossible min_ledger cannot page the fleet."

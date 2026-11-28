@@ -1,20 +1,28 @@
 {
   "name": "streampay-reconciler",
   "version": "1.0.0",
-  "description": "Three-way reconciliation across Soroban RPC, Horizon and the indexer projection, with governance-gated heal proposals",
+  "description": "Three-way reconciliation and continuous merkleized state audit across Soroban RPC, Horizon and the indexer projection, with governance-gated heal proposals",
   "type": "module",
   "engines": {
     "node": ">=20"
+  },
+  "main": "dist/index.js",
+  "bin": {
+    "streampay-reconciler-verify": "dist/audit/verifier.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/index.js",
+    "audit": "node dist/index.js audit --once",
+    "verify": "node dist/audit/verifier.js",
+    "verify:published": "node dist/audit/verifier.js --bundle testdata/audit-bundle.json --report testdata/audit-report.json --artifact testdata/audit-artifact.json",
+    "testdata": "node dist/tools/publish-testdata.js",
     "dev": "node --import=tsx src/index.ts",
     "pretest": "npm run build",
-    "test": "node --test tests/**/*.test.js",
+    "test": "node --test tests/*.test.js dist/audit/*.test.js dist/engine/*.test.js dist/index.test.js",
     "test:fixtures": "node --test tests/threeway.test.js tests/heal.test.js",
-    "soak": "node tests/soak-test.js"
+    "soak": "npm run build && node dist/tools/soak.js"
   },
   "dependencies": {
     "axios": "^1.7.0"

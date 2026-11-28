@@ -1,5 +1,7 @@
 //! Shared types for the dual-read reconciliation service.
 
+import type { AuditRecord } from "./audit/canonical.js";
+
 export type StreamStatus = "Active" | "Cancelled" | "Depleted" | "Paused";
 
 export interface StreamState {
@@ -51,6 +53,9 @@ export interface DivergenceRecord {
   detectedAt: string;
   delta?: string;
   toleranceEpsilon?: string;
+  /** Set when the divergence came from the merkleized audit. */
+  auditKey?: string;
+  auditKind?: "value" | "rounding" | "missing_onchain" | "missing_projected";
 }
 
 export interface ReconciliationResult {
@@ -69,9 +74,18 @@ export interface ReconciliationResult {
 }
 
 export interface AlertingConfig {
-  webhookUrl: string;
+  webhookUrl?: string;
   consistencyWindowMs: number;
   logLevel: "DEBUG" | "INFO" | "WARN" | "ERROR";
+  serviceName: string;
+  environment: string;
+  reconcilerId: string;
+  dedupe?: {
+    confirmPasses?: number;
+    resolvePasses?: number;
+    reminderCadenceMs?: number;
+    now?: () => number;
+  };
 }
 
 export interface WebhookPayload {
@@ -110,3 +124,5 @@ export interface ReconcilerConfig extends ReaderConfig {
   webhookUrl?: string;
   pollIntervalMs: number;
 }
+
+export type { AuditRecord };

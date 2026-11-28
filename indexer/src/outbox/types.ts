@@ -15,6 +15,22 @@ export interface OutboxEventRow {
   retract_reason: string | null;
 }
 
+/**
+ * One journal row as a materialized consumer reads it: `seq` is the fold
+ * position, and `ledger_closed_at` is chain time, so a projection that buckets
+ * by event time does not drift with the indexer's clock.
+ */
+export interface JournalRow {
+  seq: number;
+  event_id: string;
+  stream_id: string | null;
+  name: string;
+  ledger: number;
+  ledger_cursor: string;
+  ledger_closed_at: string;
+  payload: Record<string, unknown>;
+}
+
 export interface OutboxConsumer {
   id: string;
   kind: OutboxConsumerKind;

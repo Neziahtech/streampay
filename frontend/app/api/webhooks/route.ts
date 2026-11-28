@@ -2,6 +2,17 @@ import { NextResponse } from "next/server";
 
 const INDEXER_URL = process.env.INDEXER_URL || "http://localhost:8787";
 
+/**
+ * The dashboard is one subscriber talking to a shared indexer. When the
+ * deployment provisions tenant credentials, the BFF presents them; an indexer
+ * configured for a single tenant needs no key and behaves as it always did.
+ */
+const INDEXER_TENANT_KEY = process.env.INDEXER_WEBHOOK_TENANT_KEY || "";
+
+function indexerHeaders(headers: Record<string, string> = {}): Record<string, string> {
+  return INDEXER_TENANT_KEY === "" ? headers : { ...headers, "x-streampay-webhook-key": INDEXER_TENANT_KEY };
+}
+
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const type = searchParams.get("type") || "endpoints";
@@ -15,7 +26,7 @@ export async function GET(req: Request) {
 
   try {
     const res = await fetch(`${INDEXER_URL}${path}`, {
-      headers: { "Content-Type": "application/json" },
+      headers: indexerHeaders({ "Content-Type": "application/json" }),
       cache: "no-store",
     });
 
@@ -45,7 +56,7 @@ export async function POST(req: Request) {
       const { url, events } = body;
       const res = await fetch(`${INDEXER_URL}/api/webhooks/endpoints`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: indexerHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({ url, events }),
       });
       const data = await res.json();
@@ -56,7 +67,7 @@ export async function POST(req: Request) {
       const { id } = body;
       const res = await fetch(`${INDEXER_URL}/api/webhooks/endpoints/${id}/rotate-secret`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: indexerHeaders({ "Content-Type": "application/json" }),
       });
       const data = await res.json();
       return NextResponse.json(data, { status: res.status });
@@ -66,6 +77,7 @@ export async function POST(req: Request) {
       const { id } = body;
       const res = await fetch(`${INDEXER_URL}/api/webhooks/endpoints/${id}`, {
         method: "DELETE",
+        headers: indexerHeaders(),
       });
       const data = await res.json();
       return NextResponse.json(data, { status: res.status });
@@ -75,6 +87,7 @@ export async function POST(req: Request) {
       const { id } = body;
       const res = await fetch(`${INDEXER_URL}/api/webhooks/endpoints/${id}/test`, {
         method: "POST",
+        headers: indexerHeaders(),
       });
       const data = await res.json();
       return NextResponse.json(data, { status: res.status });
@@ -84,6 +97,7 @@ export async function POST(req: Request) {
       const { id } = body;
       const res = await fetch(`${INDEXER_URL}/api/webhooks/dlq/${id}/retry`, {
         method: "POST",
+        headers: indexerHeaders(),
       });
       const data = await res.json();
       return NextResponse.json(data, { status: res.status });

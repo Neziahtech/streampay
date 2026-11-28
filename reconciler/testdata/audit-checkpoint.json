@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "cycle": 1,
+  "last_audited_ledger": 421000,
+  "previous_roots": {
+    "onchain_raw": "5f18e792d18d05b1a5c90a3d74e381fe27aaf4187d7840dd227522f1b2789705",
+    "projected_raw": "0ecf94b8bd9ef18ac8e135c7cc0cb26d62524f0b1cc9a55f6219e005e94edf8d",
+    "onchain_quantized": "f72f2b7c4d7788e687d5598f4ac28c507100132f837226e03da8dab10856d61a",
+    "projected_quantized": "16eb0121be74d5115466f5b0233a756f7a970e7fb178828c706cf96e7c1d102f"
+  },
+  "last_fault_at_ms": 1795132800000,
+  "last_published_at_ms": 1795132800000,
+  "audits_run": 1,
+  "policy_digest": "bb44d613ce1734eb99542e3e28e2dbf4c2f1e7679b19cf5569d70b34dfe691b2",
+  "dedup": {
+    "flap_window_ms": 120000,
+    "renotify_after_ms": 0,
+    "keys": {
+      "00000000000000000003": {
+        "state": "faulted",
+        "sinceMs": 1795132800000,
+        "lastReportMs": 1795132800000,
+        "flips": 0,
+        "reported": true
+      },
+      "00000000000000000005": {
+        "state": "faulted",
+        "sinceMs": 1795132800000,
+        "lastReportMs": 1795132800000,
+        "flips": 0,
+        "reported": true
+      }
+    }
+  }
+}

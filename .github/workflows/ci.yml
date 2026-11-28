@@ -1118,6 +1118,17 @@ jobs:
         working-directory: reconciler
         run: npm run soak
 
+      # The publication committed under reconciler/testdata is re-derived from
+      # scratch here, so a change to the canonical encoding, the tree shape or
+      # the verdict rules cannot quietly make a published proof unverifiable.
+      - name: Public verifier reproduces the committed publication
+        working-directory: reconciler
+        run: npm run verify:published
+
+      - name: Reconciler dependency audit
+        working-directory: reconciler
+        run: npm audit --omit=dev --audit-level=high
+
       # ------------------------------------------------------------------
       # ttl-sentinel (was the `ttl-sentinel` check)
       # ------------------------------------------------------------------

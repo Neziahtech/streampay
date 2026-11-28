@@ -96,7 +96,7 @@ class IRParsingTest(unittest.TestCase):
         self.assertEqual(len(spec.constants), 41)
         self.assertEqual(
             spec.fingerprint,
-            "eb02ca36b622115b243ec7da48485e0415f6069bba7f934842af4ffde95e6f69",
+            "a8f57f714c63aef15611f45fae838ea739f7987260778d78dda41847cbb800bc",
         )
         self.assertIs(ir.parse_spec(spec), spec)
 

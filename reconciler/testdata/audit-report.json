@@ -1,0 +1,359 @@
+{
+  "version": 1,
+  "policy_digest": "bb44d613ce1734eb99542e3e28e2dbf4c2f1e7679b19cf5569d70b34dfe691b2",
+  "ledger": {
+    "onchain": 421000,
+    "projected": 421000
+  },
+  "counts": {
+    "onchain": 5,
+    "projected": 4,
+    "union": 5
+  },
+  "roots": {
+    "onchain_raw": "5f18e792d18d05b1a5c90a3d74e381fe27aaf4187d7840dd227522f1b2789705",
+    "projected_raw": "0ecf94b8bd9ef18ac8e135c7cc0cb26d62524f0b1cc9a55f6219e005e94edf8d",
+    "onchain_quantized": "f72f2b7c4d7788e687d5598f4ac28c507100132f837226e03da8dab10856d61a",
+    "projected_quantized": "16eb0121be74d5115466f5b0233a756f7a970e7fb178828c706cf96e7c1d102f"
+  },
+  "verdict": "fault",
+  "divergence_keys": [
+    "00000000000000000003",
+    "00000000000000000005"
+  ],
+  "rounding_keys": [
+    "00000000000000000002"
+  ],
+  "witnesses": [
+    {
+      "kind": "rounding",
+      "stream_id": "2",
+      "key": "00000000000000000002",
+      "diffs": [
+        {
+          "field": "withdrawn",
+          "left": "250",
+          "right": "255",
+          "class": "rounding",
+          "delta": "5"
+        }
+      ],
+      "onchain": {
+        "record": [
+          "2",
+          "SA0000000002",
+          "SB0000000002",
+          "CT77",
+          "1000",
+          "250",
+          "1000",
+          "2000",
+          "true",
+          "Active"
+        ],
+        "proof": {
+          "kind": "inclusion",
+          "key": "00000000000000000002",
+          "index": 1,
+          "leafHash": "7cb0b9e8a736fd2a1d8112508634726e2eb2a64e0aa5cf1a24d29a6d9c85e2b4",
+          "leafCount": 5,
+          "steps": [
+            {
+              "level": 0,
+              "position": "left",
+              "siblingIndex": 0,
+              "siblingKey": "00000000000000000001",
+              "levelCount": 5,
+              "promoted": false,
+              "hash": "d4c9a5a5ce83de5327c26708a7cfbb36917aa43bf877ccadc35987178d925293"
+            },
+            {
+              "level": 1,
+              "position": "right",
+              "siblingIndex": 1,
+              "siblingKey": "00000000000000000003|00000000000000000004",
+              "levelCount": 3,
+              "promoted": false,
+              "hash": "41cde543f5ca836439eaf88adfb218ff95cda6b2be4c3c1798f70e2c0269cb88"
+            },
+            {
+              "level": 2,
+              "position": "right",
+              "siblingIndex": 1,
+              "siblingKey": "single(single(00000000000000000005))",
+              "levelCount": 2,
+              "promoted": false,
+              "hash": "e0591134cae1c8a47a1e11c475743cb3eeac3ba93864b5dca07c0af6f1e9e9cb"
+            }
+          ]
+        }
+      },
+      "projected": {
+        "record": [
+          "2",
+          "SA0000000002",
+          "SB0000000002",
+          "CT77",
+          "1000",
+          "255",
+          "1000",
+          "2000",
+          "true",
+          "Active"
+        ],
+        "proof": {
+          "kind": "inclusion",
+          "key": "00000000000000000002",
+          "index": 1,
+          "leafHash": "297bdb7077e46f3787a64fa0e2436158ad81cb14a2d68dd10474c5755085a3f8",
+          "leafCount": 4,
+          "steps": [
+            {
+              "level": 0,
+              "position": "left",
+              "siblingIndex": 0,
+              "siblingKey": "00000000000000000001",
+              "levelCount": 4,
+              "promoted": false,
+              "hash": "d4c9a5a5ce83de5327c26708a7cfbb36917aa43bf877ccadc35987178d925293"
+            },
+            {
+              "level": 1,
+              "position": "right",
+              "siblingIndex": 1,
+              "siblingKey": "00000000000000000003|00000000000000000004",
+              "levelCount": 2,
+              "promoted": false,
+              "hash": "5e7d20a9a1a37443c8d87f271b3f55df9f75ea9e3530a891c0b4fd99a8f51ad0"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "kind": "value",
+      "stream_id": "3",
+      "key": "00000000000000000003",
+      "diffs": [
+        {
+          "field": "deposit",
+          "left": "1000",
+          "right": "1750",
+          "class": "divergent",
+          "delta": "750"
+        }
+      ],
+      "onchain": {
+        "record": [
+          "3",
+          "SA0000000003",
+          "SB0000000003",
+          "CT77",
+          "1000",
+          "250",
+          "1000",
+          "2000",
+          "true",
+          "Active"
+        ],
+        "proof": {
+          "kind": "inclusion",
+          "key": "00000000000000000003",
+          "index": 2,
+          "leafHash": "d7dc35665633aeb45563a623a9b49dc2e24896495ab078b97cdb7ef840e5d98d",
+          "leafCount": 5,
+          "steps": [
+            {
+              "level": 0,
+              "position": "right",
+              "siblingIndex": 3,
+              "siblingKey": "00000000000000000004",
+              "levelCount": 5,
+              "promoted": false,
+              "hash": "f6731b9818b887d8995248f646427d4af32e51155a689d8c3df83d810b5d24bd"
+            },
+            {
+              "level": 1,
+              "position": "left",
+              "siblingIndex": 0,
+              "siblingKey": "00000000000000000001|00000000000000000002",
+              "levelCount": 3,
+              "promoted": false,
+              "hash": "447e7f150972c3f1904ef26d3698966515efaa3d86134bf5dc4b1de9ece2cb65"
+            },
+            {
+              "level": 2,
+              "position": "right",
+              "siblingIndex": 1,
+              "siblingKey": "single(single(00000000000000000005))",
+              "levelCount": 2,
+              "promoted": false,
+              "hash": "e0591134cae1c8a47a1e11c475743cb3eeac3ba93864b5dca07c0af6f1e9e9cb"
+            }
+          ]
+        }
+      },
+      "projected": {
+        "record": [
+          "3",
+          "SA0000000003",
+          "SB0000000003",
+          "CT77",
+          "1750",
+          "250",
+          "1000",
+          "2000",
+          "true",
+          "Active"
+        ],
+        "proof": {
+          "kind": "inclusion",
+          "key": "00000000000000000003",
+          "index": 2,
+          "leafHash": "99ba177c9d10c678576b4d15c8609a2997d9b2d249916d3e9070f2ff6eb1f068",
+          "leafCount": 4,
+          "steps": [
+            {
+              "level": 0,
+              "position": "right",
+              "siblingIndex": 3,
+              "siblingKey": "00000000000000000004",
+              "levelCount": 4,
+              "promoted": false,
+              "hash": "f6731b9818b887d8995248f646427d4af32e51155a689d8c3df83d810b5d24bd"
+            },
+            {
+              "level": 1,
+              "position": "left",
+              "siblingIndex": 0,
+              "siblingKey": "00000000000000000001|00000000000000000002",
+              "levelCount": 2,
+              "promoted": false,
+              "hash": "743d96fe5cd8ebb32c1613bc8e25730425c0006800e34fc2c09874325d0ec520"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "kind": "missing_projected",
+      "stream_id": "5",
+      "key": "00000000000000000005",
+      "diffs": [],
+      "onchain": {
+        "record": [
+          "5",
+          "SA0000000005",
+          "SB0000000005",
+          "CT77",
+          "1000",
+          "250",
+          "1000",
+          "2000",
+          "true",
+          "Active"
+        ],
+        "proof": {
+          "kind": "inclusion",
+          "key": "00000000000000000005",
+          "index": 4,
+          "leafHash": "e0591134cae1c8a47a1e11c475743cb3eeac3ba93864b5dca07c0af6f1e9e9cb",
+          "leafCount": 5,
+          "steps": [
+            {
+              "level": 0,
+              "position": "right",
+              "siblingIndex": 4,
+              "siblingKey": "single(00000000000000000005)",
+              "levelCount": 5,
+              "promoted": true,
+              "hash": "e0591134cae1c8a47a1e11c475743cb3eeac3ba93864b5dca07c0af6f1e9e9cb"
+            },
+            {
+              "level": 1,
+              "position": "right",
+              "siblingIndex": 2,
+              "siblingKey": "single(single(00000000000000000005))",
+              "levelCount": 3,
+              "promoted": true,
+              "hash": "e0591134cae1c8a47a1e11c475743cb3eeac3ba93864b5dca07c0af6f1e9e9cb"
+            },
+            {
+              "level": 2,
+              "position": "left",
+              "siblingIndex": 0,
+              "siblingKey": "00000000000000000001|00000000000000000002|00000000000000000003|00000000000000000004",
+              "levelCount": 2,
+              "promoted": false,
+              "hash": "e4c47cfe616dbb34b754f88f19fcc3ce30c2fd83ab43ad376258e1e09f4c3578"
+            }
+          ]
+        }
+      },
+      "projected_exclusion": {
+        "kind": "exclusion",
+        "key": "00000000000000000005",
+        "leafCount": 4,
+        "lower": {
+          "key": "00000000000000000004",
+          "index": 3,
+          "leafHash": "f6731b9818b887d8995248f646427d4af32e51155a689d8c3df83d810b5d24bd",
+          "proof": [
+            {
+              "level": 0,
+              "position": "left",
+              "siblingIndex": 2,
+              "siblingKey": "00000000000000000003",
+              "levelCount": 4,
+              "promoted": false,
+              "hash": "99ba177c9d10c678576b4d15c8609a2997d9b2d249916d3e9070f2ff6eb1f068"
+            },
+            {
+              "level": 1,
+              "position": "left",
+              "siblingIndex": 0,
+              "siblingKey": "00000000000000000001|00000000000000000002",
+              "levelCount": 2,
+              "promoted": false,
+              "hash": "743d96fe5cd8ebb32c1613bc8e25730425c0006800e34fc2c09874325d0ec520"
+            }
+          ]
+        },
+        "upper": null
+      }
+    }
+  ],
+  "fingerprints": [
+    {
+      "stream_id": "1",
+      "key": "00000000000000000001",
+      "onchain_raw_leaf": "d4c9a5a5ce83de5327c26708a7cfbb36917aa43bf877ccadc35987178d925293",
+      "projected_raw_leaf": "d4c9a5a5ce83de5327c26708a7cfbb36917aa43bf877ccadc35987178d925293"
+    },
+    {
+      "stream_id": "2",
+      "key": "00000000000000000002",
+      "onchain_raw_leaf": "7cb0b9e8a736fd2a1d8112508634726e2eb2a64e0aa5cf1a24d29a6d9c85e2b4",
+      "projected_raw_leaf": "297bdb7077e46f3787a64fa0e2436158ad81cb14a2d68dd10474c5755085a3f8"
+    },
+    {
+      "stream_id": "3",
+      "key": "00000000000000000003",
+      "onchain_raw_leaf": "d7dc35665633aeb45563a623a9b49dc2e24896495ab078b97cdb7ef840e5d98d",
+      "projected_raw_leaf": "99ba177c9d10c678576b4d15c8609a2997d9b2d249916d3e9070f2ff6eb1f068"
+    },
+    {
+      "stream_id": "4",
+      "key": "00000000000000000004",
+      "onchain_raw_leaf": "f6731b9818b887d8995248f646427d4af32e51155a689d8c3df83d810b5d24bd",
+      "projected_raw_leaf": "f6731b9818b887d8995248f646427d4af32e51155a689d8c3df83d810b5d24bd"
+    },
+    {
+      "stream_id": "5",
+      "key": "00000000000000000005",
+      "onchain_raw_leaf": "e0591134cae1c8a47a1e11c475743cb3eeac3ba93864b5dca07c0af6f1e9e9cb",
+      "projected_raw_leaf": ""
+    }
+  ],
+  "generated_at": "2026-11-20T00:00:00.000Z"
+}

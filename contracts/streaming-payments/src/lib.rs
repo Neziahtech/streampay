@@ -1140,12 +1140,13 @@ impl StreamingPayments {
     #[cfg_attr(not(target_family = "wasm"), doc = "")]
     #[cfg_attr(
         not(target_family = "wasm"),
-        doc = " Emits one `StreamsCreated` event containing all ids; individual"
+        doc = " Emits one `StreamCreated` event per stream followed by a"
     )]
     #[cfg_attr(
         not(target_family = "wasm"),
-        doc = " `FeeCharged` events are still emitted when fees apply."
+        doc = " `StreamsCreated` summary; individual `FeeCharged` events are still"
     )]
+    #[cfg_attr(not(target_family = "wasm"), doc = " emitted when fees apply.")]
     pub fn create_streams(
         env: Env,
         sender: Address,
@@ -1262,6 +1263,21 @@ impl StreamingPayments {
             stream::index_stream(&env, &created);
             if fee > 0 {
                 treasury::apply_fee(&env, &created.token, id, fee)?;
+            }
+            #[cfg(test)]
+            cei_trace::record("event StreamCreated");
+            StreamCreated {
+                stream_id: id,
+                sender: created.sender.clone(),
+                recipient: created.recipient.clone(),
+                token: created.token.clone(),
+                deposit: created.deposit,
+                start_time: created.start_time,
+                end_time: created.end_time,
+                cancelable: created.cancelable,
+            }
+            .publish(&env);
+            if fee > 0 {
                 FeeCharged {
                     stream_id: id,
                     token: created.token.clone(),

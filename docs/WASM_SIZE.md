@@ -130,8 +130,10 @@ and oracle flag differing. They now share one private helper,
 `StreamingPayments::persist_new_stream`, keeping the exact effect order (the
 CEI operation-order goldens for the scheduled paths are byte-identical).
 
-The atomic `create_streams` batch loop intentionally does **not** emit
-per-stream `StreamCreated` events, so it keeps its own leg and was not merged.
+At that measurement the atomic `create_streams` batch loop did **not** emit
+per-stream `StreamCreated` events, so it kept its own leg and was not merged.
+It now emits those facts for event-sourced analytics while retaining the
+`StreamsCreated` summary.
 
 `code` shrinks 37,770 → 37,288; the two call sites that inlined the leg
 (`create_streams_batch` 1,086 → 795, `execute_scheduled` 914 → 773) now call

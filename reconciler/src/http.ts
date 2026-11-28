@@ -1,4 +1,4 @@
-//! Simple HTTP agent wrapper for making requests with proper error handling.
+//! HTTP client wrapper used by both readers and the alerting service.
 
 export interface HttpResponse {
   status: number;
@@ -7,7 +7,10 @@ export interface HttpResponse {
 }
 
 export class HttpError extends Error {
-  constructor(public status: number, message: string) {
+  constructor(
+    public status: number,
+    message: string
+  ) {
     super(message);
     this.name = "HttpError";
   }
@@ -18,74 +21,58 @@ export interface HttpAgent {
   post(url: string, body: unknown, headers?: Record<string, string>): Promise<HttpResponse>;
 }
 
+const REQUEST_TIMEOUT_MS = 30_000;
+
 /**
- * Creates an HTTP agent that returns typed responses.
- * Wraps globalThis.fetch for better DX.
+ * `requestFn` is injectable so tests and callers can substitute a client
+ * without patching the global.
  */
-export function createHttpAgent(): HttpAgent {
+export function createHttpAgent(requestFn: typeof fetch = globalThis.fetch): HttpAgent {
   const request = async (url: string, options: RequestInit): Promise<HttpResponse> => {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30_000); // 30s timeout
+    const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
     try {
-      const response = await globalThis.fetch(url, {
+      const response = await requestFn(url, {
         ...options,
         signal: controller.signal,
         headers: {
           "User-Agent": "streampay-reconciler/1.0.0",
-          ...(options.headers || {}),
+          ...(options.headers ?? {}),
         },
       });
 
-      clearTimeout(timeoutId);
-
-      // Try to parse JSON body, fallback to text
-      let data: unknown;
-      const contentType = response.headers.get("content-type") || "";
-      if (contentType.includes("application/json")) {
-        try {
-          data = await response.json();
-        } catch {
-          data = await response.text();
-        }
-      } else {
-        data = await response.text();
-      }
+      const contentType = response.headers.get("content-type") ?? "";
+      const data = contentType.includes("application/json")
+        ? await response.json().catch(() => response.text())
+        : await response.text();
 
       return {
         status: response.status,
         data,
         headers: Object.fromEntries(response.headers.entries()),
       };
-    } catch (err: unknown) {
-      clearTimeout(timeoutId);
-      if (err instanceof Error && err.name === "AbortError") {
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") {
         throw new HttpError(408, "Request timeout");
       }
-      if (err instanceof HttpError) throw err;
-      const message = err instanceof Error ? err.message : String(err);
-      throw new HttpError(0, `Network error: ${message}`);
+      if (error instanceof HttpError) throw error;
+      throw new HttpError(0, `Network error: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      clearTimeout(timeoutId);
     }
   };
 
   return {
-    async get(url: string, headers = {}): Promise<HttpResponse> {
-      return request(url, { method: "GET", headers });
-    },
-    async post(url: string, body: unknown, headers = {}): Promise<HttpResponse> {
-      const stringBody =
-        typeof body === "string" ? body : JSON.stringify(body);
-      return request(url, {
+    get: (url, headers = {}) => request(url, { method: "GET", headers }),
+    post: (url, body, headers = {}) =>
+      request(url, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...headers,
-        },
-        body: stringBody,
-      });
-    },
+        headers: { "Content-Type": "application/json", ...headers },
+        body: typeof body === "string" ? body : JSON.stringify(body),
+      }),
   };
 }
 
-// Re-export the fetch function for consumers who need more control
+// Re-export the fetch factory for consumers who need more control.
 export { createHttpAgent as http };
