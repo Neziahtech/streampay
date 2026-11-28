@@ -1,0 +1,4 @@
+schema_version,lot_id,withdrawal_event_id,component_index,stream_id,asset,asset_contract,amount,amount_display,decimals,accrual_start_time,accrual_end_time,accrual_period_seconds,ledger,ledger_closed_at,tx_hash,cost_basis_method,cost_basis,unit_cost_basis,valuation_currency
+1.0.0,7:00020-1:fifo:1,00020-1,1,7,TOK,CTOKEN,150,0.000015,7,1000,1025,25,20,1970-01-01T00:17:05.000Z,tx-withdraw-1,fifo,0.00003,2,USD
+1.0.0,7:00030-1:fifo:1,00030-1,1,7,TOK,CTOKEN,100,0.00001,7,1000,1025,25,30,1970-01-01T00:17:30.000Z,tx-withdraw-2,fifo,0.00002,2,USD
+1.0.0,7:00030-1:fifo:2,00030-1,2,7,TOK,CTOKEN,250,0.000025,7,1025,1050,25,30,1970-01-01T00:17:30.000Z,tx-withdraw-2,fifo,0.00005,2,USD

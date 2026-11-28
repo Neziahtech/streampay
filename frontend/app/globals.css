@@ -1583,4 +1583,197 @@ progress::-moz-progress-bar {
   margin: 16px 0;
 }
 
+.governance-wrap {
+  max-width: 1280px;
+}
+
+.governance-header,
+.governance-toolbar,
+.governance-panel__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.governance-header h1 {
+  margin-bottom: 4px;
+}
+
+.governance-toolbar {
+  justify-content: flex-start;
+  padding: 12px 16px;
+  margin: 16px 0;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.governance-toolbar button {
+  margin: 0 0 0 auto;
+}
+
+.governance-readonly {
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.governance-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.governance-panel {
+  margin: 0;
+  min-width: 0;
+}
+
+.governance-panel:first-child {
+  grid-column: 1 / -1;
+}
+
+.governance-panel h2,
+.governance-panel h3 {
+  margin-top: 0;
+}
+
+.governance-panel__heading {
+  align-items: flex-start;
+}
+
+.governance-panel__heading .warn {
+  max-width: 420px;
+}
+
+.governance-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin: 14px 0;
+}
+
+.governance-facts div {
+  padding: 10px 12px;
+  background: var(--surface-inset);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.governance-facts dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.governance-facts dd {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.governance-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.governance-actions button {
+  margin-top: 0;
+}
+
+.governance-danger {
+  color: var(--red) !important;
+  border-color: var(--red) !important;
+}
+
+.governance-status--ready,
+.governance-status--submitted {
+  color: var(--green);
+}
+
+.governance-status--vetoed,
+.governance-status--failed {
+  color: var(--red);
+}
+
+.governance-status--awaiting_timelock,
+.governance-status--awaiting_signatures,
+.governance-status--simulated,
+.governance-status--submitting {
+  color: var(--amber);
+}
+
+.governance-advanced {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.governance-advanced summary {
+  cursor: pointer;
+  color: var(--accent2);
+}
+
+.governance-inspect {
+  align-items: flex-end;
+}
+
+.governance-inspect button {
+  margin-bottom: 1px;
+}
+
+.governance-ack {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.governance-ack input {
+  margin-top: 5px;
+}
+
+.governance-confirm {
+  width: min(680px, calc(100vw - 32px));
+}
+
+.governance-audit {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.governance-audit li {
+  display: grid;
+  grid-template-columns: 170px 90px minmax(0, 1fr);
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 900px) {
+  .governance-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .governance-panel:first-child {
+    grid-column: auto;
+  }
+}
+
+@media (max-width: 600px) {
+  .governance-audit li {
+    grid-template-columns: 1fr;
+  }
+}
+
 

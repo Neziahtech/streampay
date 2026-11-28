@@ -14,6 +14,7 @@ import generate  # noqa: E402
 import ir  # noqa: E402
 
 ARTIFACTS = {
+    "sdks/python/src/streampay/_generated.py",
     "sdks/python/streampay/_generated.py",
     "sdks/rust/src/generated.rs",
     "sdks/typescript/src/generated.ts",

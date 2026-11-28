@@ -192,9 +192,11 @@ describe("outbox: transactional ingestion", () => {
   it("journal carries the per-event ledger cursor for reorg retraction", () => {
     const store = new StreamStore(":memory:");
     try {
-      store.ingest(decodedEvent("ev-1", 10));
+      store.ingest({ ...decodedEvent("ev-1", 10), txHash: "tx-hash-1" });
       const row = store.outbox.replayEvents("1", 0, 10);
       assert.equal(row.events[0].ledger_cursor, "cursor-10-ev-1");
+      assert.equal(row.events[0].ledger_closed_at, "2026-01-01T00:00:00.000Z");
+      assert.equal(row.events[0].tx_hash, "tx-hash-1");
     } finally {
       store.close();
     }

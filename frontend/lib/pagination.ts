@@ -9,6 +9,7 @@ export interface StreamView {
   endTime: number;
   cancelable: boolean;
   status: string;
+  useOracle?: boolean;
 }
 
 export type StreamRoleFilter = "all" | "incoming" | "outgoing";

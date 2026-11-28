@@ -30,6 +30,7 @@ import { useLocale } from "@/lib/i18n/provider";
 import StreamForm from "@/components/StreamForm";
 import BatchStreamForm from "@/components/BatchStreamForm";
 import StreamList from "@/components/StreamList";
+import TaxLotExport from "@/components/TaxLotExport";
 import WalletButton from "@/components/WalletButton";
 import { useToast } from "@/components/toast";
 
@@ -328,6 +329,8 @@ export default function Home() {
       <p className="muted">
         {t("home.connectedLabel")} <code>{address}</code>
       </p>
+
+      <TaxLotExport address={address} />
 
       <StreamForm
         sender={address}

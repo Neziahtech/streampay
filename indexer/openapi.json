@@ -703,7 +703,7 @@
       "OutboxReplayEvent": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["seq", "idempotency_key", "event_id", "stream_id", "name", "ledger", "ledger_cursor", "payload", "ingested_at"],
+        "required": ["seq", "idempotency_key", "event_id", "stream_id", "name", "ledger", "ledger_closed_at", "tx_hash", "ledger_cursor", "payload", "ingested_at"],
         "properties": {
           "seq": { "type": "integer" },
           "idempotency_key": { "type": "string" },
@@ -711,6 +711,8 @@
           "stream_id": { "type": ["string", "null"] },
           "name": { "type": "string" },
           "ledger": { "type": "integer" },
+          "ledger_closed_at": { "type": "string" },
+          "tx_hash": { "type": ["string", "null"] },
           "ledger_cursor": { "type": "string" },
           "payload": { "type": "object", "additionalProperties": true },
           "ingested_at": { "type": "string" }

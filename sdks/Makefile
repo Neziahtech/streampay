@@ -2,8 +2,9 @@ PYTHON ?= python3
 VECTORS_BUILDER := vectors/builder
 TS_DIR := typescript
 RUST_DIR := rust
+PYTHON_DIR := python
 
-.PHONY: help spec generate check check-spec vectors test test-rust publish-dry-run clean conformance conformance-test conformance-live mobile-check mobile-bindings
+.PHONY: help spec generate check check-spec vectors test test-python test-rust publish-dry-run clean conformance conformance-test conformance-live mobile-check mobile-bindings
 
 help:
 	@echo "spec              re-derive spec/streampay.spec.json + FINGERPRINT from the contract"
@@ -12,6 +13,7 @@ help:
 	@echo "check-spec        schema guard + tests only"
 	@echo "vectors           rebuild conformance vectors (deterministic)"
 	@echo "test              TypeScript SDK: typecheck, build, tests (incl. vectors)"
+	@echo "test-python       Python SDK: install package + conformance/runtime tests"
 	@echo "test-rust         Rust SDK: conformance vectors + doctests"
 	@echo "conformance       TypeScript + Rust + Python decode every shared vector"
 	@echo "publish-dry-run   npm pack --dry-run for the TypeScript SDK (no upload)"
@@ -34,6 +36,10 @@ vectors:
 
 test:
 	cd $(TS_DIR) && npm ci && npm run typecheck && npm test
+
+test-python:
+	$(PYTHON) -m pip install ./$(PYTHON_DIR)
+	$(PYTHON) -m unittest discover -s $(PYTHON_DIR)/tests -v
 
 test-rust:
 	cd $(RUST_DIR) && cargo test
@@ -59,4 +65,4 @@ publish-dry-run:
 	cd $(TS_DIR) && npm pack --dry-run
 
 clean:
-	rm -rf $(TS_DIR)/dist $(TS_DIR)/*.tgz
+	rm -rf $(TS_DIR)/dist $(TS_DIR)/*.tgz $(PYTHON_DIR)/build $(PYTHON_DIR)/dist $(PYTHON_DIR)/*.egg-info $(PYTHON_DIR)/src/*.egg-info

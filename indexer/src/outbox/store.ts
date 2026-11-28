@@ -366,10 +366,12 @@ export class OutboxStore {
   replayEvents(streamId: string, afterSeq: number, limit: number): OutboxReplayPage {
     const rows = this.db
       .prepare(
-        `SELECT seq, idempotency_key, event_id, stream_id, name, ledger, ledger_cursor, payload, ingested_at
-         FROM outbox_events
-         WHERE stream_id = ? AND seq > ? AND retracted_at IS NULL
-         ORDER BY seq ASC LIMIT ?`
+        `SELECT o.seq, o.idempotency_key, o.event_id, o.stream_id, o.name, o.ledger,
+                e.ledger_closed_at, e.tx_hash, o.ledger_cursor, o.payload, o.ingested_at
+         FROM outbox_events o
+         LEFT JOIN events e ON e.id = o.event_id
+         WHERE o.stream_id = ? AND o.seq > ? AND o.retracted_at IS NULL
+         ORDER BY o.seq ASC LIMIT ?`
       )
       .all(streamId, afterSeq, limit) as Array<Record<string, unknown>>;
     const events = rows.map((r) => ({
@@ -379,6 +381,8 @@ export class OutboxStore {
       stream_id: r.stream_id === null || r.stream_id === undefined ? null : String(r.stream_id),
       name: String(r.name),
       ledger: Number(r.ledger),
+      ledger_closed_at: String(r.ledger_closed_at),
+      tx_hash: r.tx_hash === null || r.tx_hash === undefined ? null : String(r.tx_hash),
       ledger_cursor: String(r.ledger_cursor),
       payload: this.parsePayload(r.payload),
       ingested_at: String(r.ingested_at),

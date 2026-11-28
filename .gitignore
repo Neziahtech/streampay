@@ -81,6 +81,10 @@ sdks/typescript/*.tgz
 sdks/react/dist/
 sdks/react/storybook-static/
 sdks/react/*.tgz
+sdks/python/build/
+sdks/python/dist/
+sdks/python/*.egg-info/
+sdks/python/src/*.egg-info/
 
 # Campaign output and triage bundles: per-run, versioned on the fuzz-corpus
 # branch instead (see docs/FUZZ_CAMPAIGN.md). fuzz/known/ and

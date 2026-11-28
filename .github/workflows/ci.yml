@@ -681,6 +681,10 @@ jobs:
         if: ${{ always() && !cancelled() && github.event_name == 'pull_request' && steps.paths.outputs.sdk == 'true' }}
         run: cargo test --manifest-path sdks/rust/Cargo.toml
 
+      - name: "[sdk:conformance] Install Python SDK"
+        if: ${{ always() && !cancelled() && github.event_name == 'pull_request' && steps.paths.outputs.sdk == 'true' }}
+        run: python3 -m pip install ./sdks/python
+
       - name: "[sdk:conformance] Python SDK tests"
         if: ${{ always() && !cancelled() && github.event_name == 'pull_request' && steps.paths.outputs.sdk == 'true' }}
         env:

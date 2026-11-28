@@ -87,16 +87,39 @@ ids = client.stream_ids("recipient", address)
 streams = client.streams_for("recipient", address)
 ```
 
+## Read-only transport client
+
+`streampay_readonly` is the generated transport-based client. It exposes every
+non-mutating spec operation, makes no network calls, and never signs or submits.
+
+```python
+from streampay_readonly import ReadClient, ReadTransport, Stream
+
+class RpcTransport(ReadTransport):
+    def simulate(self, method, args):
+        return rpc.simulate_contract_call(method, args).result_xdr
+
+stream: Stream = ReadClient(RpcTransport()).get_stream(1)
+print(stream.to_dict())
+```
+
+Use `streampay_readonly.decode_stream_pay_event(xdr, contract_id)` for
+contract-bound typed events. Canonical dictionaries encode integers as decimal
+strings.
+
 ## Conformance
 
+From the repository root:
+
 ```bash
-python -m unittest discover -s tests -v
-python -m streampay.conformance ../vectors
+python -m pip install ./sdks/python
+python -m unittest discover -s sdks/python/tests -v
+PYTHONPATH=sdks/python python -m streampay.conformance sdks/vectors
 ```
 
 ## Versioning and publishing
 
-Lockstep with the other SDKs; see [`../README.md`](../README.md#versioning-policy).
+Lockstep with the other SDKs; see [`../README.md`](../README.md#versioning-and-publishing).
 `python -m build` + `twine check` run in CI; `sdk-v*` tags publish to TestPyPI
 and then PyPI (`TEST_PYPI_API_TOKEN`, `PYPI_API_TOKEN`). TestPyPI can also be
 exercised from the publish workflow's manual dispatch.

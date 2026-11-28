@@ -62,6 +62,8 @@ export interface OutboxReplayPage {
     stream_id: string | null;
     name: string;
     ledger: number;
+    ledger_closed_at: string;
+    tx_hash: string | null;
     ledger_cursor: string;
     payload: Record<string, unknown>;
     ingested_at: string;

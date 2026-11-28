@@ -70,11 +70,11 @@ export default defineConfig({
   projects: [
     {
       name: "dark",
-      use: { ...devices["Desktop Chrome"], colorScheme: "dark" },
+      use: { colorScheme: "dark" },
     },
     {
       name: "light",
-      use: { ...devices["Desktop Chrome"], colorScheme: "light" },
+      use: { colorScheme: "light" },
     },
   ],
 

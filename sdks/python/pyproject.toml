@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "streampay-sdk"
 version = "0.3.0"
-description = "Typed, spec-generated Python client for the StreamPay streaming-payments Soroban contract."
+description = "Typed, spec-generated Python clients for the StreamPay streaming-payments Soroban contract."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
@@ -30,4 +30,8 @@ Documentation = "https://github.com/Neziahtech/streampay/blob/main/sdks/README.m
 streampay-conformance = "streampay.conformance:main"
 
 [tool.setuptools]
-packages = ["streampay"]
+packages = ["streampay", "streampay_readonly"]
+package-dir = { "streampay" = "streampay", "streampay_readonly" = "src/streampay" }
+
+[tool.setuptools.package-data]
+"streampay_readonly" = ["py.typed"]

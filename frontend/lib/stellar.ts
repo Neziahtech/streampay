@@ -1031,6 +1031,7 @@ export async function readStream(streamId: string): Promise<StreamView> {
     endTime: Number(raw.end_time),
     cancelable: Boolean(raw.cancelable),
     status: String(raw.status),
+    useOracle: Boolean(raw.use_oracle),
   };
 }
 
@@ -1209,6 +1210,30 @@ export async function fetchStreamsFor(
     ids.map((id) => readStream(id).catch(() => null))
   );
   return streams.filter((s): s is StreamView => s !== null);
+}
+
+/** Fresh recipient streams, one id/read at a time so exports do not retain the portfolio. */
+export async function* iterateRecipientStreams(
+  address: string,
+  signal?: AbortSignal
+): AsyncGenerator<StreamView> {
+  for (let offset = 0; ; offset += MAX_PAGE_SIZE) {
+    signal?.throwIfAborted();
+    const ids = await readStreamIdsPage("recipient_streams", address, offset);
+    for (const id of ids) {
+      signal?.throwIfAborted();
+      yield await readStream(id);
+    }
+    if (ids.length < MAX_PAGE_SIZE) break;
+  }
+}
+
+/** Empty means the immutable single-window schedule used by exact tax-lot replay. */
+export async function readRateSegmentCount(streamId: string): Promise<number> {
+  const retval = await simulateRead(CONTRACT_ID, "rate_segments", [u64(streamId)]);
+  if (!retval) throw new Error(`Stream #${streamId} rate schedule is unavailable`);
+  const raw = scValToNative(retval) as unknown[];
+  return raw?.length ?? 0;
 }
 
 import {
