@@ -35,6 +35,7 @@ interface: they are only ever appended to, never renumbered or reused.
 - Frontend: stream comparison workbench at `/compare`. Overlays accrual curves,
   exhaustion forecast and fee estimates for up to 5 streams or hypothetical
   parameter sets, simulated client-side with a shareable parameter URL.
+- Payout routing (#80): new `contracts/payout-router` contract lets a stream recipient bind an alternate payout address with a 24 hour propose/confirm delay, plugged into the existing Withdraw hook. Events `PayoutBound`, `PayoutActive`, `PayoutCleared`. The streaming contract is unchanged (its Wasm is byte-identical with and without this change). See `docs/PAYOUT_ROUTING.md`.
 - TypeScript SDK: opt-in submit retry policy (#497). `retry` on
   `StreamPayClient` adds bounded exponential backoff with full jitter for
   transient RPC failures. Retries resend the same signed envelope, using its

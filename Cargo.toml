@@ -7,6 +7,7 @@ members = [
     "contracts/passkey-signer",
     "contracts/multisig",
     "contracts/vault",
+    "contracts/payout-router",
     "model",
     "tools/streampay-state",
 ]

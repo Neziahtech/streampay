@@ -7,6 +7,7 @@ import {
   describeError,
   enrollBeneficiary,
   isNativeXlm,
+  PAYOUT_ROUTER_ID,
   readAvailable,
   readBeneficiaryKey,
   readRateSegments,
@@ -35,6 +36,7 @@ import {
 import { useClaimScheduler } from "@/lib/use-claim-scheduler";
 import { usePrefersReducedMotion } from "@/lib/use-prefers-reduced-motion";
 import ClaimSchedulerSettings from "@/components/ClaimSchedulerSettings";
+import PayoutBindingPanel from "@/components/PayoutBindingPanel";
 import {
   consentPublicKeyHex,
   DEFAULT_INTENT_TTL_SECONDS,
@@ -700,6 +702,13 @@ export default function StreamDetailClient() {
       )}
       {isRecipient && stream.status === "Active" && (
         <ClaimSchedulerSettings stream={stream} scheduler={scheduler} />
+      )}
+      {PAYOUT_ROUTER_ID && isRecipient && address && stream.status === "Active" && (
+        <PayoutBindingPanel
+          streamId={streamId}
+          recipient={address}
+          signTransaction={signTransaction}
+        />
       )}
 
       {(isSender || (isRecipient && stream.cancelable)) &&

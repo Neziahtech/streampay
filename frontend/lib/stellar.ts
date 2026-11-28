@@ -40,6 +40,13 @@ import {
   u32,
   u64,
 } from "./stellar-ops.ts";
+import {
+  buildCancelPayoutOperation,
+  buildConfirmPayoutOperation,
+  buildProposePayoutOperation,
+  parseBindingView,
+  type BindingView,
+} from "./payout-binding.ts";
 
 export const RPC_URL =
   process.env.NEXT_PUBLIC_SOROBAN_RPC_URL ||
@@ -1259,4 +1266,73 @@ export async function fetchAddressStreamsPage(
   }
 
   return paginateStreamsByCursor(streams, options, asOfTimestamp);
+}
+
+/**
+ * Payout router contract (issue #80). Empty when the network has no router, in
+ * which case the UI shows a "not configured" note and never calls it.
+ */
+export const PAYOUT_ROUTER_ID = process.env.NEXT_PUBLIC_PAYOUT_ROUTER_ID || "";
+
+function configuredRouterId(): string {
+  if (!PAYOUT_ROUTER_ID) {
+    throw new Error("Payout routing is not configured on this network");
+  }
+  return PAYOUT_ROUTER_ID;
+}
+
+/**
+ * The router's binding for a stream, or `null` when the router is not
+ * configured or the read failed (callers must not claim anything then).
+ */
+export async function readPayoutBinding(
+  streamId: string
+): Promise<BindingView | null> {
+  const retval = await simulateRead(PAYOUT_ROUTER_ID, "binding", [
+    u64(streamId),
+  ]);
+  return retval ? parseBindingView(scValToNative(retval)) : null;
+}
+
+/** Proposes a payout address; resolves with `activates_at` (unix seconds). */
+export async function proposePayoutBinding(
+  recipient: string,
+  streamId: string,
+  payout: string,
+  signer: TxSigner
+): Promise<number> {
+  return send(
+    recipient,
+    buildProposePayoutOperation(configuredRouterId(), streamId, payout),
+    (v) => Number(scValToNative(v) as bigint),
+    signer
+  );
+}
+
+/** Confirms the pending payout address once the delay has passed. */
+export async function confirmPayoutBinding(
+  recipient: string,
+  streamId: string,
+  signer: TxSigner
+): Promise<void> {
+  await send(
+    recipient,
+    buildConfirmPayoutOperation(configuredRouterId(), streamId),
+    () => undefined,
+    signer
+  );
+}
+
+/** Clears the pending and the active binding; claims land at the recipient. */
+export async function cancelPayoutBinding(
+  recipient: string,
+  streamId: string,
+  signer: TxSigner
+): Promise<void> {
+  await send(
+    recipient,
+    buildCancelPayoutOperation(configuredRouterId(), streamId),
+    () => undefined,
+    signer
+  );
 }
